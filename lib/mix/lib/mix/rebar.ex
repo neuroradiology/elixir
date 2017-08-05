@@ -2,34 +2,42 @@ defmodule Mix.Rebar do
   @moduledoc false
 
   @doc """
-  Returns the path supposed to host the local copy of rebar.
+  Returns the path supposed to host the local copy of `rebar`.
   """
-  def local_rebar_path, do: Path.join(Mix.Utils.mix_home, "rebar")
-
-  @doc """
-  Returns the path to the global copy of rebar, if one exists.
-  """
-  def global_rebar_cmd do
-    wrap_cmd System.find_executable("rebar")
+  def local_rebar_path(manager) do
+    Path.join(Mix.Utils.mix_home, Atom.to_string(manager))
   end
 
   @doc """
-  Returns the path to the local copy of rebar, if one exists.
+  Returns the path to the global copy of `rebar`, defined by the
+  environment variables `MIX_REBAR` or `MIX_REBAR3`.
   """
-  def local_rebar_cmd do
-    rebar = local_rebar_path
-    wrap_cmd(if File.regular?(rebar), do: rebar)
+  def global_rebar_cmd(manager) do
+    env = manager_to_env(manager)
+    if cmd = System.get_env(env) do
+      wrap_cmd(cmd)
+    end
   end
 
   @doc """
-  Returns the path to the available rebar command.
+  Returns the path to the local copy of `rebar`, if one exists.
   """
-  def rebar_cmd do
-    global_rebar_cmd || local_rebar_cmd
+  def local_rebar_cmd(manager) do
+    cmd = local_rebar_path(manager)
+    if File.regular?(cmd) do
+      wrap_cmd(cmd)
+    end
   end
 
   @doc """
-  Loads the rebar.config and evaluates rebar.config.script if it
+  Returns the path to the available `rebar` command.
+  """
+  def rebar_cmd(manager) do
+    global_rebar_cmd(manager) || local_rebar_cmd(manager)
+  end
+
+  @doc """
+  Loads `rebar.config` and evaluates `rebar.config.script` if it
   exists in the given directory.
   """
   def load_config(dir) do
@@ -43,7 +51,7 @@ defmodule Mix.Rebar do
         []
       {:error, error} ->
         reason = :file.format_error(error)
-        Mix.raise "Error consulting rebar config #{config_path}: #{reason}"
+        Mix.raise "Error consulting Rebar config #{inspect config_path}: #{reason}"
     end
 
     if File.exists?(script_path) do
@@ -54,12 +62,34 @@ defmodule Mix.Rebar do
   end
 
   @doc """
-  Parses the dependencies in given rebar.config to Mix's dependency format.
+  Serializes a Rebar config to a term file.
+  """
+  def serialize_config(config) do
+    Enum.map(config, &[:io_lib.print(&1) | ".\n"])
+  end
+
+  @doc """
+  Updates Rebar configuration to be more suitable for dependencies.
+
+  Drops `warnings_as_errors` from `erl_opts`.
+  """
+  def dependency_config(config) do
+    Enum.map(config, fn
+      {:erl_opts, opts} ->
+        {:erl_opts, List.delete(opts, :warnings_as_errors)}
+      other ->
+        other
+    end)
+  end
+
+  @doc """
+  Parses the dependencies in given `rebar.config` to Mix's dependency format.
   """
   def deps(config) do
+    # We don't have to handle rebar3 profiles because dependencies
+    # are always in the default profile which cannot be customized
     if deps = config[:deps] do
-      deps_dir = config[:deps_dir] || "deps"
-      Enum.map(deps, &parse_dep(&1, deps_dir))
+      Enum.map(deps, &parse_dep/1)
     else
       []
     end
@@ -67,68 +97,95 @@ defmodule Mix.Rebar do
 
   @doc """
   Runs `fun` for the given config and for each `sub_dirs` in the
-  given rebar config.
+  given Rebar config.
+
+  `sub_dirs` is only supported in Rebar 2. In Rebar 3, the equivalent
+  to umbrella apps cannot be used as dependencies, so we don't need
+  to worry about such cases in Mix.
   """
-  def recur(config, fun) when is_binary(config) do
-    recur(load_config(config), fun)
-  end
-
   def recur(config, fun) do
-    subs = (config[:sub_dirs] || [])
-     |> Enum.map(&Path.wildcard(&1))
-     |> Enum.concat
-     |> Enum.filter(&File.dir?(&1))
-     |> Enum.map(&recur(&1, fun))
-     |> Enum.concat
+    subs =
+      (config[:sub_dirs] || [])
+      |> Enum.flat_map(&Path.wildcard(&1))
+      |> Enum.filter(&File.dir?(&1))
+      |> Enum.flat_map(&recur(load_config(&1), fun))
 
-    [fun.(config)|subs]
+    [fun.(config) | subs]
   end
 
-  defp parse_dep({app, req}, deps_dir) do
-    {app, compile_req(req), [path: Path.join(deps_dir, Atom.to_string(app))]}
+  # Translate a rebar dependency declaration to a mix declaration
+  # From http://www.rebar3.org/docs/dependencies#section-declaring-dependencies
+  defp parse_dep(app) when is_atom(app) do
+    {app, ">= 0.0.0"}
   end
 
-  defp parse_dep({app, req, source}, deps_dir) do
-    parse_dep({app, req, source, []}, deps_dir)
+  defp parse_dep({app, req}) when is_list(req) do
+    {app, List.to_string(req)}
   end
 
-  defp parse_dep({app, req, source, opts}, _deps_dir) do
+  defp parse_dep({app, source}) when is_tuple(source) do
+    parse_dep({app, nil, source, []})
+  end
+
+  defp parse_dep({app, req, source}) do
+    parse_dep({app, req, source, []})
+  end
+
+  defp parse_dep({app, req, source, opts}) do
+    source = parse_source(source)
+
+    compile =
+      if :proplists.get_value(:raw, opts, false),
+        do: [compile: false],
+        else: []
+
+    {app, compile_req(req), source ++ compile}
+  end
+
+  defp parse_source({:pkg, pkg}) do
+    [hex: pkg]
+  end
+  defp parse_source(source) do
     [scm, url | source] = Tuple.to_list(source)
-    mix_opts = [{scm, to_string(url)}]
 
     ref =
       case source do
-        [""|_]                -> [branch: "HEAD"]
-        [{:branch, branch}|_] -> [branch: to_string(branch)]
-        [{:tag, tag}|_]       -> [tag: to_string(tag)]
-        [ref|_]               -> [ref: to_string(ref)]
-        _                     -> []
+        ["" | _] -> [branch: "HEAD"]
+        [{:branch, branch} | _] -> [branch: to_string(branch)]
+        [{:tag, tag} | _] -> [tag: to_string(tag)]
+        [{:ref, ref} | _] -> [ref: to_string(ref)]
+        [ref | _] -> [ref: to_string(ref)]
+        _ -> []
       end
 
-    mix_opts = mix_opts ++ ref
-
-    if :proplists.get_value(:raw, opts, false) do
-      mix_opts = mix_opts ++ [compile: false]
-    end
-
-    {app, compile_req(req), mix_opts}
+    [{scm, to_string(url)}] ++ ref
   end
 
-  defp parse_dep(app, deps_dir) do
-    parse_dep({app, ".*"}, deps_dir)
+  defp compile_req(nil) do
+    ">= 0.0.0"
   end
 
   defp compile_req(req) do
-    case Regex.compile to_string(req) do
-      {:ok, re} ->
-        re
-      {:error, reason} ->
-        Mix.raise "Unable to compile version regex: \"#{req}\", #{reason}"
+    req = List.to_string(req)
+
+    case Version.parse_requirement(req) do
+      {:ok, _} ->
+        req
+      :error ->
+        case Regex.compile(req) do
+          {:ok, re} ->
+            re
+          {:error, reason} ->
+            Mix.raise "Unable to compile version regex: #{inspect req}, #{reason}"
+        end
     end
   end
 
+  defp manager_to_env(:rebar), do: "MIX_REBAR"
+  defp manager_to_env(:rebar3), do: "MIX_REBAR3"
+
   defp eval_script(script_path, config) do
-    script = Path.basename(script_path) |> String.to_char_list
+    script = Path.basename(script_path) |> String.to_charlist
 
     result = File.cd!(Path.dirname(script_path), fn ->
       :file.script(script, eval_binds(CONFIG: config, SCRIPT: script))
@@ -139,26 +196,66 @@ defmodule Mix.Rebar do
         config
       {:error, error} ->
         reason = :file.format_error(error)
-        Mix.shell.error("Error evaluating rebar config script #{script_path}: #{reason}")
-        Mix.shell.error("You may solve this issue by adding rebar as a dependency to your project")
-        Mix.shell.error("Any dependency defined in the script won't be available " <>
+        Mix.shell.error("Error evaluating Rebar config script #{script_path}:#{reason}")
+        Mix.shell.error("Any dependencies defined in the script won't be available " <>
                         "unless you add them to your Mix project")
         config
     end
   end
 
   defp eval_binds(binds) do
-    Enum.reduce(binds, :erl_eval.new_bindings, fn ({k, v}, binds) ->
+    Enum.reduce(binds, :erl_eval.new_bindings, fn({k, v}, binds) ->
       :erl_eval.add_binding(k, v, binds)
     end)
   end
 
-  defp wrap_cmd(nil), do: nil
   defp wrap_cmd(rebar) do
-    if match?({:win32, _}, :os.type) and not String.ends_with?(rebar,".cmd") do
-      "escript.exe #{rebar}"
-    else
-      rebar
+    cond do
+      not match?({:win32, _}, :os.type) ->
+        rebar
+      String.ends_with?(rebar, ".cmd") ->
+        "\"#{String.replace(rebar, "/", "\\")}\""
+      true ->
+        "escript.exe \"#{rebar}\""
     end
+  end
+
+  @doc """
+  Applies the given overrides for app config.
+  """
+  def apply_overrides(app, config, overrides) do
+    # Inefficient. We want the order we get here though.
+    config =
+      Enum.reduce(overrides, config, fn
+        {:override, overrides}, config ->
+          Enum.reduce(overrides, config, fn {key, value}, config ->
+            Keyword.put(config, key, value)
+          end)
+        _, config ->
+          config
+       end)
+
+    config =
+      Enum.reduce(overrides, config, fn
+        {:override, ^app, overrides}, config ->
+          Enum.reduce(overrides, config, fn {key, value}, config ->
+            Keyword.put(config, key, value)
+          end)
+        _, config ->
+          config
+      end)
+
+    config =
+      Enum.reduce(overrides, config, fn
+        {:add, ^app, overrides}, config ->
+          Enum.reduce(overrides, config, fn {key, value}, config ->
+            old_value = Keyword.get(config, key, [])
+            Keyword.put(config, key, value ++ old_value)
+          end)
+        _, config ->
+          config
+      end)
+
+    Keyword.update(config, :overrides, overrides, &(overrides ++ &1))
   end
 end

@@ -1,10 +1,8 @@
 defmodule Mix.Utils do
-  @moduledoc """
-  Utilities used throughout Mix and tasks.
-  """
+  @moduledoc false
 
   @doc """
-  Get the mix home.
+  Gets the Mix home.
 
   It defaults to `~/.mix` unless the `MIX_HOME`
   environment variable is set.
@@ -21,14 +19,14 @@ defmodule Mix.Utils do
   end
 
   @doc """
-  Get all paths defined in the MIX_PATH env variable.
+  Gets all paths defined in the MIX_PATH env variable.
 
   `MIX_PATH` may contain multiple paths. If on Windows, those
-  paths should be separated by `;`, if on unix systems, use `:`.
+  paths should be separated by `;`, if on Unix systems, use `:`.
   """
   def mix_paths do
     if path = System.get_env("MIX_PATH") do
-      String.split(path, path_separator)
+      String.split(path, path_separator())
     else
       []
     end
@@ -42,7 +40,65 @@ defmodule Mix.Utils do
   end
 
   @doc """
-  Take a `command` name and attempts to load a module
+  Parses a string into module, function and arity.
+
+  It returns `{:ok, mfa_list}`, where a `mfa_list` is
+  `[module, function, arity]`, `[module, function]` or `[module]`,
+  or the atom `:error`.
+
+      iex> Mix.Utils.parse_mfa("Foo.bar/1")
+      {:ok, [Foo, :bar, 1]}
+      iex> Mix.Utils.parse_mfa(":foo.bar/1")
+      {:ok, [:foo, :bar, 1]}
+      iex> Mix.Utils.parse_mfa(":foo.bar")
+      {:ok, [:foo, :bar]}
+      iex> Mix.Utils.parse_mfa(":foo")
+      {:ok, [:foo]}
+      iex> Mix.Utils.parse_mfa("Foo")
+      {:ok, [Foo]}
+
+      iex> Mix.Utils.parse_mfa("Foo.")
+      :error
+      iex> Mix.Utils.parse_mfa("Foo.bar.baz")
+      :error
+      iex> Mix.Utils.parse_mfa("Foo.bar/2/2")
+      :error
+  """
+  def parse_mfa(mfa) do
+    with {:ok, quoted} <- Code.string_to_quoted(mfa),
+         [_ | _] = mfa_list <- quoted_to_mfa(quoted) do
+      {:ok, mfa_list}
+    else
+      _ -> :error
+    end
+  end
+
+  defp quoted_to_mfa({:/, _, [dispatch, arity]}) when is_integer(arity) do
+    quoted_to_mf(dispatch, [arity])
+  end
+  defp quoted_to_mfa(dispatch) do
+    quoted_to_mf(dispatch, [])
+  end
+
+  defp quoted_to_mf({{:., _, [module, fun]}, _, []}, acc) when is_atom(fun) do
+    quoted_to_m(module, [fun | acc])
+  end
+  defp quoted_to_mf(module, acc) do
+    quoted_to_m(module, acc)
+  end
+
+  defp quoted_to_m({:__aliases__, _, aliases}, acc) do
+    [Module.concat(aliases) | acc]
+  end
+  defp quoted_to_m(atom, acc) when is_atom(atom) do
+    [atom | acc]
+  end
+  defp quoted_to_m(_, _acc) do
+    []
+  end
+
+  @doc """
+  Takes a `command` name and attempts to load a module
   with the command name converted to a module name
   in the given `at` scope.
 
@@ -69,7 +125,7 @@ defmodule Mix.Utils do
   end
 
   @doc """
-  Extract all stale `sources` compared to the given `targets`.
+  Extracts all stale `sources` compared to the given `targets`.
   """
   def extract_stale(_sources, []), do: []
   def extract_stale([], _targets), do: []
@@ -79,7 +135,7 @@ defmodule Mix.Utils do
   end
 
   defp stale_stream(sources, targets) do
-    modified_target = targets |> Enum.map(&last_modified(&1)) |> Enum.min
+    modified_target = targets |> Enum.map(&last_modified/1) |> Enum.min
 
     Stream.filter(sources, fn(source) ->
       last_modified(source) > modified_target
@@ -89,7 +145,7 @@ defmodule Mix.Utils do
   @doc """
   Returns the date the given path was last modified.
 
-  If the path does not exist, it returns the unix epoch
+  If the path does not exist, it returns the Unix epoch
   (1970-01-01 00:00:00).
   """
   def last_modified(path)
@@ -99,22 +155,36 @@ defmodule Mix.Utils do
   end
 
   def last_modified(path) do
-    now = :calendar.local_time
+    {mtime, _size} = last_modified_and_size(path)
+    mtime
+  end
 
-    case File.stat(path) do
-      {:ok, %File.Stat{mtime: mtime}} when mtime > now ->
+  @doc false
+  def last_modified_and_size(path) do
+    now = :calendar.universal_time
+
+    case :elixir_utils.read_mtime_and_size(path) do
+      {:ok, mtime, size} when mtime > now ->
         Mix.shell.error("warning: mtime (modified time) for \"#{path}\" was set to the future, resetting to now")
         File.touch!(path, now)
-        mtime
-      {:ok, %File.Stat{mtime: mtime}} ->
-        mtime
+        {mtime, size}
+      {:ok, mtime, size} ->
+        {mtime, size}
       {:error, _} ->
-        {{1970, 1, 1}, {0, 0, 0}}
+        {{{1970, 1, 1}, {0, 0, 0}}, 0}
     end
   end
 
   @doc """
-  Extract files from a list of paths.
+  Prints n files are being compiled with the given extension.
+  """
+  def compiling_n(1, ext),
+    do: Mix.shell.info "Compiling 1 file (.#{ext})"
+  def compiling_n(n, ext),
+    do: Mix.shell.info "Compiling #{n} files (.#{ext})"
+
+  @doc """
+  Extracts files from a list of paths.
 
   `exts_or_pattern` may be a list of extensions or a
   `Path.wildcard/1` pattern.
@@ -132,116 +202,120 @@ defmodule Mix.Utils do
 
   def extract_files(paths, pattern) do
     Enum.flat_map(paths, fn path ->
-      if File.regular?(path), do: [path], else: Path.wildcard("#{path}/**/#{pattern}")
+      case :elixir_utils.read_file_type(path) do
+        {:ok, :directory} -> Path.wildcard("#{path}/**/#{pattern}")
+        {:ok, :regular} -> [path]
+        _ -> []
+      end
     end) |> Enum.uniq
   end
 
-  @doc """
-  Converts the given atom or binary to underscore format.
-
-  If an atom is given, it is assumed to be an Elixir module,
-  so it is converted to a binary and then processed.
-
-  ## Examples
-
-      iex> Mix.Utils.underscore "FooBar"
-      "foo_bar"
-
-      iex> Mix.Utils.underscore "Foo.Bar"
-      "foo/bar"
-
-      iex> Mix.Utils.underscore Foo.Bar
-      "foo/bar"
-
-  In general, `underscore` can be thought of as the reverse of
-  `camelize`, however, in some cases formatting may be lost:
-
-      Mix.Utils.underscore "SAPExample"  #=> "sap_example"
-      Mix.Utils.camelize   "sap_example" #=> "SapExample"
-
-  """
-  def underscore(atom) when is_atom(atom) do
-    "Elixir." <> rest = Atom.to_string(atom)
-    underscore(rest)
-  end
-
-  def underscore(""), do: ""
-
-  def underscore(<<h, t :: binary>>) do
-    <<to_lower_char(h)>> <> do_underscore(t, h)
-  end
-
-  defp do_underscore(<<h, t, rest :: binary>>, _) when h in ?A..?Z and not t in ?A..?Z do
-    <<?_, to_lower_char(h), t>> <> do_underscore(rest, t)
-  end
-
-  defp do_underscore(<<h, t :: binary>>, prev) when h in ?A..?Z and not prev in ?A..?Z do
-    <<?_, to_lower_char(h)>> <> do_underscore(t, h)
-  end
-
-  defp do_underscore(<<?-, t :: binary>>, _) do
-    <<?_>> <> do_underscore(t, ?-)
-  end
-
-  defp do_underscore(<< "..", t :: binary>>, _) do
-    <<"..">> <> underscore(t)
-  end
-
-  defp do_underscore(<<?.>>, _), do: <<?.>>
-
-  defp do_underscore(<<?., t :: binary>>, _) do
-    <<?/>> <> underscore(t)
-  end
-
-  defp do_underscore(<<h, t :: binary>>, _) do
-    <<to_lower_char(h)>> <> do_underscore(t, h)
-  end
-
-  defp do_underscore(<<>>, _) do
-    <<>>
-  end
+  @type tree_node :: {name :: String.Chars.t, edge_info :: String.Chars.t}
 
   @doc """
-  Converts the given string to CamelCase format.
+  Prints the given tree according to the callback.
 
-  ## Examples
-
-      iex> Mix.Utils.camelize "foo_bar"
-      "FooBar"
-
+  The callback will be invoked for each node and it
+  must return a `{printed, children}` tuple.
   """
-  def camelize(""), do: ""
+  @spec print_tree([tree_node], (tree_node -> {tree_node, [tree_node]}), keyword) :: :ok
+  def print_tree(nodes, callback, opts \\ []) do
+    pretty? =
+      case Keyword.get(opts, :format) do
+        "pretty" -> true
+        "plain" -> false
+        _other -> elem(:os.type, 0) != :win32
+      end
 
-  def camelize(<<?_, t :: binary>>) do
-    camelize(t)
+    print_tree(nodes, _depth = [], _parent = nil, _seen = MapSet.new(), pretty?, callback)
+    :ok
   end
 
-  def camelize(<<h, t :: binary>>) do
-    <<to_upper_char(h)>> <> do_camelize(t)
+  defp print_tree(_nodes = [], _depth, _parent, seen, _pretty, _callback) do
+    seen
   end
 
-  defp do_camelize(<<?_, ?_, t :: binary>>) do
-    do_camelize(<< ?_, t :: binary >>)
+  defp print_tree([node | nodes], depth, parent, seen, pretty?, callback) do
+    {{name, info}, children} = callback.(node)
+    key = {parent, name}
+
+    if MapSet.member?(seen, key) do
+      seen
+    else
+      info = if(info, do: " #{info}", else: "")
+      Mix.shell.info("#{depth(pretty?, depth)}#{prefix(pretty?, depth, nodes)}#{name}#{info}")
+      seen = print_tree(children, [(nodes != []) | depth], name, MapSet.put(seen, key), pretty?, callback)
+      print_tree(nodes, depth, parent, seen, pretty?, callback)
+    end
   end
 
-  defp do_camelize(<<?_, h, t :: binary>>) when h in ?a..?z do
-    <<to_upper_char(h)>> <> do_camelize(t)
+  defp depth(_pretty?, []), do: ""
+  defp depth(pretty?, depth), do: Enum.reverse(depth) |> tl |> Enum.map(&entry(pretty?, &1))
+
+  defp entry(false, true),  do: "|   "
+  defp entry(false, false), do: "    "
+  defp entry(true, true),   do: "│   "
+  defp entry(true, false),  do: "    "
+
+  defp prefix(false, [], _), do: ""
+  defp prefix(false, _, []), do: "`-- "
+  defp prefix(false, _, _),  do: "|-- "
+  defp prefix(true, [], _),  do: ""
+  defp prefix(true, _, []),  do: "└── "
+  defp prefix(true, _, _),   do: "├── "
+
+  @doc """
+  Outputs the given tree according to the callback as a DOT graph.
+
+  The callback will be invoked for each node and it
+  must return a `{printed, children}` tuple.
+  """
+  @spec write_dot_graph!(Path.t, String.t, [tree_node], (tree_node -> {tree_node, [tree_node]}), keyword) :: :ok
+  def write_dot_graph!(path, title, nodes, callback, _opts \\ []) do
+    {dot, _} = build_dot_graph(make_ref(), nodes, MapSet.new(), callback)
+    File.write! path, "digraph \"#{title}\" {\n#{dot}}\n"
   end
 
-  defp do_camelize(<<?_>>) do
-    <<>>
+  defp build_dot_graph(_parent, [], seen, _callback), do: {"", seen}
+  defp build_dot_graph(parent, [node | nodes], seen, callback) do
+    {{name, edge_info}, children} = callback.(node)
+    key = {parent, name}
+
+    if MapSet.member?(seen, key) do
+      {"", seen}
+    else
+      seen = MapSet.put(seen, key)
+      current = build_dot_current(parent, name, edge_info)
+      {children, seen} = build_dot_graph(name, children, seen, callback)
+      {siblings, seen} = build_dot_graph(parent, nodes, seen, callback)
+      {current <> children <> siblings, seen}
+    end
   end
 
-  defp do_camelize(<<?/, t :: binary>>) do
-    <<?.>> <> camelize(t)
+  defp build_dot_current(parent, name, edge_info) do
+    edge_info =
+      if edge_info do
+         ~s( [label="#{edge_info}"])
+      end
+
+    parent =
+      unless is_reference(parent) do
+        ~s("#{parent}" -> )
+      end
+
+    ~s(  #{parent}"#{name}"#{edge_info}\n)
   end
 
-  defp do_camelize(<<h, t :: binary>>) do
-    <<h>> <> do_camelize(t)
+  @doc false
+  def underscore(value) do
+    IO.warn "Mix.Utils.underscore/1 is deprecated, use Macro.underscore/1 instead"
+    Macro.underscore(value)
   end
 
-  defp do_camelize(<<>>) do
-    <<>>
+  @doc false
+  def camelize(value) do
+    IO.warn "Mix.Utils.camelize/1 is deprecated, use Macro.camelize/1 instead"
+    Macro.camelize(value)
   end
 
   @doc """
@@ -266,8 +340,11 @@ defmodule Mix.Utils do
   end
 
   def module_name_to_command(module, nesting) do
-    t = Regex.split(~r/\./, to_string(module))
-    t |> Enum.drop(nesting) |> Enum.map(&first_to_lower(&1)) |> Enum.join(".")
+    module
+    |> to_string()
+    |> String.split(".")
+    |> Enum.drop(nesting)
+    |> Enum.map_join(".", &Macro.underscore/1)
   end
 
   @doc """
@@ -279,72 +356,65 @@ defmodule Mix.Utils do
       "Compile.Elixir"
 
   """
-  def command_to_module_name(s) do
-    Regex.split(~r/\./, to_string(s)) |>
-      Enum.map(&first_to_upper(&1)) |>
-      Enum.join(".")
+  def command_to_module_name(command) do
+    command
+    |> to_string()
+    |> String.split(".")
+    |> Enum.map_join(".", &Macro.camelize/1)
   end
 
-  defp first_to_upper(<<s, t :: binary>>), do: <<to_upper_char(s)>> <> t
-  defp first_to_upper(<<>>), do: <<>>
-
-  defp first_to_lower(<<s, t :: binary>>), do: <<to_lower_char(s)>> <> t
-  defp first_to_lower(<<>>), do: <<>>
-
-  defp to_upper_char(char) when char in ?a..?z, do: char - 32
-  defp to_upper_char(char), do: char
-
-  defp to_lower_char(char) when char in ?A..?Z, do: char + 32
-  defp to_lower_char(char), do: char
-
   @doc """
-  Symlink directory `source` to `target` or copy it recursively
+  Symlinks directory `source` to `target` or copies it recursively
   in case symlink fails.
 
-  Expect source and target to be absolute paths as it generates
+  Expects source and target to be absolute paths as it generates
   a relative symlink.
   """
   def symlink_or_copy(source, target) do
     if File.exists?(source) do
-      source_list = String.to_char_list(source)
+      # Relative symbolic links on Windows are broken
+      link = case :os.type do
+        {:win32, _} -> source
+        _           -> make_relative_path(source, target)
+      end |> String.to_charlist
+
       case :file.read_link(target) do
-        {:ok, ^source_list} ->
+        {:ok, ^link} ->
           :ok
         {:ok, _} ->
           File.rm!(target)
-          do_symlink_or_copy(source, target)
+          do_symlink_or_copy(source, target, link)
         {:error, :enoent} ->
-          do_symlink_or_copy(source, target)
+          do_symlink_or_copy(source, target, link)
         {:error, _} ->
-          _ = File.rm_rf!(target)
-          do_symlink_or_copy(source, target)
+          unless File.dir?(target) do
+            File.rm_rf!(target)
+          end
+          do_symlink_or_copy(source, target, link)
       end
     else
       {:error, :enoent}
     end
   end
 
-  defp do_symlink_or_copy(source, target) do
-
-    # relative symbolic links on windows are broken
-    source_path = case :os.type do
-      {:win32, _} -> source
-      _ -> make_relative_path(source, target)
-    end
-
-    case :file.make_symlink(source_path, target) do
-      :ok -> :ok
-      {:error, _} -> {:ok, File.cp_r!(source, target)}
+  defp do_symlink_or_copy(source, target, link) do
+    case :file.make_symlink(link, target) do
+      :ok ->
+        :ok
+      {:error, _} ->
+        {:ok, File.cp_r!(source, target, fn(orig, dest) ->
+          File.stat!(orig).mtime > File.stat!(dest).mtime
+        end)}
     end
   end
 
-  # Make a relative path in between two paths.
+  # Make a relative path between the two given paths.
   # Expects both paths to be fully expanded.
   defp make_relative_path(source, target) do
     do_make_relative_path(Path.split(source), Path.split(target))
   end
 
-  defp do_make_relative_path([h|t1], [h|t2]) do
+  defp do_make_relative_path([h | t1], [h | t2]) do
     do_make_relative_path(t1, t2)
   end
 
@@ -356,115 +426,105 @@ defmodule Mix.Utils do
   @doc """
   Opens and reads content from either a URL or a local filesystem path.
 
-  Used by tasks like `archive.install` and `local.rebar` that support
-  installation either from a URL or a local file.
-
-  Raises if the given path is not a URL, nor a file or if the
-  file or URL are invalid.
+  Returns the contents as a `{:ok, binary}`, `:badpath` for invalid
+  paths or `{:local, message}` for local errors and `{:remote, message}`
+  for remote ones.
 
   ## Options
 
-    * `:shell` - Forces the use of `wget` or `curl` to fetch the file if the
-      given path is a URL.
+    * `:sha512` - checks against the given SHA-512 checksum. Returns
+      `{:checksum, message}` in case it fails
   """
-  def read_path!(path, opts \\ []) do
+  @spec read_path(String.t, keyword) ::
+        {:ok, binary} | :badpath | {:remote, String.t} |
+        {:local, String.t} | {:checksum, String.t}
+  def read_path(path, opts \\ []) do
     cond do
-      url?(path) && opts[:shell] ->
-        read_shell(path)
       url?(path) ->
-        read_httpc(path)
+        read_httpc(path) |> checksum(opts)
       file?(path) ->
-        read_file(path)
+        read_file(path) |> checksum(opts)
       true ->
-        Mix.raise "Expected #{path} to be a url or a local file path"
+        :badpath
+    end
+  end
+
+  @checksums [:sha512]
+
+  defp checksum({:ok, binary} = return, opts) do
+    Enum.find_value @checksums, return, fn hash ->
+      with expected when expected != nil  <- opts[hash],
+           actual when actual != expected <- hexhash(binary, hash) do
+        {:checksum, """
+          Data does not match the given SHA-512 checksum.
+
+          Expected: #{expected}
+            Actual: #{actual}
+          """}
+      else
+        _ -> nil
+      end
+    end
+  end
+
+  defp checksum({_, _} = error, _opts) do
+    error
+  end
+
+  defp hexhash(binary, hash) do
+    Base.encode16 :crypto.hash(hash, binary), case: :lower
+  end
+
+  @doc """
+  Prompts the user to overwrite the file if it exists. Returns
+  the user input.
+  """
+  def can_write?(path) do
+    if File.exists?(path) do
+      full = Path.expand(path)
+      Mix.shell.yes?(Path.relative_to_cwd(full) <> " already exists, overwrite?")
+    else
+      true
     end
   end
 
   defp read_file(path) do
-    File.read!(path)
+    try do
+      {:ok, File.read!(path)}
+    rescue
+      e in [File.Error] -> {:local, Exception.message(e)}
+    end
   end
 
   defp read_httpc(path) do
     {:ok, _} = Application.ensure_all_started(:ssl)
     {:ok, _} = Application.ensure_all_started(:inets)
 
-    # Starting a http client profile allows us to scope
-    # the effects of using a http proxy to this function
-    {:ok, pid} = :inets.start(:httpc, [{:profile, :mix}])
+    # Starting an HTTP client profile allows us to scope
+    # the effects of using an HTTP proxy to this function
+    {:ok, _pid} = :inets.start(:httpc, [{:profile, :mix}])
 
     headers = [{'user-agent', 'Mix/#{System.version}'}]
     request = {:binary.bin_to_list(path), headers}
 
-    # If a proxy environment variable was supplied add a proxy to httpc
-    http_proxy  = System.get_env("HTTP_PROXY")  || System.get_env("http_proxy")
-    https_proxy = System.get_env("HTTPS_PROXY") || System.get_env("https_proxy")
-    if http_proxy,  do: proxy(http_proxy)
-    if https_proxy, do: proxy(https_proxy)
-
-    # We are using relaxed: true because some clients is returning a Location
+    # We are using relaxed: true because some servers is returning a Location
     # header with relative paths, which does not follow the spec. This would
     # cause the request to fail with {:error, :no_scheme} unless :relaxed
     # is given.
-    case :httpc.request(:get, request, [relaxed: true], [body_format: :binary], :mix) do
+    #
+    # If a proxy environment variable was supplied add a proxy to httpc.
+    http_options = [relaxed: true] ++ proxy_config(path)
+
+    case :httpc.request(:get, request, http_options, [body_format: :binary], :mix) do
       {:ok, {{_, status, _}, _, body}} when status in 200..299 ->
-        body
+        {:ok, body}
       {:ok, {{_, status, _}, _, _}} ->
-        Mix.raise "Could not access url #{path}, got status: #{status}"
+        {:remote, "httpc request failed with: {:bad_status_code, #{status}}"}
       {:error, reason} ->
-        Mix.raise "Could not access url #{path}, error: #{inspect reason}"
+        {:remote, "httpc request failed with: #{inspect reason}"}
     end
   after
     :inets.stop(:httpc, :mix)
-  end
-
-  defp proxy(proxy) do
-    uri = URI.parse(proxy)
-    :ok = :httpc.set_options([{proxy_scheme(uri.scheme),
-            {{String.to_char_list(uri.host), uri.port}, []}}], :mix)
-  end
-
-  defp proxy_scheme(scheme) do
-    case scheme do
-      "http" -> :proxy
-      "https" -> :https_proxy
-    end
-  end
-
-  defp read_shell(path) do
-    filename = URI.parse(path).path |> Path.basename
-    out_path = Path.join(System.tmp_dir!, filename)
-    File.rm(out_path)
-
-    status = cond do
-      System.find_executable("wget") ->
-        Mix.shell.cmd(~s(wget -nv -O "#{out_path}" "#{path}"))
-      System.find_executable("curl") ->
-        Mix.shell.cmd(~s(curl -s -S -L -o "#{out_path}" "#{path}"))
-      windows? && System.find_executable("powershell") ->
-        command = ~s[$ErrorActionPreference = 'Stop'; ] <>
-                  ~s[$client = new-object System.Net.WebClient; ] <>
-                  ~s[$client.DownloadFile(\\"#{path}\\", \\"#{out_path}\\")]
-        Mix.shell.cmd(~s[powershell -Command "& {#{command}}"])
-      true ->
-        Mix.shell.error "wget or curl not installed"
-        1
-    end
-
-    check_command!(status, path, out_path)
-
-    data = File.read!(out_path)
-    File.rm!(out_path)
-    data
-  end
-
-  defp check_command!(0, _path, _out_path), do: :ok
-  defp check_command!(_status, path, out_path) do
-    Mix.raise "Could not fetch data, please download manually from " <>
-              "#{inspect path} and copy it to #{inspect out_path}"
-  end
-
-  defp windows? do
-    match?({:win32, _}, :os.type)
   end
 
   defp file?(path) do
@@ -473,5 +533,69 @@ defmodule Mix.Utils do
 
   defp url?(path) do
     URI.parse(path).scheme in ["http", "https"]
+  end
+
+  def proxy_config(url) do
+    {http_proxy, https_proxy} = proxy_env()
+
+    proxy_auth(URI.parse(url), http_proxy, https_proxy)
+  end
+
+  defp proxy_env do
+    http_proxy  = System.get_env("HTTP_PROXY")  || System.get_env("http_proxy")
+    https_proxy = System.get_env("HTTPS_PROXY") || System.get_env("https_proxy")
+    no_proxy    = no_proxy_env() |> no_proxy_list()
+
+    {proxy_setup(:http, http_proxy, no_proxy), proxy_setup(:https, https_proxy, no_proxy)}
+  end
+
+  defp no_proxy_env() do
+    System.get_env("NO_PROXY") || System.get_env("no_proxy")
+  end
+
+  defp no_proxy_list(nil) do
+    []
+  end
+
+  defp no_proxy_list(no_proxy) do
+    no_proxy
+    |> String.split(",")
+    |> Enum.map(&String.to_charlist/1)
+  end
+
+  defp proxy_setup(scheme, proxy, no_proxy) do
+    uri = URI.parse(proxy || "")
+
+    if uri.host && uri.port do
+      host = String.to_charlist(uri.host)
+      :httpc.set_options([{proxy_scheme(scheme), {{host, uri.port}, no_proxy}}], :mix)
+    end
+
+    uri
+  end
+
+  defp proxy_scheme(scheme) do
+    case scheme do
+      :http  -> :proxy
+      :https -> :https_proxy
+    end
+  end
+
+  defp proxy_auth(%URI{scheme: "http"}, http_proxy, _https_proxy),
+    do: proxy_auth(http_proxy)
+  defp proxy_auth(%URI{scheme: "https"}, _http_proxy, https_proxy),
+    do: proxy_auth(https_proxy)
+
+  defp proxy_auth(nil),
+    do: []
+  defp proxy_auth(%URI{userinfo: nil}),
+    do: []
+  defp proxy_auth(%URI{userinfo: auth}) do
+    destructure [user, pass], String.split(auth, ":", parts: 2)
+
+    user = String.to_charlist(user)
+    pass = String.to_charlist(pass || "")
+
+    [proxy_auth: {user, pass}]
   end
 end

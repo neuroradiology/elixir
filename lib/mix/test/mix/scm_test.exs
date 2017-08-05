@@ -5,16 +5,16 @@ defmodule Mix.SCMTest do
 
   setup do
     available = Mix.SCM.available
-    on_exit fn -> Application.put_env(:mix, :scm, available) end
+    on_exit fn -> Mix.State.put(:scm, available) end
     :ok
   end
 
-  test "prepends a SCM" do
+  test "prepends an SCM" do
     Mix.SCM.prepend(Hello)
     assert Enum.at(Mix.SCM.available, 0) == Hello
   end
 
-  test "appends a SCM" do
+  test "appends an SCM" do
     Mix.SCM.append(Hello)
     assert Enum.at(Mix.SCM.available, -1) == Hello
   end

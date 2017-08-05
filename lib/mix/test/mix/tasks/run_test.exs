@@ -5,22 +5,14 @@ defmodule Mix.Tasks.RunTest do
 
   import ExUnit.CaptureIO
 
-  defmodule GetApp do
-    def project do
-      [ app: :get_app,
-        version: "0.1.0",
-        deps: [
-          {:git_repo, "0.1.0", git: MixTest.Case.fixture_path("git_repo")}
-        ] ]
-    end
-  end
+  @moduletag apps: [:sample]
 
   setup do
     Mix.Project.push MixTest.Case.Sample
   end
 
-  test "loads configuration" do
-    in_fixture "no_mixfile", fn ->
+  test "loads configuration", context do
+    in_tmp context.test, fn ->
       assert capture_io(fn ->
         Mix.Task.run "run",
           ["--config", fixture_path("configs/good_config.exs"),
@@ -31,29 +23,40 @@ defmodule Mix.Tasks.RunTest do
     Application.delete_env(:my_app, :key)
   end
 
-  test "run requires files before evaling commands" do
+  test "run requires files before evaling commands", context do
     git_repo = fixture_path("git_repo/lib/git_repo.ex")
 
-    in_fixture "no_mixfile", fn ->
-      Mix.Tasks.Run.run ["-r", git_repo, "-e", "send self, {:hello, GitRepo.hello}"]
+    in_tmp context.test, fn ->
+      Mix.Tasks.Run.run ["-r", git_repo, "-e", "send self(), {:hello, GitRepo.hello}"]
       assert_received {:hello, "World"}
 
-      Mix.Tasks.Run.run ["-pr", git_repo, "-e", "send self, {:hello, GitRepo.hello}"]
+      Mix.Tasks.Run.run ["-pr", git_repo, "-e", "send self(), {:hello, GitRepo.hello}"]
       assert_received {:hello, "World"}
     end
   after
     purge [GitRepo]
   end
 
-  test "run errors on missing files" do
-    git_repo = fixture_path("git_repo/lib/git_repo.ex")
+  test "does not start applications on --no-start", context do
+    in_tmp context.test, fn ->
+      Mix.Tasks.Run.run ["--no-start", "-e", "send self(), {:apps, Application.started_applications}"]
+      assert_received {:apps, apps}
+      refute List.keyfind(apps, :sample, 0)
+      Mix.Task.clear
 
-    in_fixture "no_mixfile", fn ->
+      Mix.Tasks.Run.run ["-e", "send self(), {:apps, Application.started_applications}"]
+      assert_received {:apps, apps}
+      assert List.keyfind(apps, :sample, 0)
+    end
+  end
+
+  test "run errors on missing files", context do
+    in_tmp context.test, fn ->
       assert_raise Mix.Error, "No files matched pattern \"non-existent\" given to --require", fn ->
         Mix.Tasks.Run.run ["-r", "non-existent"]
       end
 
-      assert_raise Mix.Error, "No files matched pattern \"non-existent\" given to --parallel-require", fn ->
+      assert_raise Mix.Error, "No files matched pattern \"non-existent\" given to --require", fn ->
         Mix.Tasks.Run.run ["-pr", "non-existent"]
       end
 
@@ -61,7 +64,7 @@ defmodule Mix.Tasks.RunTest do
         Mix.Tasks.Run.run ["non-existent"]
       end
 
-      assert File.dir?("lib")
+      File.mkdir_p!("lib")
       assert_raise Mix.Error, "No such file: lib", fn ->
         Mix.Tasks.Run.run ["lib"]
       end
@@ -70,11 +73,11 @@ defmodule Mix.Tasks.RunTest do
     purge [GitRepo]
   end
 
-  test "run rewrites System.argv" do
-    in_fixture "no_mixfile", fn ->
+  test "run rewrites System.argv", context do
+    in_tmp context.test, fn ->
       file = "argv.exs"
 
-      File.write! file, "send self, {:argv, System.argv}"
+      File.write! file, "send self(), {:argv, System.argv}"
       unload_file = fn ->
         Code.unload_files [Path.expand(file)]
       end
@@ -87,13 +90,13 @@ defmodule Mix.Tasks.RunTest do
       assert_received {:argv, ["foo", "-e", "bar"]}
 
       unload_file.()
-      Mix.Tasks.Run.run ["-e", "send self, {:argv, System.argv}", file, "foo", "-x", "bar"]
+      Mix.Tasks.Run.run ["-e", "send self(), {:argv, System.argv}", file, "foo", "-x", "bar"]
       assert_received {:argv, [^file, "foo", "-x", "bar"]}
 
       unload_file.()
       Mix.Tasks.Run.run [
-        "-e", "send self, :evaled",
-        "-e", "send self, {:argv, System.argv}",
+        "-e", "send self(), :evaled",
+        "-e", "send self(), {:argv, System.argv}",
         "--no-compile", file, "-x", "bar"
       ]
       assert_received :evaled

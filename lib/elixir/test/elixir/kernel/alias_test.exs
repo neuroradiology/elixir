@@ -9,26 +9,26 @@ end
 defmodule Kernel.AliasTest do
   use ExUnit.Case, async: true
 
-  test :alias_erlang do
+  test "alias Erlang" do
     alias :lists, as: MyList
     assert MyList.flatten([1, [2], 3]) == [1, 2, 3]
     assert Elixir.MyList.Bar == :"Elixir.MyList.Bar"
     assert MyList.Bar == :"Elixir.lists.Bar"
   end
 
-  test :double_alias do
+  test "double alias" do
     alias Kernel.AliasTest.Nested, as: Nested2
-    assert Nested.value  == 1
+    assert Nested.value == 1
     assert Nested2.value == 1
   end
 
-  test :overwriten_alias do
-    alias List, as: Nested
+  test "overwriten alias" do
+    assert alias(List, as: Nested) == List
     assert Nested.flatten([[13]]) == [13]
   end
 
-  test :lexical do
-    if true do
+  test "lexical" do
+    if true_fun() do
       alias OMG, as: List, warn: false
     else
       alias ABC, as: List, warn: false
@@ -37,12 +37,31 @@ defmodule Kernel.AliasTest do
     assert List.flatten([1, [2], 3]) == [1, 2, 3]
   end
 
+  defp true_fun(), do: true
+
   defmodule Elixir do
     def sample, do: 1
   end
 
-  test :nested_elixir_alias do
+  test "nested elixir alias" do
     assert Kernel.AliasTest.Elixir.sample == 1
+  end
+
+  test "multi-call" do
+    result = alias unquote(Inspect).{
+      Opts, Algebra,
+    }
+    assert result == [Inspect.Opts, Inspect.Algebra]
+    assert %Opts{} == %Inspect.Opts{}
+    assert Algebra.empty == :doc_nil
+  end
+
+  test "alias removal" do
+    alias __MODULE__.Foo
+    assert Foo == __MODULE__.Foo
+    alias Elixir.Foo
+    assert Foo == Elixir.Foo
+    alias Elixir.Bar
   end
 end
 
@@ -66,7 +85,7 @@ defmodule Kernel.AliasNestingTest do
   require Kernel.AliasNestingGenerator
   Kernel.AliasNestingGenerator.create
 
-  test :aliases_nesting do
+  test "aliases nesting" do
     assert Parent.a == :a
     assert Parent.Child.b == :a
   end
@@ -75,7 +94,7 @@ defmodule Kernel.AliasNestingTest do
     def value, do: 2
   end
 
-  test :aliases_nesting_with_previous_alias do
+  test "aliases nesting with previous alias" do
     assert Nested.value == 2
   end
 end

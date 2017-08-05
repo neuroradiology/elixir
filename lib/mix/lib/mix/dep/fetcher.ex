@@ -7,7 +7,7 @@
 defmodule Mix.Dep.Fetcher do
   @moduledoc false
 
-  import Mix.Dep, only: [format_dep: 1, check_lock: 2, available?: 1, ok?: 1]
+  import Mix.Dep, only: [format_dep: 1, check_lock: 1, available?: 1]
 
   @doc """
   Fetches all dependencies.
@@ -46,12 +46,12 @@ defmodule Mix.Dep.Fetcher do
   end
 
   defp do_fetch(dep, acc, lock) do
-    %Mix.Dep{app: app, scm: scm, opts: opts} = dep = check_lock(dep, lock)
+    %Mix.Dep{app: app, scm: scm, opts: opts} = dep = check_lock(dep)
 
     cond do
       # Dependencies that cannot be fetched are always compiled afterwards
       not scm.fetchable? ->
-        {dep, [app|acc], lock}
+        {dep, [app | acc], lock}
 
       # If the dependency is not available or we have a lock mismatch
       out_of_date?(dep) ->
@@ -65,7 +65,7 @@ defmodule Mix.Dep.Fetcher do
           end
 
         if new do
-          {dep, [app|acc], Map.put(lock, app, new)}
+          {dep, [app | acc], Map.put(lock, app, new)}
         else
           {dep, acc, lock}
         end
@@ -95,25 +95,29 @@ defmodule Mix.Dep.Fetcher do
     # If there is any other dependency that is not ok, we include
     # it for compilation too, this is our best to try to solve the
     # maximum we can at each deps.get and deps.update.
-    if Enum.all?(all_deps, &available?/1) do
-      deps = (with_depending(deps, all_deps) ++
-              Enum.filter(all_deps, fn dep -> not ok?(dep) end))
-             |> Enum.uniq(&(&1.app))
-    end
+    deps =
+      if Enum.all?(all_deps, &available?/1) do
+        Enum.uniq_by(with_depending(deps, all_deps), &(&1.app))
+      else
+        deps
+      end
 
     # Merge the new lock on top of the old to guarantee we don't
     # leave out things that could not be fetched and save it.
-    lock = Dict.merge(old_lock, new_lock)
+    lock = Map.merge(old_lock, new_lock)
     Mix.Dep.Lock.write(lock)
-
     mark_as_fetched(deps)
+
+    # See if any of the deps diverged and abort.
+    show_diverged!(Enum.filter(all_deps, &Mix.Dep.diverged?/1))
+
     {apps, all_deps}
   end
 
   defp mark_as_fetched(deps) do
     # If the dependency is fetchable, we are going to write a .fetch
     # file to it. Each build, regardless of the environment and location,
-    # will compared against this .fetch file to know if the depednency
+    # will compared against this .fetch file to know if the dependency
     # needs recompiling.
     _ = for %Mix.Dep{scm: scm, opts: opts} <- deps, scm.fetchable? do
       File.touch! Path.join opts[:dest], ".fetch"
@@ -133,7 +137,7 @@ defmodule Mix.Dep.Fetcher do
     dep_names = Enum.map(deps, fn dep -> dep.app end)
 
     parents = Enum.filter all_deps, fn dep ->
-      Enum.any?(dep.deps, &(&1 in dep_names))
+      Enum.any?(dep.deps, &(&1.app in dep_names))
     end
 
     do_with_depending(parents, all_deps) ++ parents
@@ -143,5 +147,18 @@ defmodule Mix.Dep.Fetcher do
     Enum.map(given, fn(app) ->
       if is_binary(app), do: String.to_atom(app), else: app
     end)
+  end
+
+  defp show_diverged!([]), do: :ok
+  defp show_diverged!(deps) do
+    shell = Mix.shell
+    shell.error "Dependencies have diverged:"
+
+    Enum.each deps, fn(dep) ->
+      shell.error "* #{Mix.Dep.format_dep dep}"
+      shell.error "  #{Mix.Dep.format_status dep}"
+    end
+
+    Mix.raise "Can't continue due to errors on dependencies"
   end
 end

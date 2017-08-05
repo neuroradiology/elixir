@@ -1,106 +1,75 @@
 defmodule Kernel.SpecialForms do
   @moduledoc """
-  In this module we define Elixir special forms. Special forms
-  cannot be overridden by the developer and are the basic
-  building blocks of Elixir code.
+  Special forms are the basic building blocks of Elixir, and therefore
+  cannot be overridden by the developer.
 
-  Some of those forms are lexical (like `alias`, `case`, etc).
-  The macros `{}` and `<<>>` are also special forms used to define
-  tuple and binary data structures respectively.
+  We define them in this module. Some of these forms are lexical (like
+  `alias/2`, `case/2`, etc). The macros `{}` and `<<>>` are also special
+  forms used to define tuple and binary data structures respectively.
 
-  This module also documents Elixir's pseudo variables (`__ENV__`,
-  `__MODULE__`, `__DIR__` and `__CALLER__`). Pseudo variables return
-  information about Elixir's compilation environment and can only
-  be read, never assigned to.
+  This module also documents macros that return information about Elixir's
+  compilation environment, such as (`__ENV__/0`, `__MODULE__/0`, `__DIR__/0` and `__CALLER__/0`).
 
-  Finally, it also documents 2 special forms, `__block__` and
-  `__aliases__`, which are not intended to be called directly by the
+  Finally, it also documents two special forms, `__block__/1` and
+  `__aliases__/1`, which are not intended to be called directly by the
   developer but they appear in quoted contents since they are essential
   in Elixir's constructs.
   """
 
+  defmacrop error!(args) do
+    quote do
+      _ = unquote(args)
+      message = "Elixir's special forms are expanded by the compiler and must not be invoked directly"
+      :erlang.error(RuntimeError.exception(message))
+    end
+  end
+
   @doc """
   Creates a tuple.
 
-  Only two item tuples are considered literals in Elixir.
-  Therefore all other tuples are represented in the AST
-  as a call to the special form `:{}`.
+  More information about the tuple data type and about functions to manipulate
+  tuples can be found in the `Tuple` module; some functions for working with
+  tuples are also available in `Kernel` (such as `Kernel.elem/2` or
+  `Kernel.tuple_size/1`).
 
-  Conveniences for manipulating tuples can be found in the
-  `Tuple` module. Some functions for working with tuples are
-  also available in `Kernel`, namely `Kernel.elem/2`,
-  `Kernel.put_elem/3` and `Kernel.tuple_size/1`.
+  ## AST representation
 
-  ## Examples
+  Only two-item tuples are considered literals in Elixir and return themselves
+  when quoted. Therefore, all other tuples are represented in the AST as calls to
+  the `:{}` special form.
 
-      iex> {1, 2, 3}
-      {1, 2, 3}
+      iex> quote do
+      ...>   {1, 2}
+      ...> end
+      {1, 2}
 
-      iex> quote do: {1, 2, 3}
-      {:{}, [], [1,2,3]}
+      iex> quote do
+      ...>   {1, 2, 3}
+      ...> end
+      {:{}, [], [1, 2, 3]}
 
   """
-  defmacro unquote(:{})(args)
+  defmacro unquote(:{})(args), do: error!([args])
 
   @doc """
   Creates a map.
 
-  Maps are key-value stores where keys are compared
-  using the match operator (`===`). Maps can be created with
-  the `%{}` special form where keys are associated via `=>`:
-
-      %{1 => 2}
-
-  Maps also support the keyword notation, as other special forms,
-  as long as they are at the end of the argument list:
-
-      %{hello: :world, with: :keywords}
-      %{:hello => :world, with: :keywords}
-
-  If a map has duplicated keys, the last key will always have
-  higher precedence:
-
-      iex> %{a: :b, a: :c}
-      %{a: :c}
-
-  Conveniences for manipulating maps can be found in the
-  `Map` module.
-
-  ## Access syntax
-
-  Besides the access functions available in the `Map` module,
-  like `Map.get/3` and `Map.fetch/2`, a map can be accessed using the
-  `.` operator:
-
-      iex> map = %{a: :b}
-      iex> map.a
-      :b
-
-  Note that the `.` operator expects the field to exist in the map.
-  If not, an `ArgumentError` is raised.
-
-  ## Update syntax
-
-  Maps also support an update syntax:
-
-      iex> map = %{:a => :b}
-      iex> %{map | :a => :c}
-      %{:a => :c}
-
-  Notice the update syntax requires the given keys to exist.
-  Trying to update a key that does not exist will raise an `ArgumentError`.
+  See the `Map` module for more information about maps, their syntax, and ways to
+  access and manipulate them.
 
   ## AST representation
 
-  Regardless if `=>` or the keywords syntax is used, Maps are
-  always represented internally as a list of two-items tuples
-  for simplicity:
+  Regardless of whether `=>` or the keyword syntax is used, key-value pairs in
+  maps are always represented internally as a list of two-element tuples for
+  simplicity:
 
-      iex> quote do: %{:a => :b, c: :d}
-      {:%{}, [], [{:a, :b}, {:c, :d}]}
+      iex> quote do
+      ...>   %{"a" => :b, c: :d}
+      ...> end
+      {:%{}, [], [{"a", :b}, {:c, :d}]}
 
   """
-  defmacro unquote(:%{})(args)
+  defmacro unquote(:%{})(args), do: error!([args])
 
   @doc """
   Creates a struct.
@@ -109,17 +78,7 @@ defmodule Kernel.SpecialForms do
   default values for keys, tags to be used in polymorphic
   dispatches and compile time assertions.
 
-  To define a struct, you just need to implement the `__struct__/0`
-  function in a module:
-
-      defmodule User do
-        def __struct__ do
-          %{name: "john", age: 27}
-        end
-      end
-
-  In practice though, structs are usually defined with the
-  `Kernel.defstruct/1` macro:
+  Structs are usually defined with the `Kernel.defstruct/1` macro:
 
       defmodule User do
         defstruct name: "john", age: 27
@@ -129,7 +88,7 @@ defmodule Kernel.SpecialForms do
 
       %User{}
 
-  Underneath a struct is just a map with a `__struct__` field
+  Underneath a struct is just a map with a `:__struct__` key
   pointing to the `User` module:
 
       %User{} == %{__struct__: User, name: "john", age: 27}
@@ -139,13 +98,6 @@ defmodule Kernel.SpecialForms do
   `:full_name` in the `User` struct:
 
       %User{full_name: "john doe"}
-
-  Note that a struct specifies a minimum set of keys required
-  for operations. Other keys can be added to structs via the
-  regular map operations:
-
-      user = %User{}
-      Map.put(user, :a_non_struct_key, :value)
 
   An update operation specific for structs is also available:
 
@@ -159,150 +111,212 @@ defmodule Kernel.SpecialForms do
   any of the protocols implemented for maps. Check
   `Kernel.defprotocol/2` for more information on how structs
   can be used with protocols for polymorphic dispatch. Also
-  see `Kernel.struct/2` for examples on how to create and update
-  structs dynamically.
+  see `Kernel.struct/2` and `Kernel.struct!/2` for examples on
+  how to create and update structs dynamically.
   """
-  defmacro unquote(:%)(struct, map)
+  defmacro unquote(:%)(struct, map), do: error!([struct, map])
 
   @doc """
   Defines a new bitstring.
 
   ## Examples
 
-      iex> << 1, 2, 3 >>
-      << 1, 2, 3 >>
+      iex> <<1, 2, 3>>
+      <<1, 2, 3>>
 
-  ## Bitstring types
+  ## Types
 
-  A bitstring is made of many segments. Each segment has a
-  type, which defaults to integer:
+  A bitstring is made of many segments and each segment has a
+  type. There are 9 types used in bitstrings:
+
+  - `integer`
+  - `float`
+  - `bits` (alias for `bitstring`)
+  - `bitstring`
+  - `binary`
+  - `bytes` (alias for `binary`)
+  - `utf8`
+  - `utf16`
+  - `utf32`
+
+  When no type is specified, the default is `integer`:
 
       iex> <<1, 2, 3>>
       <<1, 2, 3>>
 
   Elixir also accepts by default the segment to be a literal
-  string or a literal char list, which are by expanded to integers:
+  string or a literal charlist, which are by default expanded to integers:
 
       iex> <<0, "foo">>
       <<0, 102, 111, 111>>
 
-  Any other type needs to be explicitly tagged. For example,
-  in order to store a float type in the binary, one has to do:
-
-      iex> <<3.14 :: float>>
-      <<64, 9, 30, 184, 81, 235, 133, 31>>
-
-  This also means that variables need to be explicitly tagged,
-  otherwise Elixir defaults to integer:
+  Variables or any other type need to be explicitly tagged:
 
       iex> rest = "oo"
       iex> <<102, rest>>
       ** (ArgumentError) argument error
 
-  We can solve this by explicitly tagging it as a binary:
+  We can solve this by explicitly tagging it as `binary`:
 
-      <<102, rest :: binary>>
-
-  The type can be integer, float, bitstring/bits, binary/bytes,
-  utf8, utf16 or utf32, e.g.:
-
-      <<102 :: float, rest :: binary>>
-
-  An integer can be any arbitrary precision integer. A float is an
-  IEEE 754 binary32 or binary64 floating point number. A bitstring
-  is an arbitrary series of bits. A binary is a special case of
-  bitstring that has a total size divisible by 8.
-
-  The utf8, utf16, and utf32 types are for unicode codepoints. They
-  can also be applied to literal strings and char lists:
-
-      iex> <<"foo" :: utf16>>
-      <<0,102,0,111,0,111>>
-
-  The bits type is an alias for bitstring. The bytes type is an
-  alias for binary.
-
-  The signedness can also be given as signed or unsigned. The
-  signedness only matters for matching and relevant only for
-  integers. If unspecified, it defaults to unsigned. Example:
-
-      iex> <<-100 :: signed, _rest :: binary>> = <<-100, "foo">>
-      <<156,102,111,111>>
-
-  This match would have failed if we did not specify that the
-  value -100 is signed. If we're matching into a variable instead
-  of a value, the signedness won't be checked; rather, the number
-  will simply be interpreted as having the given (or implied)
-  signedness, e.g.:
-
-      iex> <<val, _rest :: binary>> = <<-100, "foo">>
-      iex> val
-      156
-
-  Here, `val` is interpreted as unsigned.
-
-  The endianness of a segment can be big, little or native (the
-  latter meaning it will be resolved at VM load time). Many options
-  can be given by using `-` as separator:
-
-      <<102 :: integer-native, rest :: binary>>
-
-  Or:
-
-      <<102 :: unsigned-big-integer, rest :: binary>>
-
-  And so on.
-
-  Endianness only makes sense for integers and some UTF code
-  point types (utf16 and utf32).
-
-  Finally, we can also specify size and unit for each segment. The
-  unit is multiplied by the size to give the effective size of
-  the segment in bits. The default unit for integers, floats,
-  and bitstrings is 1. For binaries, it is 8.
-
-  Since integers are default, the default unit is 1. The example below
-  matches because the string "foo" takes 24 bits and we match it
-  against a segment of 24 bits, 8 of which are taken by the integer
-  102 and the remaining 16 bits are specified on the rest.
-
-      iex> <<102, _rest :: size(16)>> = "foo"
+      iex> rest = "oo"
+      iex> <<102, rest::binary>>
       "foo"
 
-  We can also match by specifying size and unit explicitly:
+  The `utf8`, `utf16`, and `utf32` types are for Unicode codepoints. They
+  can also be applied to literal strings and charlists:
 
-      iex> <<102, _rest :: size(2)-unit(8)>> = "foo"
-      "foo"
+      iex> <<"foo"::utf16>>
+      <<0, 102, 0, 111, 0, 111>>
+      iex> <<"foo"::utf32>>
+      <<0, 0, 0, 102, 0, 0, 0, 111, 0, 0, 0, 111>>
 
-  However, if we expect a size of 32, it won't match:
+  ## Options
 
-      iex> <<102, _rest :: size(32)>> = "foo"
-      ** (MatchError) no match of right hand side value: "foo"
+  Many options can be given by using `-` as separator. Order is
+  arbitrary, so the following are all equivalent:
 
-  Size and unit are not applicable to utf8, utf16, and utf32.
+      <<102::integer-native, rest::binary>>
+      <<102::native-integer, rest::binary>>
+      <<102::unsigned-big-integer, rest::binary>>
+      <<102::unsigned-big-integer-size(8), rest::binary>>
+      <<102::unsigned-big-integer-8, rest::binary>>
+      <<102::8-integer-big-unsigned, rest::binary>>
+      <<102, rest::binary>>
 
-  The default size for integers is 8. For floats, it is 64. For
-  binaries, it is the size of the binary. Only the last binary
-  in a binary match can use the default size (all others must
-  have their size specified explicitly).
+  ### Unit and Size
+
+  The length of the match is equal to the `unit` (a number of bits) times the
+  `size` (the number of repeated segments of length `unit`).
+
+  Type      | Default Unit
+  --------- | ------------
+  `integer` | 1 bit
+  `float`   | 1 bit
+  `binary`  | 8 bits
+
+  Sizes for types are a bit more nuanced. The default size for integers is 8.
+
+  For floats, it is 64. For floats, `size * unit` must result in 32 or 64,
+  corresponding to [IEEE 754](https://en.wikipedia.org/wiki/IEEE_floating_point)
+  binary32 and binary64, respectively.
+
+  For binaries, the default is the size of the binary. Only the last binary in a
+  match can use the default size. All others must have their size specified
+  explicitly, even if the match is unambiguous. For example:
+
+      iex> <<name::binary-size(5), " the ", species::binary>> = <<"Frank the Walrus">>
+      "Frank the Walrus"
+      iex> {name, species}
+      {"Frank", "Walrus"}
+
+  Failing to specify the size for the non-last causes compilation to fail:
+
+      <<name::binary, " the ", species::binary>> = <<"Frank the Walrus">>
+      ** (CompileError): a binary field without size is only allowed at the end of a binary pattern
+
+  #### Shortcut Syntax
 
   Size and unit can also be specified using a syntax shortcut
   when passing integer values:
 
-      << x :: 8 >> == << x :: size(8) >>
-      << x :: 8 * 4 >> == << x :: size(8)-unit(4) >>
-      << x :: _ * 4 >> == << x :: unit(4) >>
+      iex> x = 1
+      iex> <<x::8>> == <<x::size(8)>>
+      true
+      iex> <<x::8*4>> == <<x::size(8)-unit(4)>>
+      true
 
   This syntax reflects the fact the effective size is given by
   multiplying the size by the unit.
 
-  For floats, `size * unit` must result in 32 or 64, corresponding
-  to binary32 and binary64, respectively.
+  ### Modifiers
+
+  Some types have associated modifiers to clear up ambiguity in byte
+  representation.
+
+  Modifier             | Relevant Type(s)
+  -------------------- | ----------------
+  `signed`             | `integer`
+  `unsigned` (default) | `integer`
+  `little`             | `integer`, `float`, `utf16`, `utf32`
+  `big` (default)      | `integer`, `float`, `utf16`, `utf32`
+  `native`             | `integer`, `utf16`, `utf32`
+
+  ### Sign
+
+  Integers can be `signed` or `unsigned`, defaulting to `unsigned`.
+
+      iex> <<int::integer>> = <<-100>>
+      <<156>>
+      iex> int
+      156
+      iex> <<int::integer-signed>> = <<-100>>
+      <<156>>
+      iex> int
+      -100
+
+  `signed` and `unsigned` are only used for matching binaries (see below) and
+  are only used for integers.
+
+      iex> <<-100::signed, _rest::binary>> = <<-100, "foo">>
+      <<156, 102, 111, 111>>
+
+  ### Endianness
+
+  Elixir has three options for endianness: `big`, `little`, and `native`.
+  The default is `big`:
+
+      iex> <<number::little-integer-size(16)>> = <<0, 1>>
+      <<0, 1>>
+      iex> number
+      256
+      iex> <<number::big-integer-size(16)>> = <<0, 1>>
+      <<0, 1>>
+      iex> number
+      1
+
+  `native` is determined by the VM at startup and will depend on the
+  host operating system.
+
+  ## Binary/Bitstring Matching
+
+  Binary matching is a powerful feature in Elixir that is useful for extracting
+  information from binaries as well as pattern matching.
+
+  Binary matching can be used by itself to extract information from binaries:
+
+      iex> <<"Hello, ", place::binary>> = "Hello, World"
+      "Hello, World"
+      iex> place
+      "World"
+
+  Or as a part of function definitions to pattern match:
+
+      defmodule ImageTyper
+        @png_signature <<137::size(8), 80::size(8), 78::size(8), 71::size(8),
+                         13::size(8), 10::size(8), 26::size(8), 10::size(8)>>
+        @jpg_signature <<255::size(8), 216::size(8)>>
+
+        def type(<<@png_signature, rest::binary>>), do: :png
+        def type(<<@jpg_signature, rest::binary>>), do: :jpg
+        def type(_), do :unknown
+      end
+
+  ### Performance & Optimizations
+
+  The Erlang compiler can provide a number of optimizations on binary creation
+  and matching. To see optimization output, set the `bin_opt_info` compiler
+  option:
+
+      ERL_COMPILER_OPTIONS=bin_opt_info mix compile
+
+  To learn more about specific optimizations and performance considerations,
+  check out
+  [Erlang's Efficiency Guide on handling binaries](http://www.erlang.org/doc/efficiency_guide/binaryhandling.html).
   """
-  defmacro unquote(:<<>>)(args)
+  defmacro unquote(:<<>>)(args), do: error!([args])
 
   @doc """
-  Defines a remote call or an alias.
+  Defines a remote call, a call to an anonymous function, or an alias.
 
   The dot (`.`) in Elixir can be used for remote calls:
 
@@ -310,8 +324,16 @@ defmodule Kernel.SpecialForms do
       "foo"
 
   In this example above, we have used `.` to invoke `downcase` in the
-  `String` alias, passing "FOO" as argument. We can also use the dot
-  for creating aliases:
+  `String` module, passing `"FOO"` as argument.
+
+  The dot may be used to invoke anonymous functions too:
+
+      iex> (fn(n) -> n end).(7)
+      7
+
+  in which case there is a function on the left hand side.
+
+  We can also use the dot for creating aliases:
 
       iex> Hello.World
       Hello.World
@@ -329,22 +351,29 @@ defmodule Kernel.SpecialForms do
       iex> Kernel.Sample
       Kernel.Sample
 
-      iex> Kernel.length([1,2,3])
+      iex> Kernel.length([1, 2, 3])
       3
 
       iex> Kernel.+(1, 2)
       3
 
-      iex> Kernel."length"([1,2,3])
+      iex> Kernel."length"([1, 2, 3])
       3
 
       iex> Kernel.'+'(1, 2)
       3
 
-  Note that `Kernel."HELLO"` will be treated as a remote call and not an alias.
+  Note that `Kernel."FUNCTION_NAME"` will be treated as a remote call and not an alias.
   This choice was done so every time single- or double-quotes are used, we have
   a remote call regardless of the quote contents. This decision is also reflected
   in the quoted expressions discussed below.
+
+  When the dot is used to invoke an anonymous function there is only one
+  operand, but it is still written using a postfix notation:
+
+      iex> negate = fn(n) -> -n end
+      iex> negate.(7)
+      -7
 
   ## Quoted expression
 
@@ -352,7 +381,9 @@ defmodule Kernel.SpecialForms do
   forms. When the right side starts with a lowercase letter (or
   underscore):
 
-      iex> quote do: String.downcase("FOO")
+      iex> quote do
+      ...>   String.downcase("FOO")
+      ...> end
       {{:., [], [{:__aliases__, [alias: false], [:String]}, :downcase]}, [], ["FOO"]}
 
   Notice we have an inner tuple, containing the atom `:.` representing
@@ -362,22 +393,35 @@ defmodule Kernel.SpecialForms do
 
   This tuple follows the general quoted expression structure in Elixir,
   with the name as first argument, some keyword list as metadata as second,
-  and the number of arguments as third. In this case, the arguments is the
-  alias `String` and the atom `:downcase`. The second argument is **always**
-  an atom:
+  and the list of arguments as third. In this case, the arguments are the
+  alias `String` and the atom `:downcase`. The second argument in a remote call
+  is **always** an atom regardless of the literal used in the call:
 
-      iex> quote do: String."downcase"("FOO")
+      iex> quote do
+      ...>   String."downcase"("FOO")
+      ...> end
       {{:., [], [{:__aliases__, [alias: false], [:String]}, :downcase]}, [], ["FOO"]}
 
   The tuple containing `:.` is wrapped in another tuple, which actually
   represents the function call, and has `"FOO"` as argument.
 
+  In the case of calls to anonymous functions, the inner tuple with the dot
+  special form has only one argument, reflecting the fact that the operator is
+  unary:
+
+      iex> quote do
+      ...>   negate.(0)
+      ...> end
+      {{:., [], [{:negate, [], __MODULE__}]}, [], [0]}
+
   When the right side is an alias (i.e. starts with uppercase), we get instead:
 
-      iex> quote do: Hello.World
+      iex> quote do
+      ...>   Hello.World
+      ...> end
       {:__aliases__, [alias: false], [:Hello, :World]}
 
-  We got into more details about aliases in the `__aliases__` special form
+  We go into more details about aliases in the `__aliases__/1` special form
   documentation.
 
   ## Unquoting
@@ -385,27 +429,31 @@ defmodule Kernel.SpecialForms do
   We can also use unquote to generate a remote call in a quoted expression:
 
       iex> x = :downcase
-      iex> quote do: String.unquote(x)("FOO")
+      iex> quote do
+      ...>   String.unquote(x)("FOO")
+      ...> end
       {{:., [], [{:__aliases__, [alias: false], [:String]}, :downcase]}, [], ["FOO"]}
 
-  Similar to `Kernel."HELLO"`, `unquote(x)` will always generate a remote call,
+  Similar to `Kernel."FUNCTION_NAME"`, `unquote(x)` will always generate a remote call,
   independent of the value of `x`. To generate an alias via the quoted expression,
   one needs to rely on `Module.concat/2`:
 
       iex> x = Sample
-      iex> quote do: Module.concat(String, unquote(x))
+      iex> quote do
+      ...>   Module.concat(String, unquote(x))
+      ...> end
       {{:., [], [{:__aliases__, [alias: false], [:Module]}, :concat]}, [],
        [{:__aliases__, [alias: false], [:String]}, Sample]}
 
   """
-  defmacro unquote(:.)(left, right)
+  defmacro unquote(:.)(left, right), do: error!([left, right])
 
   @doc """
-  `alias` is used to setup aliases, often useful with modules names.
+  `alias/2` is used to setup aliases, often useful with modules names.
 
   ## Examples
 
-  `alias` can be used to setup an alias for any module:
+  `alias/2` can be used to setup an alias for any module:
 
       defmodule Math do
         alias MyKeyword, as: Keyword
@@ -430,9 +478,19 @@ defmodule Kernel.SpecialForms do
 
       alias Foo.Bar.Baz, as: Baz
 
+  We can also alias multiple modules in one line:
+
+      alias Foo.{Bar, Baz, Biz}
+
+  Is the same as:
+
+      alias Foo.Bar
+      alias Foo.Baz
+      alias Foo.Biz
+
   ## Lexical scope
 
-  `import`, `require` and `alias` are called directives and all
+  `import/2`, `require/2` and `alias/2` are called directives and all
   have lexical scope. This means you can set up aliases inside
   specific functions and it won't affect the overall scope.
 
@@ -446,20 +504,19 @@ defmodule Kernel.SpecialForms do
   was not explicitly defined.
 
   Both warning behaviours could be changed by explicitly
-  setting the `:warn` option to true or false.
+  setting the `:warn` option to `true` or `false`.
   """
-  defmacro alias(module, opts)
+  defmacro alias(module, opts), do: error!([module, opts])
 
   @doc """
-  Requires a given module to be compiled and loaded.
+  Requires a module in order to use its macros.
 
   ## Examples
 
-  Notice that usually modules should not be required before usage,
-  the only exception is if you want to use the macros from a module.
-  In such cases, you need to explicitly require them.
+  Public functions in modules are globally available, but in order to use
+  macros, you need to opt-in by requiring the module they are defined in.
 
-  Let's suppose you created your own `if` implementation in the module
+  Let's suppose you created your own `if/2` implementation in the module
   `MyMacros`. If you want to invoke it, you need to first explicitly
   require the `MyMacros`:
 
@@ -472,16 +529,16 @@ defmodule Kernel.SpecialForms do
 
   ## Alias shortcut
 
-  `require` also accepts `as:` as an option so it automatically sets
-  up an alias. Please check `alias` for more information.
+  `require/2` also accepts `as:` as an option so it automatically sets
+  up an alias. Please check `alias/2` for more information.
 
   """
-  defmacro require(module, opts)
+  defmacro require(module, opts), do: error!([module, opts])
 
   @doc """
-  Imports function and macros from other modules.
+  Imports functions and macros from other modules.
 
-  `import` allows one to easily access functions or macros from
+  `import/2` allows one to easily access functions or macros from
   others modules without using the qualified name.
 
   ## Examples
@@ -492,7 +549,7 @@ defmodule Kernel.SpecialForms do
 
       iex> import List
       iex> flatten([1, [2], 3])
-      [1,2,3]
+      [1, 2, 3]
 
   ## Selector
 
@@ -515,26 +572,34 @@ defmodule Kernel.SpecialForms do
       import List, only: [flatten: 1]
       import String, except: [split: 2]
 
-  Notice that calling `except` for a previously declared `import`
+  Notice that calling `except` for a previously declared `import/2`
   simply filters the previously imported elements. For example:
 
-      import List, only: [flatten: 1, keyfind: 3]
+      import List, only: [flatten: 1, keyfind: 4]
       import List, except: [flatten: 1]
 
-  After the two import calls above, only `List.keyfind/3` will be
+  After the two import calls above, only `List.keyfind/4` will be
   imported.
+
+  ## Underscore functions
+
+  By default functions starting with `_` are not imported. If you really want
+  to import a function starting with `_` you must explicitly include it in the
+  `:only` selector.
+
+      import File.Stream, only: [__build__: 3]
 
   ## Lexical scope
 
-  It is important to notice that `import` is lexical. This means you
+  It is important to notice that `import/2` is lexical. This means you
   can import specific macros inside specific functions:
 
       defmodule Math do
         def some_function do
-          # 1) Disable `if/2` from Kernel
+          # 1) Disable "if/2" from Kernel
           import Kernel, except: [if: 2]
 
-          # 2) Require the new `if` macro from MyMacros
+          # 2) Require the new "if/2" macro from MyMacros
           import MyMacros
 
           # 3) Use the new macro
@@ -558,7 +623,7 @@ defmodule Kernel.SpecialForms do
   was not explicitly defined.
 
   Both warning behaviours could be changed by explicitly
-  setting the `:warn` option to true or false.
+  setting the `:warn` option to `true` or `false`.
 
   ## Ambiguous function/macro names
 
@@ -567,7 +632,7 @@ defmodule Kernel.SpecialForms do
   if an ambiguous call to `foo/1` is actually made; that is, the
   errors are emitted lazily, not eagerly.
   """
-  defmacro import(module, opts)
+  defmacro import(module, opts), do: error!([module, opts])
 
   @doc """
   Returns the current environment information as a `Macro.Env` struct.
@@ -575,23 +640,23 @@ defmodule Kernel.SpecialForms do
   In the environment you can access the current filename,
   line numbers, set up aliases, the current function and others.
   """
-  defmacro __ENV__
+  defmacro __ENV__, do: error!([])
 
   @doc """
   Returns the current module name as an atom or `nil` otherwise.
 
-  Although the module can be accessed in the `__ENV__`, this macro
+  Although the module can be accessed in the `__ENV__/0`, this macro
   is a convenient shortcut.
   """
-  defmacro __MODULE__
+  defmacro __MODULE__, do: error!([])
 
   @doc """
-  Returns the current directory as a binary.
+  Returns the absolute path of the directory of the current file as a binary.
 
   Although the directory can be accessed as `Path.dirname(__ENV__.file)`,
   this macro is a convenient shortcut.
   """
-  defmacro __DIR__
+  defmacro __DIR__, do: error!([])
 
   @doc """
   Returns the current calling environment as a `Macro.Env` struct.
@@ -599,29 +664,30 @@ defmodule Kernel.SpecialForms do
   In the environment you can access the filename, line numbers,
   set up aliases, the function and others.
   """
-  defmacro __CALLER__
+  defmacro __CALLER__, do: error!([])
 
   @doc """
-  Accesses an already bound variable in match clauses.
+  Accesses an already bound variable in match clauses. Also known as the pin operator.
 
   ## Examples
 
   Elixir allows variables to be rebound via static single assignment:
 
       iex> x = 1
-      iex> x = 2
+      iex> x = x + 1
       iex> x
       2
 
   However, in some situations, it is useful to match against an existing
-  value, instead of rebinding. This can be done with the `^` special form:
+  value, instead of rebinding. This can be done with the `^` special form,
+  colloquially known as the pin operator:
 
       iex> x = 1
       iex> ^x = List.first([1])
       iex> ^x = List.first([2])
       ** (MatchError) no match of right hand side value: 2
 
-  Note that `^` always refers to the value of x prior to the match. The
+  Note that `^x` always refers to the value of `x` prior to the match. The
   following example will match:
 
       iex> x = 0
@@ -630,15 +696,43 @@ defmodule Kernel.SpecialForms do
       1
 
   """
-  defmacro ^(var)
+  defmacro ^(var), do: error!([var])
+
+  @doc """
+  Matches the value on the right against the pattern on the left.
+  """
+  defmacro left = right, do: error!([left, right])
+
+  @doc """
+  Used by types and bitstrings to specify types.
+
+  This operator is used in two distinct occasions in Elixir.
+  It is used in typespecs to specify the type of a variable,
+  function or of a type itself:
+
+      @type number :: integer | float
+      @spec add(number, number) :: number
+
+  It may also be used in bit strings to specify the type
+  of a given bit segment:
+
+      <<int::integer-little, rest::bits>> = bits
+
+  Read the documentation on the `Typespec` page and
+  `<<>>/1` for more information on typespecs and
+  bitstrings respectively.
+  """
+  defmacro left :: right, do: error!([left, right])
 
   @doc ~S"""
   Gets the representation of any expression.
 
   ## Examples
 
-      quote do: sum(1, 2, 3)
-      #=> {:sum, [], [1, 2, 3]}
+      iex> quote do
+      ...>   sum(1, 2, 3)
+      ...> end
+      {:sum, [], [1, 2, 3]}
 
   ## Explanation
 
@@ -662,17 +756,21 @@ defmodule Kernel.SpecialForms do
 
   ## Options
 
-    * `:unquote` - when false, disables unquoting. Useful when you have a quote
+    * `:unquote` - when `false`, disables unquoting. Useful when you have a quote
       inside another quote and want to control what quote is able to unquote.
 
     * `:location` - when set to `:keep`, keeps the current line and file from
       quote. Read the Stacktrace information section below for more
       information.
 
+    * `:generated` - marks the given chunk as generated so it does not emit warnings.
+      Currently it only works on special forms (for example, you can annotate a `case`
+      but not an `if`).
+
     * `:context` - sets the resolution context.
 
     * `:bind_quoted` - passes a binding to the macro. Whenever a binding is
-      given, `unquote` is automatically disabled.
+      given, `unquote/1` is automatically disabled.
 
   ## Quote literals
 
@@ -688,7 +786,7 @@ defmodule Kernel.SpecialForms do
 
   ## Quote and macros
 
-  `quote` is commonly used with macros for code generation. As an exercise,
+  `quote/2` is commonly used with macros for code generation. As an exercise,
   let's define a macro that multiplies a number by itself (squared). Note
   there is no reason to define such as a macro (and it would actually be
   seen as a bad practice), but it is simple enough that it allows us to focus
@@ -724,7 +822,7 @@ defmodule Kernel.SpecialForms do
 
       Returning 5
       Returning 5
-      25
+      Got 25
 
   Notice how "Returning 5" was printed twice, instead of just once. This is
   because a macro receives an expression and not a value (which is what we
@@ -756,7 +854,7 @@ defmodule Kernel.SpecialForms do
   once.
 
   In fact, this pattern is so common that most of the times you will want
-  to use the `bind_quoted` option with `quote`:
+  to use the `bind_quoted` option with `quote/2`:
 
       defmodule Math do
         defmacro squared(x) do
@@ -784,7 +882,7 @@ defmodule Kernel.SpecialForms do
 
       import Math
       squared(5)
-      x #=> ** (RuntimeError) undefined function or variable: x
+      x #=> ** (CompileError) undefined variable x or undefined function x/0
 
   We can see that `x` did not leak to the user context. This happens
   because Elixir macros are hygienic, a topic we will discuss at length
@@ -796,7 +894,9 @@ defmodule Kernel.SpecialForms do
 
       defmodule Hygiene do
         defmacro no_interference do
-          quote do: a = 1
+          quote do
+            a = 1
+          end
         end
       end
 
@@ -808,13 +908,15 @@ defmodule Kernel.SpecialForms do
 
   In the example above, `a` returns 10 even if the macro
   is apparently setting it to 1 because variables defined
-  in the macro does not affect the context the macro is executed in.
+  in the macro do not affect the context the macro is executed in.
   If you want to set or get a variable in the caller's context, you
   can do it with the help of the `var!` macro:
 
       defmodule NoHygiene do
         defmacro interference do
-          quote do: var!(a) = 1
+          quote do
+            var!(a) = 1
+          end
         end
       end
 
@@ -843,7 +945,7 @@ defmodule Kernel.SpecialForms do
 
       Hygiene.write
       Hygiene.read
-      #=> ** (RuntimeError) undefined function or variable: a
+      #=> ** (RuntimeError) undefined variable a or undefined function a/0
 
   For such, you can explicitly pass the current module scope as
   argument:
@@ -872,34 +974,38 @@ defmodule Kernel.SpecialForms do
   Consider the following example:
 
       defmodule Hygiene do
-        alias HashDict, as: D
+        alias Map, as: M
 
         defmacro no_interference do
-          quote do: D.new
+          quote do
+            M.new
+          end
         end
       end
 
       require Hygiene
-      Hygiene.no_interference #=> #HashDict<[]>
+      Hygiene.no_interference #=> %{}
 
-  Notice that, even though the alias `D` is not available
+  Notice that, even though the alias `M` is not available
   in the context the macro is expanded, the code above works
-  because `D` still expands to `HashDict`.
+  because `M` still expands to `Map`.
 
   Similarly, even if we defined an alias with the same name
   before invoking a macro, it won't affect the macro's result:
 
       defmodule Hygiene do
-        alias HashDict, as: D
+        alias Map, as: M
 
         defmacro no_interference do
-          quote do: D.new
+          quote do
+            M.new
+          end
         end
       end
 
       require Hygiene
-      alias SomethingElse, as: D
-      Hygiene.no_interference #=> #HashDict<[]>
+      alias SomethingElse, as: M
+      Hygiene.no_interference #=> %{}
 
   In some cases, you want to access an alias or a module defined
   in the caller. For such, you can use the `alias!` macro:
@@ -907,13 +1013,17 @@ defmodule Kernel.SpecialForms do
       defmodule Hygiene do
         # This will expand to Elixir.Nested.hello
         defmacro no_interference do
-          quote do: Nested.hello
+          quote do
+            Nested.hello
+          end
         end
 
         # This will expand to Nested.hello for
         # whatever is Nested in the caller
         defmacro interference do
-          quote do: alias!(Nested).hello
+          quote do
+            alias!(Nested).hello
+          end
         end
       end
 
@@ -936,54 +1046,54 @@ defmodule Kernel.SpecialForms do
   following code:
 
       defmodule Hygiene do
-        defmacrop get_size do
+        defmacrop get_length do
           quote do
-            size("hello")
+            length([1, 2, 3])
           end
         end
 
-        def return_size do
-          import Kernel, except: [size: 1]
-          get_size
+        def return_length do
+          import Kernel, except: [length: 1]
+          get_length
         end
       end
 
-      Hygiene.return_size #=> 5
+      Hygiene.return_length #=> 3
 
-  Notice how `return_size` returns 5 even though the `size/1`
-  function is not imported. In fact, even if `return_size` imported
-  a function from another module, it wouldn't affect the function
-  result:
+  Notice how `Hygiene.return_length/0` returns `3` even though the `Kernel.length/1`
+  function is not imported. In fact, even if `return_length/0`
+  imported a function with the same name and arity from another
+  module, it wouldn't affect the function result:
 
-      def return_size do
-        import Dict, only: [size: 1]
-        get_size
+      def return_length do
+        import String, only: [length: 1]
+        get_length
       end
 
-  Calling this new `return_size` will still return 5 as result.
+  Calling this new `return_length/0` will still return `3` as result.
 
   Elixir is smart enough to delay the resolution to the latest
-  moment possible. So, if you call `size("hello")` inside quote,
-  but no `size/1` function is available, it is then expanded in
+  possible moment. So, if you call `length([1, 2, 3])` inside quote,
+  but no `length/1` function is available, it is then expanded in
   the caller:
 
       defmodule Lazy do
-        defmacrop get_size do
-          import Kernel, except: [size: 1]
+        defmacrop get_length do
+          import Kernel, except: [length: 1]
 
           quote do
-            size([a: 1, b: 2])
+            length("hello")
           end
         end
 
-        def return_size do
-          import Kernel, except: [size: 1]
-          import Dict, only: [size: 1]
-          get_size
+        def return_length do
+          import Kernel, except: [length: 1]
+          import String, only: [length: 1]
+          get_length
         end
       end
 
-      Lazy.return_size #=> 2
+      Lazy.return_length #=> 5
 
   ## Stacktrace information
 
@@ -1006,6 +1116,11 @@ defmodule Kernel.SpecialForms do
         import Adder
         defadd
       end
+
+      require Sample
+      Sample.add(:one, :two)
+      #=> ** (ArithmeticError) bad argument in arithmetic expression
+      #=>     adder.ex:5: Sample.add/2
 
   When using `location: :keep` and invalid arguments are given to
   `Sample.add/2`, the stacktrace information will point to the file
@@ -1064,7 +1179,7 @@ defmodule Kernel.SpecialForms do
 
   If you try to run our new macro, you will notice it won't
   even compile, complaining that the variables `k` and `v`
-  does not exist. This is because of the ambiguity: `unquote(k)`
+  do not exist. This is because of the ambiguity: `unquote(k)`
   can either be an unquote fragment, as previously, or a regular
   unquote as in `unquote(kv)`.
 
@@ -1086,7 +1201,7 @@ defmodule Kernel.SpecialForms do
   In fact, the `:bind_quoted` option is recommended every time
   one desires to inject a value into the quote.
   """
-  defmacro quote(opts, block)
+  defmacro quote(opts, block), do: error!([opts, block])
 
   @doc """
   Unquotes the given expression from inside a macro.
@@ -1098,7 +1213,9 @@ defmodule Kernel.SpecialForms do
   would be:
 
       value = 13
-      quote do: sum(1, value, 3)
+      quote do
+        sum(1, value, 3)
+      end
 
   Which would then return:
 
@@ -1106,25 +1223,29 @@ defmodule Kernel.SpecialForms do
 
   Which is not the expected result. For this, we use unquote:
 
-      value = 13
-      quote do: sum(1, unquote(value), 3)
-      #=> {:sum, [], [1, 13, 3]}
+      iex> value = 13
+      iex> quote do
+      ...>   sum(1, unquote(value), 3)
+      ...> end
+      {:sum, [], [1, 13, 3]}
 
   """
-  defmacro unquote(:unquote)(expr)
+  defmacro unquote(:unquote)(expr), do: error!([expr])
 
   @doc """
   Unquotes the given list expanding its arguments. Similar
-  to unquote.
+  to `unquote/1`.
 
   ## Examples
 
-      values = [2, 3, 4]
-      quote do: sum(1, unquote_splicing(values), 5)
-      #=> {:sum, [], [1, 2, 3, 4, 5]}
+      iex> values = [2, 3, 4]
+      iex> quote do
+      ...>   sum(1, unquote_splicing(values), 5)
+      ...> end
+      {:sum, [], [1, 2, 3, 4, 5]}
 
   """
-  defmacro unquote(:unquote_splicing)(expr)
+  defmacro unquote(:unquote_splicing)(expr), do: error!([expr])
 
   @doc ~S"""
   Comprehensions allow you to quickly build a data structure from
@@ -1143,7 +1264,7 @@ defmodule Kernel.SpecialForms do
       [2, 4, 6, 8]
 
       # A comprehension with two generators
-      iex> for x <- [1, 2], y <- [2, 3], do: x*y
+      iex> for x <- [1, 2], y <- [2, 3], do: x * y
       [2, 3, 4, 6]
 
   Filters can also be given:
@@ -1153,9 +1274,10 @@ defmodule Kernel.SpecialForms do
       [2, 4, 6]
 
   Note generators can also be used to filter as it removes any value
-  that doesn't match the left side of `<-`:
+  that doesn't match the pattern on the left side of `<-`:
 
-      iex> for {:user, name} <- [user: "john", admin: "john", user: "meg"] do
+      iex> users = [user: "john", admin: "meg", guest: "barbara"]
+      iex> for {type, name} when type != :guest <- users do
       ...>   String.upcase(name)
       ...> end
       ["JOHN", "MEG"]
@@ -1164,8 +1286,8 @@ defmodule Kernel.SpecialForms do
   need to organize bitstring streams:
 
       iex> pixels = <<213, 45, 132, 64, 76, 32, 76, 0, 0, 234, 32, 15>>
-      iex> for <<r::8, g::8, b::8 <- pixels >>, do: {r, g, b}
-      [{213,45,132},{64,76,32},{76,0,0},{234,32,15}]
+      iex> for <<r::8, g::8, b::8 <- pixels>>, do: {r, g, b}
+      [{213, 45, 132}, {64, 76, 32}, {76, 0, 0}, {234, 32, 15}]
 
   Variable assignments inside the comprehension, be it in generators,
   filters or inside the block, are not reflected outside of the
@@ -1192,7 +1314,65 @@ defmodule Kernel.SpecialForms do
       end
 
   """
-  defmacro for(args)
+  defmacro for(args), do: error!([args])
+
+  @doc """
+  Used to combine matching clauses.
+
+  Let's start with an example:
+
+      iex> opts = %{width: 10, height: 15}
+      iex> with {:ok, width} <- Map.fetch(opts, :width),
+      ...>      {:ok, height} <- Map.fetch(opts, :height),
+      ...>      do: {:ok, width * height}
+      {:ok, 150}
+
+  If all clauses match, the `do` block is executed, returning its result.
+  Otherwise the chain is aborted and the non-matched value is returned:
+
+      iex> opts = %{width: 10}
+      iex> with {:ok, width} <- Map.fetch(opts, :width),
+      ...>      {:ok, height} <- Map.fetch(opts, :height),
+      ...>      do: {:ok, width * height}
+      :error
+
+  Guards can be used in patterns as well:
+
+      iex> users = %{"melany" => "guest", "bob" => :admin}
+      iex> with {:ok, role} when not is_binary(role) <- Map.fetch(users, "bob"),
+      ...>      do: {:ok, to_string(role)}
+      {:ok, "admin"}
+
+  As in `for/1`, variables bound inside `with/1` won't leak;
+  "bare expressions" may also be inserted between the clauses:
+
+      iex> width = nil
+      iex> opts = %{width: 10, height: 15}
+      iex> with {:ok, width} <- Map.fetch(opts, :width),
+      ...>      double_width = width * 2,
+      ...>      {:ok, height} <- Map.fetch(opts, :height),
+      ...>      do: {:ok, double_width * height}
+      {:ok, 300}
+      iex> width
+      nil
+
+  An `else` option can be given to modify what is being returned from
+  `with` in the case of a failed match:
+
+      iex> opts = %{width: 10}
+      iex> with {:ok, width} <- Map.fetch(opts, :width),
+      ...>      {:ok, height} <- Map.fetch(opts, :height) do
+      ...>   {:ok, width * height}
+      ...> else
+      ...>   :error ->
+      ...>     {:error, :wrong_data}
+      ...> end
+      {:error, :wrong_data}
+
+  If there is no matching `else` condition, then a `WithClauseError` exception is raised.
+
+  """
+  defmacro with(args), do: error!([args])
 
   @doc """
   Defines an anonymous function.
@@ -1204,7 +1384,7 @@ defmodule Kernel.SpecialForms do
       3
 
   """
-  defmacro unquote(:fn)(clauses)
+  defmacro unquote(:fn)(clauses), do: error!([clauses])
 
   @doc """
   Internal special form for block expressions.
@@ -1213,11 +1393,15 @@ defmodule Kernel.SpecialForms do
   of expressions in Elixir. This special form is private
   and should not be invoked directly:
 
-      iex> quote do: (1; 2; 3)
+      iex> quote do
+      ...>   1
+      ...>   2
+      ...>   3
+      ...> end
       {:__block__, [], [1, 2, 3]}
 
   """
-  defmacro __block__(args)
+  defmacro __block__(args), do: error!([args])
 
   @doc """
   Captures or creates an anonymous function.
@@ -1271,35 +1455,39 @@ defmodule Kernel.SpecialForms do
       iex> fun.(1, 2)
       {1, 2}
 
-      iex> fun = &[&1|&2]
+      iex> fun = &[&1 | &2]
       iex> fun.(1, 2)
-      [1|2]
+      [1 | 2]
 
   The only restrictions when creating anonymous functions is that at
   least one placeholder must be present, i.e. it must contain at least
-  `&1`:
+  `&1`, and that block expressions are not supported:
 
-      # No placeholder fails to compile
-      &var
+      # No placeholder, fails to compile.
+      &(:foo)
 
-      # Block expressions are also not supported
-      &(foo(&1, &2); &3 + &4)
+      # Block expression, fails to compile.
+      &(&1; &2)
 
   """
-  defmacro unquote(:&)(expr)
+  defmacro unquote(:&)(expr), do: error!([expr])
 
   @doc """
   Internal special form to hold aliases information.
 
   It is usually compiled to an atom:
 
-      iex> quote do: Foo.Bar
+      iex> quote do
+      ...>   Foo.Bar
+      ...> end
       {:__aliases__, [alias: false], [:Foo, :Bar]}
 
   Elixir represents `Foo.Bar` as `__aliases__` so calls can be
   unambiguously identified by the operator `:.`. For example:
 
-      iex> quote do: Foo.bar
+      iex> quote do
+      ...>   Foo.bar
+      ...> end
       {{:., [], [{:__aliases__, [alias: false], [:Foo]}, :bar]}, [], []}
 
   Whenever an expression iterator sees a `:.` as the tuple key,
@@ -1313,18 +1501,19 @@ defmodule Kernel.SpecialForms do
 
     2. The tail elements of aliases are guaranteed to always be atoms.
 
-    3. When the head element of aliases is the atom `:Elixir`, no expansion happen.
+    3. When the head element of aliases is the atom `:Elixir`, no expansion happens.
 
   """
-  defmacro __aliases__(args)
+  defmacro __aliases__(args), do: error!([args])
 
   @doc """
-  Calls the overriden function when overriding it with `defoverridable`.
-  See `Kernel.defoverridable` for more information and documentation.
+  Calls the overridden function when overriding it with `Kernel.defoverridable/1`.
+
+  See `Kernel.defoverridable/1` for more information and documentation.
   """
-  defmacro super(args)
+  defmacro super(args), do: error!([args])
 
-  @doc """
+  @doc ~S"""
   Matches the given expression against the given clauses.
 
   ## Examples
@@ -1338,7 +1527,21 @@ defmodule Kernel.SpecialForms do
 
   In the example above, we match `thing` against each clause "head"
   and execute the clause "body" corresponding to the first clause
-  that matches. If no clause matches, an error is raised.
+  that matches.
+
+  If no clause matches, an error is raised.
+  For this reason, it may be necessary to add a final catch-all clause (like `_`)
+  which will always match.
+
+      x = 10
+
+      case x do
+        0 ->
+          "This clause won't match"
+        _ ->
+          "This clause would match any value (x = #{x})"
+      end
+      #=> "This clause would match any value (x = 10)"
 
   ## Variables handling
 
@@ -1367,15 +1570,35 @@ defmodule Kernel.SpecialForms do
   In the example above, value is going to be `7` or `13` depending on
   the value of `lucky?`. In case `value` has no previous value before
   case, clauses that do not explicitly bind a value have the variable
-  bound to nil.
+  bound to `nil`.
+
+  If you want to pattern match against an existing variable,
+  you need to use the `^/1` operator:
+
+      x = 1
+
+      case 10 do
+        ^x -> "Won't match"
+        _  -> "Will match"
+      end
+      #=> "Will match"
+
   """
-  defmacro case(condition, clauses)
+  defmacro case(condition, clauses), do: error!([condition, clauses])
 
   @doc """
   Evaluates the expression corresponding to the first clause that
-  evaluates to truth value.
+  evaluates to a truthy value.
 
-  Raises an error if all conditions evaluate to to nil or false.
+      cond do
+        hd([1, 2, 3]) ->
+          "1 is considered as true"
+      end
+      #=> "1 is considered as true"
+
+  Raises an error if all conditions evaluate to `nil` or `false`.
+  For this reason, it may be necessary to add a final always-truthy condition
+  (anything non-`false` and non-`nil`), which will always match.
 
   ## Examples
 
@@ -1387,12 +1610,13 @@ defmodule Kernel.SpecialForms do
         true ->
           "This will"
       end
+      #=> "This will"
 
   """
-  defmacro cond(clauses)
+  defmacro cond(clauses), do: error!([clauses])
 
   @doc ~S"""
-  Evaluate the given expressions and handle any error, exit
+  Evaluates the given expressions and handles any error, exit,
   or throw that may have happened.
 
   ## Examples
@@ -1404,77 +1628,84 @@ defmodule Kernel.SpecialForms do
           IO.puts "Invalid argument given"
       catch
         value ->
-          IO.puts "caught #{value}"
+          IO.puts "Caught #{inspect(value)}"
       else
         value ->
-          IO.puts "Success! The result was #{value}"
+          IO.puts "Success! The result was #{inspect(value)}"
       after
         IO.puts "This is printed regardless if it failed or succeed"
       end
 
-  The rescue clause is used to handle exceptions, while the catch
-  clause can be used to catch thrown values. The else clause can
-  be used to control flow based on the result of the expression.
-  Catch, rescue and else clauses work based on pattern matching.
+  The `rescue` clause is used to handle exceptions while the `catch`
+  clause can be used to catch thrown values and exits.
+  The `else` clause can be used to control flow based on the result of
+  the expression. `catch`, `rescue`, and `else` clauses work based on
+  pattern matching (similar to the `case` special form).
 
-  Note that calls inside `try` are not tail recursive since the VM
+  Note that calls inside `try/1` are not tail recursive since the VM
   needs to keep the stacktrace in case an exception happens.
 
-  ## Rescue clauses
+  ## `rescue` clauses
 
-  Besides relying on pattern matching, rescue clauses provides some
-  conveniences around exceptions that allows one to rescue an
-  exception by its name. All the following formats are valid rescue
-  expressions:
+  Besides relying on pattern matching, `rescue` clauses provide some
+  conveniences around exceptions that allow one to rescue an
+  exception by its name. All the following formats are valid patterns
+  in `rescue` clauses:
 
+      # Rescue a single exception without binding the exception
+      # to a variable
       try do
         UndefinedModule.undefined_function
       rescue
         UndefinedFunctionError -> nil
       end
 
+      # Rescue any of the given exception without binding
       try do
         UndefinedModule.undefined_function
       rescue
-        [UndefinedFunctionError] -> nil
+        [UndefinedFunctionError, ArgumentError] -> nil
       end
 
-      # rescue and bind to x
+      # Rescue and bind the exception to the variable "x"
       try do
         UndefinedModule.undefined_function
       rescue
         x in [UndefinedFunctionError] -> nil
       end
 
-      # rescue all and bind to x
+      # Rescue all kinds of exceptions and bind the rescued exception
+      # to the variable "x"
       try do
         UndefinedModule.undefined_function
       rescue
         x -> nil
       end
 
-  ## Erlang errors
+  ### Erlang errors
 
-  Erlang errors are transformed into Elixir ones during rescue:
+  Erlang errors are transformed into Elixir ones when rescuing:
 
       try do
         :erlang.error(:badarg)
       rescue
         ArgumentError -> :ok
       end
+      #=> :ok
 
   The most common Erlang errors will be transformed into their
-  Elixir counter-part. Those which are not will be transformed
-  into `ErlangError`:
+  Elixir counterpart. Those which are not will be transformed
+  into the more generic `ErlangError`:
 
       try do
         :erlang.error(:unknown)
       rescue
         ErlangError -> :ok
       end
+      #=> :ok
 
-  In fact, ErlangError can be used to rescue any error that is
-  not an Elixir error proper. For example, it can be used to rescue
+  In fact, `ErlangError` can be used to rescue any error that is
+  not a proper Elixir error. For example, it can be used to rescue
   the earlier `:badarg` error too, prior to transformation:
 
       try do
@@ -1482,30 +1713,75 @@ defmodule Kernel.SpecialForms do
       rescue
         ErlangError -> :ok
       end
+      #=> :ok
 
-  ## Catching throws and exits
+  ## `catch` clauses
 
-  The catch clause can be used to catch throws values and exits.
+  The `catch` clause can be used to catch thrown values, exits, and errors.
+
+  ### Catching thrown values
+
+  `catch` can be used to catch values thrown by `Kernel.throw/1`:
 
       try do
-        exit(:shutdown)
+        throw(:some_value)
       catch
-        :exit, :shutdown -> IO.puts "Exited with shutdown reason"
+        thrown_value ->
+          IO.puts "A value was thrown: #{inspect(thrown_value)}"
       end
+
+  ### Catching values of any kind
+
+  The `catch` clause also supports catching exits and errors. To do that, it
+  allows matching on both the *kind* of the caught value as well as the value
+  itself:
+
+    try do
+      exit(:shutdown)
+    catch
+      :exit, value
+        IO.puts "Exited with value #{inspect(value)}"
+    end
+
+    try do
+      exit(:shutdown)
+    catch
+      kind, value when kind in [:exit, :throw] ->
+        IO.puts "Caught exit or throw with value #{inspect(value)}"
+    end
+
+  The `catch` clause also supports `:error` alongside `:exit` and `:throw` as
+  in Erlang, although this is commonly avoided in favor of `raise`/`rescue` control
+  mechanisms. One reason for this is that when catching `:error`, the error is
+  not automatically transformed into an Elixir error:
 
       try do
-        throw(:sample)
+        :erlang.error(:badarg)
       catch
-        :throw, :sample ->
-          IO.puts "sample thrown"
+        :error, :badarg -> :ok
+      end
+      #=> :ok
+
+  ## `after` clauses
+
+  An `after` clause allows you to define cleanup logic that will be invoked both
+  when the block of code passed to `try/1` succeeds and also when an error is raised. Note
+  that the process will exit as usual when receiving an exit signal that causes
+  it to exit abruptly and so the `after` clause is not guaranteed to be executed.
+  Luckily, most resources in Elixir (such as open files, ETS tables, ports, sockets,
+  and so on) are linked to or monitor the owning process and will automatically clean
+  themselves up if that process exits.
+
+      File.write!("tmp/story.txt", "Hello, World")
+      try do
+        do_something_with("tmp/story.txt")
+      after
+        File.rm("tmp/story.txt")
       end
 
-  catch values also support `:error`, as in Erlang, although it is
-  commonly avoided in favor of raise/rescue control mechanisms.
+  ## `else` clauses
 
-  ## Else clauses
-
-  Else clauses allow the result of the expression to be pattern
+  `else` clauses allow the result of the body passed to `try/1` to be pattern
   matched on:
 
       x = 2
@@ -1521,8 +1797,8 @@ defmodule Kernel.SpecialForms do
           :large
       end
 
-  If an else clause is not present the result of the expression will
-  be return, if no exceptions are raised:
+  If an `else` clause is not present and no exceptions are raised,
+  the result of the expression will be returned:
 
       x = 1
       ^x =
@@ -1533,16 +1809,16 @@ defmodule Kernel.SpecialForms do
             :infinity
         end
 
-  However when an else clause is present but the result of the expression
-  does not match any of the patterns an exception will be raised. This
-  exception will not be caught by a catch or rescue in the same try:
+  However, when an `else` clause is present but the result of the expression
+  does not match any of the patterns then an exception will be raised. This
+  exception will not be caught by a `catch` or `rescue` in the same `try`:
 
       x = 1
       try do
         try do
           1 / x
         rescue
-          # The TryClauseError can not be rescued here:
+          # The TryClauseError cannot be rescued here:
           TryClauseError ->
             :error_a
         else
@@ -1555,8 +1831,8 @@ defmodule Kernel.SpecialForms do
           :error_b
       end
 
-  Similarly an exception inside an else clause is not caught or rescued
-  inside the same try:
+  Similarly, an exception inside an `else` clause is not caught or rescued
+  inside the same `try`:
 
       try do
         try do
@@ -1576,9 +1852,24 @@ defmodule Kernel.SpecialForms do
       end
 
   This means the VM no longer needs to keep the stacktrace once inside
-  an else clause and so tail recursion is possible when using a `try`
-  with a tail call as the final call inside an else clause. The same
-  is true for rescue and catch clauses.
+  an `else` clause and so tail recursion is possible when using a `try`
+  with a tail call as the final call inside an `else` clause. The same
+  is true for `rescue` and `catch` clauses.
+
+  Only the result of the tried expression falls down to the `else` clause.
+  If the `try` ends up in the `rescue` or `catch` clauses, their result
+  will not fall down to `else`:
+
+      try do
+        throw(:catch_this)
+      catch
+        :throw, :catch_this ->
+          :it_was_caught
+      else
+        # :it_was_caught will not fall down to this "else" clause.
+        other ->
+          {:else, other}
+      end
 
   ## Variable handling
 
@@ -1594,7 +1885,7 @@ defmodule Kernel.SpecialForms do
         _, _ -> :failed
       end
 
-      x #=> unbound variable `x`
+      x #=> unbound variable "x"
 
   In the example above, `x` cannot be accessed since it was defined
   inside the `try` clause. A common practice to address this issue
@@ -1610,7 +1901,7 @@ defmodule Kernel.SpecialForms do
         end
 
   """
-  defmacro try(args)
+  defmacro try(args), do: error!([args])
 
   @doc """
   Checks if there is a message matching the given clauses
@@ -1630,8 +1921,8 @@ defmodule Kernel.SpecialForms do
           IO.puts :stderr, "Unexpected message received"
       end
 
-  An optional after clause can be given in case the message was not
-  received after the specified period of time:
+  An optional `after` clause can be given in case the message was not
+  received after the given timeout period, specified in milliseconds:
 
       receive do
         {:selector, i, value} when is_integer(i) ->
@@ -1646,18 +1937,23 @@ defmodule Kernel.SpecialForms do
       end
 
   The `after` clause can be specified even if there are no match clauses.
-  There are two special cases for the timeout value given to `after`
+  The timeout value given to `after` can be any expression evaluating to
+  one of the allowed values:
 
     * `:infinity` - the process should wait indefinitely for a matching
       message, this is the same as not using a timeout
 
-    * 0 - if there is no matching message in the mailbox, the timeout
+    * `0` - if there is no matching message in the mailbox, the timeout
       will occur immediately
+
+    * positive integer smaller than `4_294_967_295` (`0xFFFFFFFF`
+      in hex notation) - it should be possible to represent the timeout
+      value as an unsigned 32-bit integer.
 
   ## Variables handling
 
-  The `receive` special form handles variables exactly as the `case`
+  The `receive/1` special form handles variables exactly as the `case/2`
   special macro. For more information, check the docs for `case/2`.
   """
-  defmacro receive(args)
+  defmacro receive(args), do: error!([args])
 end

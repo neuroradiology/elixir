@@ -1,72 +1,96 @@
 %% Module responsible for handling imports and conflicts
-%% in between local functions and imports.
+%% between local functions and imports.
 %% For imports dispatch, please check elixir_dispatch.
 -module(elixir_import).
 -export([import/4, special_form/2, format_error/1]).
 -include("elixir.hrl").
 
-%% IMPORT
-
 import(Meta, Ref, Opts, E) ->
-  Res =
+  {Functions, Macros, Added} =
     case keyfind(only, Opts) of
       {only, functions} ->
-        {import_functions(Meta, Ref, Opts, E),
-          ?m(E, macros)};
+        {Added1, Funs} = import_functions(Meta, Ref, Opts, E),
+        {Funs, keydelete(Ref, ?key(E, macros)), Added1};
       {only, macros} ->
-        {?m(E, functions),
-          import_macros(true, Meta, Ref, Opts, E)};
+        {Added2, Macs} = import_macros(true, Meta, Ref, Opts, E),
+        {keydelete(Ref, ?key(E, functions)), Macs, Added2};
       {only, List} when is_list(List) ->
-        {import_functions(Meta, Ref, Opts, E),
-          import_macros(false, Meta, Ref, Opts, E)};
+        {Added1, Funs} = import_functions(Meta, Ref, Opts, E),
+        {Added2, Macs} = import_macros(false, Meta, Ref, Opts, E),
+        {Funs, Macs, Added1 or Added2};
       false ->
-        {import_functions(Meta, Ref, Opts, E),
-          import_macros(false, Meta, Ref, Opts, E)}
+        {Added1, Funs} = import_functions(Meta, Ref, Opts, E),
+        {Added2, Macs} = import_macros(false, Meta, Ref, Opts, E),
+        {Funs, Macs, Added1 or Added2}
     end,
 
-  record_warn(Meta, Ref, Opts, E),
-  Res.
+  record_warn(Meta, Ref, Opts, Added, E),
+  {Functions, Macros}.
 
 import_functions(Meta, Ref, Opts, E) ->
-  calculate(Meta, Ref, Opts, ?m(E, functions), E, fun() -> get_functions(Ref) end).
+  calculate(Meta, Ref, Opts, ?key(E, functions), ?key(E, file), fun() ->
+    get_functions(Ref)
+  end).
 
 import_macros(Force, Meta, Ref, Opts, E) ->
-  calculate(Meta, Ref, Opts, ?m(E, macros), E, fun() ->
-    case Force of
-      true  -> get_macros(Meta, Ref, E);
-      false -> get_optional_macros(Ref)
+  calculate(Meta, Ref, Opts, ?key(E, macros), ?key(E, file), fun() ->
+    case fetch_macros(Ref) of
+      {ok, Macros} ->
+        Macros;
+      error when Force ->
+        elixir_errors:form_error(Meta, ?key(E, file), ?MODULE, {no_macros, Ref});
+      error ->
+        []
     end
   end).
 
-record_warn(Meta, Ref, Opts, E) ->
+record_warn(Meta, Ref, Opts, Added, E) ->
   Warn =
     case keyfind(warn, Opts) of
       {warn, false} -> false;
       {warn, true} -> true;
       false -> not lists:keymember(context, 1, Meta)
     end,
-  elixir_lexical:record_import(Ref, ?line(Meta), Warn, ?m(E, lexical_tracker)).
+
+  Only =
+    case keyfind(only, Opts) of
+      {only, List} when is_list(List) -> List;
+      _ -> []
+    end,
+
+  elixir_lexical:record_import(Ref, Only, ?line(Meta), Added and Warn, ?key(E, lexical_tracker)).
 
 %% Calculates the imports based on only and except
 
-calculate(Meta, Key, Opts, Old, E, Existing) ->
+calculate(Meta, Key, Opts, Old, File, Existing) ->
   New = case keyfind(only, Opts) of
     {only, Only} when is_list(Only) ->
+      ok = ensure_keyword_list(Meta, File, Only, only),
+      case keyfind(except, Opts) of
+        false ->
+          ok;
+        _ ->
+          elixir_errors:form_error(Meta, File, ?MODULE, only_and_except_given)
+      end,
       case Only -- get_exports(Key) of
-        [{Name,Arity}|_] ->
-          Tuple = {invalid_import, {Key, Name, Arity}},
-          elixir_errors:form_error(Meta, ?m(E, file), ?MODULE, Tuple);
+        [{Name, Arity} | _] ->
+          elixir_errors:form_error(Meta, File, ?MODULE, {invalid_import, {Key, Name, Arity}});
         _ ->
           intersection(Only, Existing())
       end;
     _ ->
       case keyfind(except, Opts) of
-        false -> remove_underscored(Existing());
-        {except, []} -> remove_underscored(Existing());
+        false ->
+          remove_underscored(Existing());
         {except, Except} when is_list(Except) ->
+          ok = ensure_keyword_list(Meta, File, Except, except),
+          %% We are not checking existence of exports listed in :except option
+          %% on purpose: to support backwards compatible code.
+          %% For example, "import String, except: [trim: 1]"
+          %% should work across all Elixir versions.
           case keyfind(Key, Old) of
             false -> remove_underscored(Existing()) -- Except;
-            {Key,OldImports} -> OldImports -- Except
+            {Key, OldImports} -> OldImports -- Except
           end
       end
   end,
@@ -76,20 +100,17 @@ calculate(Meta, Key, Opts, Old, E, Existing) ->
   Final = remove_internals(Set),
 
   case Final of
-    [] -> keydelete(Key, Old);
+    [] ->
+      {false, keydelete(Key, Old)};
     _  ->
-      ensure_no_special_form_conflict(Meta, ?m(E, file), Key, Final),
-      [{Key, Final}|keydelete(Key, Old)]
+      ensure_no_special_form_conflict(Meta, File, Key, Final),
+      {true, [{Key, Final} | keydelete(Key, Old)]}
   end.
 
 %% Retrieve functions and macros from modules
 
 get_exports(Module) ->
-  try
-    Module:'__info__'(functions) ++ Module:'__info__'(macros)
-  catch
-    error:undef -> Module:module_info(exports)
-  end.
+  get_functions(Module) ++ get_macros(Module).
 
 get_functions(Module) ->
   try
@@ -98,46 +119,56 @@ get_functions(Module) ->
     error:undef -> Module:module_info(exports)
   end.
 
-get_macros(Meta, Module, E) ->
-  try
-    Module:'__info__'(macros)
-  catch
-    error:undef ->
-      Tuple = {no_macros, Module},
-      elixir_errors:form_error(Meta, ?m(E, file), ?MODULE, Tuple)
+get_macros(Module) ->
+  case fetch_macros(Module) of
+    {ok, Macros} ->
+      Macros;
+    error ->
+      []
   end.
 
-get_optional_macros(Module)  ->
-  case code:ensure_loaded(Module) of
-    {module, Module} ->
-      try
-        Module:'__info__'(macros)
-      catch
-        error:undef -> []
-      end;
-    {error, _} -> []
+fetch_macros(Module) ->
+  try
+    {ok, Module:'__info__'(macros)}
+  catch
+    error:undef -> error
   end.
 
 %% VALIDATION HELPERS
 
-ensure_no_special_form_conflict(Meta, File, Key, [{Name,Arity}|T]) ->
+ensure_no_special_form_conflict(Meta, File, Key, [{Name, Arity} | T]) ->
   case special_form(Name, Arity) of
     true  ->
-      Tuple = {special_form_conflict, {Key, Name, Arity}},
-      elixir_errors:form_error(Meta, File, ?MODULE, Tuple);
+      elixir_errors:form_error(Meta, File, ?MODULE, {special_form_conflict, {Key, Name, Arity}});
     false ->
       ensure_no_special_form_conflict(Meta, File, Key, T)
   end;
 
 ensure_no_special_form_conflict(_Meta, _File, _Key, []) -> ok.
 
+ensure_keyword_list(_Meta, _File, [], _Kind) -> ok;
+
+ensure_keyword_list(Meta, File, [{Key, Value} | Rest], Kind) when is_atom(Key), is_integer(Value) ->
+  ensure_keyword_list(Meta, File, Rest, Kind);
+
+ensure_keyword_list(Meta, File, _Other, Kind) ->
+  elixir_errors:form_error(Meta, File, ?MODULE, {invalid_option, Kind}).
+
 %% ERROR HANDLING
 
-format_error({invalid_import,{Receiver, Name, Arity}}) ->
-  io_lib:format("cannot import ~ts.~ts/~B because it doesn't exist",
+format_error(only_and_except_given) ->
+  ":only and :except can only be given together to import "
+  "when :only is either :functions or :macros";
+
+format_error({invalid_import, {Receiver, Name, Arity}}) ->
+  io_lib:format("cannot import ~ts.~ts/~B because it is undefined or private",
     [elixir_aliases:inspect(Receiver), Name, Arity]);
 
-format_error({special_form_conflict,{Receiver, Name, Arity}}) ->
+format_error({invalid_option, Option}) ->
+  Message = "invalid :~s option for import, expected a keyword list with integer values",
+  io_lib:format(Message, [Option]);
+
+format_error({special_form_conflict, {Receiver, Name, Arity}}) ->
   io_lib:format("cannot import ~ts.~ts/~B because it conflicts with Elixir special forms",
     [elixir_aliases:inspect(Receiver), Name, Arity]);
 
@@ -152,9 +183,9 @@ keyfind(Key, List) ->
 keydelete(Key, List) ->
   lists:keydelete(Key, 1, List).
 
-intersection([H|T], All) ->
+intersection([H | T], All) ->
   case lists:member(H, All) of
-    true  -> [H|intersection(T, All)];
+    true  -> [H | intersection(T, All)];
     false -> intersection(T, All)
   end;
 
@@ -180,8 +211,7 @@ special_form('&', 1) -> true;
 special_form('^', 1) -> true;
 special_form('=', 2) -> true;
 special_form('%', 2) -> true;
-special_form('__op__', 2) -> true;
-special_form('__op__', 3) -> true;
+special_form('::', 2) -> true;
 special_form('__block__', _) -> true;
 special_form('->', _) -> true;
 special_form('<<>>', _) -> true;
@@ -205,6 +235,7 @@ special_form('unquote_splicing', 1) -> true;
 special_form('fn', _) -> true;
 special_form('super', _) -> true;
 special_form('for', _) -> true;
+special_form('with', _) -> true;
 special_form('cond', 1) -> true;
 special_form('case', 2) -> true;
 special_form('try', 2) -> true;

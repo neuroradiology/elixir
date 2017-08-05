@@ -1,12 +1,12 @@
 defmodule Mix.Tasks.Compile.Erlang do
-  use Mix.Task
+  use Mix.Task.Compiler
   import Mix.Compilers.Erlang
 
   @recursive true
   @manifest ".compile.erlang"
 
   @moduledoc """
-  Compile Erlang source files.
+  Compiles Erlang source files.
 
   When this task runs, it will first check the modification times of
   all files to be compiled and if they haven't been
@@ -36,11 +36,16 @@ defmodule Mix.Tasks.Compile.Erlang do
     * `:erlc_include_path` - directory for adding include files.
       Defaults to `"include"`.
 
-    * `:erlc_options` - compilation options that apply to Erlang's compiler.
-      `:debug_info` is enabled by default.
+    * `:erlc_options` - compilation options that apply to Erlang's
+      compiler. Defaults to `[:debug_info]`.
 
-      There are many available options here:
-      http://www.erlang.org/doc/man/compile.html#file-2
+      For a complete list of options, see `:compile.file/2`.
+
+  For example, to configure the `erlc_options` for your Erlang project you
+  may run:
+
+      erlc_options: [:debug_info, {:i, 'path/to/include'}]
+
   """
 
   @doc """
@@ -49,15 +54,23 @@ defmodule Mix.Tasks.Compile.Erlang do
   @spec run(OptionParser.argv) :: :ok | :noop
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: [force: :boolean])
-
     project      = Mix.Project.config
     source_paths = project[:erlc_paths]
+    Mix.Compilers.Erlang.assert_valid_erlc_paths(source_paths)
+    files = Mix.Utils.extract_files(source_paths, [:erl])
+    do_run(files, opts, project, source_paths)
+  end
+
+  defp do_run([], _, _, _), do: :noop
+  defp do_run(files, opts, project, source_paths) do
     include_path = to_erl_file project[:erlc_include_path]
     compile_path = to_erl_file Mix.Project.compile_path(project)
-    files        = Mix.Utils.extract_files(source_paths, [:erl])
 
     erlc_options = project[:erlc_options] || []
-    erlc_options = erlc_options ++ [{:outdir, compile_path}, {:i, include_path}, :report]
+    unless is_list(erlc_options) do
+      Mix.raise ":erlc_options should be a list of options, got: #{inspect(erlc_options)}"
+    end
+    erlc_options = erlc_options ++ [:report, outdir: compile_path, i: include_path]
     erlc_options = Enum.map erlc_options, fn
       {kind, dir} when kind in [:i, :outdir] ->
         {kind, to_erl_file(dir)}
@@ -65,22 +78,37 @@ defmodule Mix.Tasks.Compile.Erlang do
         opt
     end
 
+    compile_path = Path.relative_to(compile_path, File.cwd!)
+
     tuples = files
              |> scan_sources(include_path, source_paths)
              |> sort_dependencies
              |> Enum.map(&annotate_target(&1, compile_path, opts[:force]))
 
-    Mix.Compilers.Erlang.compile(manifest(), tuples, fn
+    Mix.Compilers.Erlang.compile(manifest(), tuples, opts, fn
       input, _output ->
+        # We're purging the module because a previous compiler (e.g. Phoenix)
+        # might have already loaded the previous version of it.
+        module = Path.basename(input, ".erl") |> String.to_atom
+        :code.purge(module)
+        :code.delete(module)
+
         file = to_erl_file(Path.rootname(input, ".erl"))
-        :compile.file(file, erlc_options)
+        case :compile.file(file, erlc_options) do
+          {:ok, module} ->
+            {:ok, module}
+          :error ->
+            :error
+          {:error, :badarg} ->
+            Mix.raise "Compiling Erlang #{inspect file} failed with ArgumentError, probably because of invalid :erlc_options"
+        end
     end)
   end
 
   @doc """
   Returns Erlang manifests.
   """
-  def manifests, do: [manifest]
+  def manifests, do: [manifest()]
   defp manifest, do: Path.join(Mix.Project.manifest_path, @manifest)
 
   @doc """
@@ -112,14 +140,16 @@ defmodule Mix.Tasks.Compile.Erlang do
     case form do
       {:attribute, _, :file, {include_file, _}} when file != include_file ->
         if File.regular?(include_file) do
-          %{erl | includes: [include_file|erl.includes]}
+          %{erl | includes: [include_file | erl.includes]}
         else
           erl
         end
       {:attribute, _, :behaviour, behaviour} ->
-        %{erl | behaviours: [behaviour|erl.behaviours]}
+        %{erl | behaviours: [behaviour | erl.behaviours]}
+      {:attribute, _, :compile, value} when is_list(value) ->
+        %{erl | compile: value ++ erl.compile}
       {:attribute, _, :compile, value} ->
-        %{erl | compile: [value|erl.compile]}
+        %{erl | compile: [value | erl.compile]}
       _ ->
         erl
     end
@@ -155,9 +185,9 @@ defmodule Mix.Tasks.Compile.Erlang do
   end
 
   defp annotate_target(erl, compile_path, force) do
-    beam = Path.join(compile_path, "#{erl.module}#{:code.objfile_extension}")
+    beam = Path.join(compile_path, "#{erl.module}.beam")
 
-    if force || Mix.Utils.stale?([erl.file|erl.includes], [beam]) do
+    if force || Mix.Utils.stale?([erl.file | erl.includes], [beam]) do
       {:stale, erl.file, beam}
     else
       {:ok, erl.file, beam}
@@ -165,6 +195,6 @@ defmodule Mix.Tasks.Compile.Erlang do
   end
 
   defp module_from_artifact(artifact) do
-    artifact |> Path.basename |> Path.rootname
+    artifact |> Path.basename |> Path.rootname |> String.to_atom
   end
 end

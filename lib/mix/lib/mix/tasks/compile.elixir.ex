@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Compile.Elixir do
-  use Mix.Task
+  use Mix.Task.Compiler
 
   @recursive true
   @manifest ".compile.elixir"
@@ -7,23 +7,25 @@ defmodule Mix.Tasks.Compile.Elixir do
   @moduledoc """
   Compiles Elixir source files.
 
-  Elixir is smart enough to recompile only files that changed
+  Elixir is smart enough to recompile only files that have changed
   and their dependencies. This means if `lib/a.ex` is invoking
   a function defined over `lib/b.ex`, whenever `lib/b.ex` changes,
   `lib/a.ex` is also recompiled.
 
-  Note it is important to recompile a file dependencies because
-  often there are compilation time dependencies in between them.
+  Note it is important to recompile a file's dependencies as
+  there are often compile time dependencies between them.
 
   ## Command line options
 
     * `--force` - forces compilation regardless of modification times
-    * `--docs` (`--no-docs`) - attach (or not) documentation to compiled modules
-    * `--debug-info` (`--no-debug-info`) - attach (or not) debug info to compiled modules
-    * `--ignore-module-conflict` - do not emit warnings if a module was previously defined
-    * `--warnings-as-errors` - treat warnings as errors and return a non-zero exit code
-    * `--elixirc-paths` - paths to lookup for Elixir source.
-      Can be given multiple times and, once given, overrides the project elixirc_paths config.
+    * `--docs` (`--no-docs`) - attaches (or not) documentation to compiled modules
+    * `--debug-info` (`--no-debug-info`) - attaches (or not) debug info to compiled modules
+    * `--ignore-module-conflict` - does not emit warnings if a module was previously defined
+    * `--warnings-as-errors` - treats warnings in the current project as errors and
+      return a non-zero exit code
+    * `--long-compilation-threshold N` - sets the "long compilation" threshold
+      (in seconds) to `N` (see the docs for `Kernel.ParallelCompiler.files/2`)
+    * `--all-warnings` - prints warnings even from files that do not need to be recompiled
 
   ## Configuration
 
@@ -40,7 +42,8 @@ defmodule Mix.Tasks.Compile.Elixir do
 
   @switches [force: :boolean, docs: :boolean, warnings_as_errors: :boolean,
              ignore_module_conflict: :boolean, debug_info: :boolean,
-             elixirc_paths: :keep]
+             verbose: :boolean, long_compilation_threshold: :integer,
+             all_warnings: :boolean]
 
   @doc """
   Runs this task.
@@ -51,56 +54,34 @@ defmodule Mix.Tasks.Compile.Elixir do
 
     project = Mix.Project.config
     dest = Mix.Project.compile_path(project)
-    srcs = case Keyword.get_values(opts, :elixirc_paths) do
-      [] -> project[:elixirc_paths]
-      ep -> ep
+    srcs = project[:elixirc_paths]
+
+    unless is_list(srcs) do
+      Mix.raise ":elixirc_paths should be a list of paths, got: #{inspect(srcs)}"
     end
 
     manifest = manifest()
     configs  = Mix.Project.config_files ++ Mix.Tasks.Compile.Erlang.manifests
+    force    = opts[:force] || Mix.Utils.stale?(configs, [manifest])
 
-    force = opts[:force] || local_deps_changed?(manifest)
-              || Mix.Utils.stale?(configs, [manifest])
-
-    result = Mix.Compilers.Elixir.compile(manifest, srcs, [:ex], dest, force, fn ->
-      true = Code.prepend_path(dest)
-      set_compiler_opts(project, opts, [])
-    end)
-
-    # The Mix.Dep.Lock keeps all the project dependencies. Since Elixir
-    # is a dependency itself, we need to touch the lock so the current
-    # Elixir version, used to compile the files above, is properly stored.
-    unless result == :noop, do: Mix.Dep.Lock.touch
-    result
+    opts = Keyword.merge(project[:elixirc_options] || [], opts)
+    case Mix.Compilers.Elixir.compile(manifest, srcs, dest, [:ex], force, opts) do
+      {[], []} -> :noop
+      {_, _} -> :ok
+    end
   end
 
   @doc """
   Returns Elixir manifests.
   """
-  def manifests, do: [manifest]
+  def manifests, do: [manifest()]
   defp manifest, do: Path.join(Mix.Project.manifest_path, @manifest)
 
   @doc """
   Cleans up compilation artifacts.
   """
   def clean do
-    Mix.Compilers.Elixir.clean(manifest())
-  end
-
-  defp set_compiler_opts(project, opts, extra) do
-    opts = Dict.take(opts, Code.available_compiler_options)
-    opts = Keyword.merge(project[:elixirc_options] || [], opts)
-    Code.compiler_options Keyword.merge(opts, extra)
-  end
-
-  defp local_deps_changed?(manifest) do
-    manifest = Path.absname(manifest)
-
-    Enum.any?(Mix.Dep.children([]), fn(dep) ->
-      not dep.scm.fetchable? and Mix.Dep.in_dependency(dep, fn(_) ->
-        files = Mix.Project.config_files ++ Mix.Tasks.Compile.manifests
-        Mix.Utils.stale?(files, [manifest])
-      end)
-    end)
+    dest = Mix.Project.compile_path
+    Mix.Compilers.Elixir.clean(manifest(), dest)
   end
 end

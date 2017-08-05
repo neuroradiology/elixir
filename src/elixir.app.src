@@ -1,11 +1,11 @@
 {application, elixir,
 [{description, "elixir"},
- {vsn, "1.1.0-dev"},
+ {vsn, "1.6.0-dev"},
  {modules, [
 	elixir
   ]},
- {registered, [elixir_code_server]},
- {applications, [kernel,stdlib,crypto,compiler,syntax_tools]},
+ {registered, [elixir_config, elixir_code_server]},
+ {applications, [kernel,stdlib,compiler]},
  {mod, {elixir,[]}},
- {env, [{uri, #{}},{ansi_enabled, false}]}
+ {env, [{ansi_enabled, false}]}
 ]}.

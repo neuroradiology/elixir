@@ -10,7 +10,7 @@ defmodule Mix.SCM.GitTest do
     assert Mix.SCM.Git.format_lock(lock(ref: "abcdef0"))   == "abcdef0 (ref)"
   end
 
-  test "considers to dep equals if the have the same git and the same opts" do
+  test "considers two dep equals if the have the same Git and the same opts" do
     assert Mix.SCM.Git.equal?([git: "foo"], [git: "foo"])
     refute Mix.SCM.Git.equal?([git: "foo"], [git: "bar"])
 
@@ -20,6 +20,16 @@ defmodule Mix.SCM.GitTest do
 
   test "lock should not be taken into account when considering deps equal as the lock is shared" do
     assert Mix.SCM.Git.equal?([git: "foo", lock: 1], [git: "foo", lock: 2])
+  end
+
+  test "raises about conflicting Git checkout options" do
+    assert_raise Mix.Error, ~r/You should specify only one of branch, ref or tag/, fn ->
+      Mix.SCM.Git.accepts_options(nil, [git: "/repo", branch: "master", tag: "0.1.0"])
+    end
+
+    assert_raise Mix.Error, ~r/You should specify only one of branch, ref or tag/, fn ->
+      Mix.SCM.Git.accepts_options(nil, [git: "/repo", branch: "master", branch: "develop"])
+    end
   end
 
   defp lock(opts \\ []) do

@@ -8,6 +8,9 @@ defmodule Mix.CLI do
     Mix.Local.append_archives
     Mix.Local.append_paths
 
+    if env_variable_activated?("MIX_QUIET"), do: Mix.shell(Mix.Shell.Quiet)
+    if env_variable_activated?("MIX_DEBUG"), do: Mix.debug(true)
+
     case check_for_shortcuts(args) do
       :help ->
         proceed(["help"])
@@ -19,47 +22,64 @@ defmodule Mix.CLI do
   end
 
   defp proceed(args) do
-    _ = Mix.Tasks.Local.Hex.ensure_updated?()
     load_dot_config()
-    args = load_mixfile(args)
+    load_mixfile()
     {task, args} = get_task(args)
+    ensure_hex(task)
     change_env(task)
     run_task(task, args)
   end
 
-  defp load_mixfile(args) do
+  defp load_mixfile() do
     file = System.get_env("MIX_EXS") || "mix.exs"
     _ = if File.regular?(file) do
       Code.load_file(file)
     end
-    args
   end
 
-  defp get_task(["-" <> _|_]) do
-    Mix.shell.error "** (Mix) Cannot implicitly pass flags to default mix task, " <>
-                    "please invoke instead: mix #{Mix.Project.config[:default_task]}"
+  defp get_task(["-" <> _ | _]) do
+    Mix.shell.error "** (Mix) Mix requires a task name when passing flags, " <>
+                    "try invoking \"mix #{Mix.Project.config[:default_task]}\" instead"
     exit({:shutdown, 1})
   end
 
-  defp get_task([h|t]) do
+  defp get_task([h | t]) do
     {h, t}
   end
 
   defp get_task([]) do
-    {Mix.Project.config[:default_task], []}
+    case Mix.Project.get do
+      nil ->
+        Mix.shell.error "** (Mix) \"mix\" with no arguments must be executed in a directory with a mix.exs file"
+        Mix.shell.info """
+
+        Usage: mix [task]
+
+        Examples:
+
+            mix             - Invokes the default task (current: "mix run")
+            mix new PATH    - Creates a new Elixir project at the given path
+            mix help        - Lists all available tasks
+            mix help TASK   - Prints documentation for a given task
+        """
+        exit({:shutdown, 1})
+      _ ->
+        {Mix.Project.config[:default_task], []}
+    end
   end
 
   defp run_task(name, args) do
     try do
+      ensure_no_slashes(name)
       Mix.Task.run "loadconfig"
       Mix.Task.run name, args
     rescue
-      # We only rescue exceptions in the mix namespace, all
+      # We only rescue exceptions in the Mix namespace, all
       # others pass through and will explode on the users face
       exception ->
         stacktrace = System.stacktrace
 
-        if Map.get(exception, :mix) do
+        if Map.get(exception, :mix) && not Mix.debug? do
           mod = exception.__struct__ |> Module.split() |> Enum.at(0, "Mix")
           Mix.shell.error "** (#{mod}) #{Exception.message(exception)}"
           exit({:shutdown, 1})
@@ -69,9 +89,23 @@ defmodule Mix.CLI do
     end
   end
 
+  defp env_variable_activated?(name) do
+    System.get_env(name) in ~w(1 true)
+  end
+
+  defp ensure_hex("local.hex"),
+    do: :ok
+  defp ensure_hex(_task),
+    do: Mix.Hex.ensure_updated?()
+
+  defp ensure_no_slashes(task) do
+    if String.contains?(task, "/") do
+      raise Mix.NoTaskError, task: task
+    end
+  end
+
   defp change_env(task) do
-    if is_nil(System.get_env("MIX_ENV")) &&
-       (env = preferred_cli_env(task)) do
+    if env = preferred_cli_env(task) do
       Mix.env(env)
       if project = Mix.Project.pop do
         %{name: name, file: file} = project
@@ -81,12 +115,13 @@ defmodule Mix.CLI do
   end
 
   defp preferred_cli_env(task) do
-    task = String.to_atom(task)
-    Mix.Project.config[:preferred_cli_env][task] || default_cli_env(task)
+    if System.get_env("MIX_ENV") do
+      nil
+    else
+      task = String.to_atom(task)
+      Mix.Project.config[:preferred_cli_env][task] || Mix.Task.preferred_cli_env(task)
+    end
   end
-
-  defp default_cli_env(:test), do: :test
-  defp default_cli_env(_),     do: nil
 
   defp load_dot_config do
     path = Path.join(Mix.Utils.mix_home, "config.exs")
@@ -96,15 +131,16 @@ defmodule Mix.CLI do
   end
 
   defp display_version() do
-    IO.puts "Mix #{System.version}"
+    IO.puts :erlang.system_info(:system_version)
+    IO.puts "Mix " <> System.build_info[:build]
   end
 
   # Check for --help or --version in the args
-  defp check_for_shortcuts([first_arg|_]) when first_arg in
-      ["--help", "-h", "-help"], do: :help
+  defp check_for_shortcuts([first_arg | _]) when first_arg in ["--help", "-h"],
+    do: :help
 
-  defp check_for_shortcuts([first_arg|_]) when first_arg in
-      ["--version", "-v"], do: :version
+  defp check_for_shortcuts([first_arg | _]) when first_arg in ["--version", "-v"],
+    do: :version
 
   defp check_for_shortcuts(_), do: nil
 end

@@ -1,6 +1,12 @@
-Application.start(:iex)
-Application.put_env(:iex, :colors, [enabled: false])
-ExUnit.start [trace: "--trace" in System.argv]
+assert_timeout = String.to_integer(
+  System.get_env("ELIXIR_ASSERT_TIMEOUT") || "500"
+)
+
+System.put_env("ELIXIR_EDITOR", "echo")
+
+:ok = Application.start(:iex)
+IEx.configure([colors: [enabled: false]])
+ExUnit.start [trace: "--trace" in System.argv, assert_receive_timeout: assert_timeout]
 
 defmodule IEx.Case do
   use ExUnit.CaseTemplate
@@ -12,7 +18,7 @@ defmodule IEx.Case do
   #   defmodule IEx.InteractionTest do
   #     use IEx.Case
   #
-  #     test :input do
+  #     test "input" do
   #       assert capture_iex("1+2") == "3"
   #     end
   #   end
@@ -27,15 +33,19 @@ defmodule IEx.Case do
   using do
     quote do
       import ExUnit.CaptureIO
+      import ExUnit.CaptureLog
       import unquote(__MODULE__)
     end
   end
 
+  keys = [:default_prompt, :alive_prompt, :inspect, :colors, :history_size]
+  @iex_env Application.get_all_env(:iex) |> Keyword.take(keys)
+
   setup do
-    opts = IEx.configuration |>
-           Keyword.take([:default_prompt, :alive_prompt, :inspect, :colors, :history_size])
     on_exit fn ->
-      Enum.each opts, fn {k, v} -> Application.put_env(:iex, k, v) end
+      env = @iex_env
+      Enum.each(env, fn {k, _} -> Application.delete_env(:iex, k) end)
+      IEx.configure(env)
     end
     :ok
   end
@@ -61,12 +71,8 @@ defmodule IEx.Case do
 
   defp strip_iex(string) do
     string
-    |> strip_line   # strip the greeting
-    |> String.strip
-  end
-
-  defp strip_line(string) do
-    Regex.replace ~r/\A.+?$/ms, string, ""
+    |> String.split("\n", parts: 2) # trim the greeting
+    |> Enum.at(1)
+    |> String.trim
   end
 end
-

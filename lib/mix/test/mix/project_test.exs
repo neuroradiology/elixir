@@ -9,13 +9,23 @@ defmodule Mix.ProjectTest do
     end
   end
 
+  test "returns consolidation path" do
+    config = [apps_path: "apps", build_per_environment: true]
+    assert Mix.Project.consolidation_path(config) ==
+           Path.join(File.cwd!, "_build/dev/consolidated")
+
+  config = [app: :sample, build_per_environment: true]
+    assert Mix.Project.consolidation_path(config) ==
+           Path.join(File.cwd!, "_build/dev/lib/sample/consolidated")
+  end
+
   test "push and pop projects" do
     refute Mix.Project.get
     Mix.Project.push(SampleProject, "sample")
     assert Mix.Project.get == SampleProject
 
     assert %{name: SampleProject, config: _, file: "sample"} = Mix.Project.pop
-    assert nil = Mix.Project.pop
+    assert Mix.Project.pop == nil
   end
 
   test "does not allow the same project to be pushed twice" do
@@ -63,7 +73,16 @@ defmodule Mix.ProjectTest do
     end
   end
 
-  test "builds the project structure with ebin symlink" do
+  test "builds the project structure without symlinks" do
+    in_fixture "archive", fn ->
+      config = [app_path: Path.expand("_build/archive"), build_embedded: true]
+      assert Mix.Project.build_structure(config) == :ok
+      assert File.dir?("_build/archive/ebin")
+      assert {:error, _} = :file.read_link("_build/archive/ebin")
+    end
+  end
+
+  test "builds the project structure with symlinks" do
     in_fixture "archive", fn ->
       config = [app_path: Path.expand("_build/archive")]
       File.mkdir_p!("include")
@@ -79,17 +98,20 @@ defmodule Mix.ProjectTest do
     end
   end
 
-  test "in_project pushes given configuration" do
-    in_fixture "no_mixfile", fn ->
-      Mix.Project.in_project :foo, ".", [hello: :world], fn _ ->
+  test "in_project pushes given configuration", context do
+    in_tmp context.test, fn ->
+      result = Mix.Project.in_project :foo, ".", [hello: :world], fn _ ->
         assert Mix.Project.config[:app] == :foo
         assert Mix.Project.config[:hello] == :world
+        :result
       end
+
+      assert result == :result
     end
   end
 
-  test "in_project prints nice error message if fails to load file" do
-    in_fixture "no_mixfile", fn ->
+  test "in_project prints nice error message if fails to load file", context do
+    in_tmp context.test, fn ->
       File.write "mix.exs", """
       raise "oops"
       """
@@ -104,26 +126,36 @@ defmodule Mix.ProjectTest do
     end
   end
 
-  test "config_files" do
+  test "config_files", context do
     Mix.Project.push(SampleProject)
 
-    in_fixture "no_mixfile", fn ->
-      File.mkdir_p!("config")
+    in_tmp context.test, fn ->
+      File.mkdir_p!("config/sub")
       File.write! "config/config.exs", "[]"
       File.write! "config/dev.exs", "[]"
       File.write! "config/.exs", "[]"
+      File.write! "config/sub/init.exs", "[]"
 
       files = Mix.Project.config_files
+
       assert __ENV__.file in files
       assert "config/config.exs" in files
       assert "config/dev.exs" in files
       refute "config/.exs" in files
+      assert "config/sub/init.exs" in files
     end
   end
 
   defp assert_proj_dir_linked_or_copied(source, target, symlink_path) do
     case :file.read_link(source) do
-      {:ok, path} -> assert path == symlink_path
+      {:ok, path} -> 
+        case :os.type do
+          # relative symlink on Windows are broken, see symlink_or_copy/2
+          {:win32, _} -> 
+            assert path == [source, '..', symlink_path] |> Path.join |> Path.expand |> String.to_charlist
+          _ ->
+            assert path == symlink_path
+        end
       {:error, _} -> assert File.ls!(source) == File.ls!(target)
     end
   end

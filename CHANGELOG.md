@@ -1,14 +1,37 @@
-# Changelog for Elixir v1.1
+# Changelog for Elixir v1.6
 
-## v1.1.0-dev
+## v1.6.0-dev
 
-### Enhancements
+### 1. Enhancements
 
+#### EEx
 
+  * [EEx] Allow markers "/" and "|" to be used in a custom EEx engine
 
-### Bug fixes
+#### Elixir
 
+  * [Inspect] Add `:strict` and `:flex` modes to `Inspect.Algebra`
+  * [Stream] Add `Stream.intersperse/2`
+  * [String] Update to Unicode 10
 
+#### Mix
 
-### Soft deprecations
+  * [mix compile] Create behavior for Mix compiler tasks
 
+### 2. Bug fixes
+
+#### Elixir
+
+  * [Kernel] Validate variable struct name is atom when used in pattern matching
+
+### 3. Soft deprecations (no warnings emitted)
+
+### 4. Deprecations
+
+#### Elixir
+
+  * [Enum] `Enum.partition/2` is deprecated in favor of `Enum.split_with/2`
+
+## v1.5
+
+The CHANGELOG for v1.5 releases can be found [in the v1.5 branch](https://github.com/elixir-lang/elixir/blob/v1.5/CHANGELOG.md).

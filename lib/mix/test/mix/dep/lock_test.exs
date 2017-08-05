@@ -8,16 +8,16 @@ defmodule Mix.Dep.LockTest do
     :ok
   end
 
-  test "creates new lock and manifest files" do
-    in_fixture "no_mixfile", fn ->
+  test "creates new lock and manifest files", context do
+    in_tmp context.test, fn ->
       Mix.Dep.Lock.write %{foo: :bar}
       assert File.regular? "mix.lock"
       assert File.regular? "_build/dev/lib/sample/.compile.lock"
     end
   end
 
-  test "does not touch manifest file there is no change" do
-    in_fixture "no_mixfile", fn ->
+  test "does not touch manifest file there is no change", context do
+    in_tmp context.test, fn ->
       Mix.Dep.Lock.write %{foo: :bar, bar: :bat}
       File.rm! "_build/dev/lib/sample/.compile.lock"
 
@@ -26,11 +26,20 @@ defmodule Mix.Dep.LockTest do
     end
   end
 
-  test "stores version in manifest" do
-    in_fixture "no_mixfile", fn ->
-      assert is_nil Mix.Dep.Lock.elixir_vsn
-      Mix.Dep.Lock.touch
-      assert Mix.Dep.Lock.elixir_vsn == System.version
+  test "raises a proper error for merge conflicts", context do
+    in_tmp context.test, fn ->
+      File.write "mix.lock", ~S"""
+      %{"dep": {:hex, :dep, "0.1.0"},
+      <<<<<<< HEAD
+        "foo": {:hex, :foo, "0.1.0"},
+      =======
+        "bar": {:hex, :bar, "0.1.0"},
+      >>>>>>> foobar
+        "baz": {:hex, :baz, "0.1.0"}}
+      """
+      assert_raise Mix.Error, ~r/Your mix\.lock contains merge conflicts/, fn ->
+        Mix.Dep.Lock.read()
+      end
     end
   end
 end

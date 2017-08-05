@@ -1,16 +1,17 @@
 defmodule Mix.Tasks.Clean do
   use Mix.Task
 
-  @shortdoc "Delete generated application files"
+  @shortdoc "Deletes generated application files"
   @recursive true
 
   @moduledoc """
-  Delete generated application files.
+  Deletes generated application files.
 
-  This command deletes all build artifacts for the current project
-  Dependencies' build files are cleaned if the `--deps` option is given.
+  This command deletes all build artifacts for the current project.
+  Dependencies' sources and build files are cleaned only if the
+  `--deps` option is given.
 
-  By default this task works accross all environments, unless `--only`
+  By default this task works across all environments, unless `--only`
   is given.
   """
 
@@ -19,11 +20,11 @@ defmodule Mix.Tasks.Clean do
   @spec run(OptionParser.argv) :: :ok
   def run(args) do
     Mix.Project.get!
-    loadpaths!
+    loadpaths!()
 
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
 
-    _ = for compiler <- Mix.Tasks.Compile.compilers(),
+    _ = for compiler <- [:protocols] ++ Mix.Tasks.Compile.compilers(),
             module = Mix.Task.get("compile.#{compiler}"),
             function_exported?(module, :clean, 0),
             do: module.clean
@@ -46,7 +47,8 @@ defmodule Mix.Tasks.Clean do
 
   # Loadpaths without checks because compilers may be defined in deps.
   defp loadpaths! do
-    Mix.Task.run "loadpaths", ["--no-elixir-version-check", "--no-deps-check"]
+    Mix.Task.run "loadpaths", ["--no-elixir-version-check", "--no-deps-check", "--no-archives-check"]
     Mix.Task.reenable "loadpaths"
+    Mix.Task.reenable "deps.loadpaths"
   end
 end

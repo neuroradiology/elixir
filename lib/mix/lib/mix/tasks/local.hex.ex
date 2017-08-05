@@ -1,77 +1,60 @@
 defmodule Mix.Tasks.Local.Hex do
   use Mix.Task
 
-  @hex_url "https://hex.pm/installs/hex.ez"
-  @hex_requirement ">= 0.4.3"
+  @hex_list_path    "/installs/hex-1.x.csv"
+  @hex_archive_path "/installs/[ELIXIR_VERSION]/hex-[HEX_VERSION].ez"
 
-  @shortdoc "Install hex locally"
+  @shortdoc "Installs Hex locally"
 
   @moduledoc """
-  Install hex locally from #{@hex_url}.
+  Installs Hex locally.
 
       mix local.hex
 
   ## Command line options
 
     * `--force` - forces installation without a shell prompt; primarily
-      intended for automation in build systems like make
+      intended for automation in build systems like `make`
+
+    * `--if-missing` - performs installation only if Hex is not installed yet;
+      intended to avoid repeatedly reinstalling Hex in automation when a script
+      may be run multiple times
+
+  If both options are set, `--force` takes precedence.
+
+  ## Mirrors
+
+  If you want to change the [default mirror](https://repo.hex.pm)
+  used for fetching Hex, set the `HEX_MIRROR` environment variable.
   """
+  @switches [if_missing: :boolean, force: :boolean]
+
   @spec run(OptionParser.argv) :: boolean
-  def run(args) do
-    Mix.Tasks.Archive.Install.run [@hex_url, "--shell" | args]
-  end
+  def run(argv) do
+    {opts, _} = OptionParser.parse!(argv, switches: @switches)
+    force? = Keyword.get(opts, :force, false)
+    if_missing? = Keyword.get(opts, :if_missing, false)
 
-  @doc false
-  # Returns true if Hex is loaded or installed, otherwise returns false.
-  @spec ensure_installed?(atom) :: boolean
-  def ensure_installed?(app) do
-    if Code.ensure_loaded?(Hex) do
-      true
-    else
-      shell = Mix.shell
-      shell.info "Could not find hex, which is needed to build dependency #{inspect app}"
-
-      if shell.yes?("Shall I install hex?") do
-        run ["--force"]
-      else
-        false
+    should_install? =
+      case {force?, if_missing?} do
+        {false, true} -> Code.ensure_loaded?(Hex)
+        _ -> true
       end
-    end
+
+    should_install? && run_install(argv)
   end
 
-  @doc false
-  # Returns true if have required Hex, returns false if don't and don't update,
-  # if update then exits.
-  @spec ensure_updated?() :: boolean
-  def ensure_updated?() do
-    if Code.ensure_loaded?(Hex) do
-      if Version.match?(Hex.version, @hex_requirement) do
-        true
-      else
-        Mix.shell.info "Mix requires hex #{@hex_requirement} but you have #{Hex.version}"
+  defp run_install(argv) do
+    hex_mirror = Mix.Hex.mirror
 
-        if Mix.shell.yes?("Shall I abort the current command and update hex?") do
-          run ["--force"]
-          exit({:shutdown, 0})
-        end
+    {elixir_version, hex_version, sha512} =
+      Mix.Local.find_matching_versions_from_signed_csv!("Hex", hex_mirror <> @hex_list_path)
 
-        false
-      end
-    else
-      false
-    end
-  end
+    url =
+      (hex_mirror <> @hex_archive_path)
+      |> String.replace("[ELIXIR_VERSION]", elixir_version)
+      |> String.replace("[HEX_VERSION]", hex_version)
 
-  @doc false
-  def start do
-    try do
-      Hex.start
-    catch
-      kind, reason ->
-        stacktrace = System.stacktrace
-        Mix.shell.error "Could not start Hex. Try fetching a new version with " <>
-                        "`mix local.hex` or uninstalling it with `mix archive.uninstall hex.ez`"
-        :erlang.raise(kind, reason, stacktrace)
-    end
+    Mix.Tasks.Archive.Install.run [url, "--sha512", sha512 | argv]
   end
 end

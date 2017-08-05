@@ -1,160 +1,304 @@
+# How to update the Unicode files
+#
+# 1. Update CompositionExclusions.txt by copying original as is
+# 2. Update GraphemeBreakProperty.txt by copying original as is
+# 3. Update PropList.txt by copying original as is
+# 4. Update GraphemeBreakTest.txt by copying original as is
+# 5. Update SpecialCasing.txt by removing comments and conditional mappings from original
+# 6. Update String.Unicode.version/0 and on String module docs
+# 7. make unicode
+# 8. elixir lib/elixir/unicode/graphemes_test.exs
+#
 defmodule String.Unicode do
   @moduledoc false
-  def version, do: {7, 0, 0}
+  def version, do: {10, 0, 0}
 
-  to_binary = fn
-    "" ->
-      nil
-    codepoints ->
-      codepoints = :binary.split(codepoints, " ", [:global])
-      Enum.reduce codepoints, "", fn(codepoint, acc) ->
-        acc <> << String.to_integer(codepoint, 16) :: utf8 >>
-      end
-  end
+  cluster_path = Path.join(__DIR__, "GraphemeBreakProperty.txt")
+  regex = ~r/(?:^([0-9A-F]+)(?:\.\.([0-9A-F]+))?)\s+;\s(\w+)/m
 
-  data_path = Path.join(__DIR__, "UnicodeData.txt")
+  cluster = Enum.reduce File.stream!(cluster_path), %{}, fn line, acc ->
+    case Regex.run(regex, line, capture: :all_but_first) do
+      ["D800", "DFFF", _class] ->
+        acc
 
-  {codes, whitespace} = Enum.reduce File.stream!(data_path), {[], []}, fn(line, {cacc, wacc}) ->
-    [ codepoint, _name, _category,
-      _class, bidi, _decomposition,
-      _numeric_1, _numeric_2, _numeric_3,
-      _bidi_mirror, _unicode_1, _iso,
-      upper, lower, title ] = :binary.split(line, ";", [:global])
+      [first, "", class] ->
+        codepoint = <<String.to_integer(first, 16)::utf8>>
+        Map.update(acc, class, [codepoint], &[<<String.to_integer(first, 16)::utf8>> | &1])
 
-    title = :binary.part(title, 0, byte_size(title) - 1)
+      [first, last, class] ->
+        range = String.to_integer(first, 16)..String.to_integer(last, 16)
+        codepoints = Enum.map(range, fn int -> <<int::utf8>> end)
+        Map.update(acc, class, codepoints, &(codepoints ++ &1))
 
-    cond do
-      upper != "" or lower != "" or title != "" ->
-        {[{to_binary.(codepoint), to_binary.(upper), to_binary.(lower), to_binary.(title)} | cacc], wacc}
-      bidi in ["B", "S", "WS"] ->
-        {cacc, [to_binary.(codepoint) | wacc]}
-      true ->
-        {cacc, wacc}
+      nil ->
+        acc
     end
   end
 
-  special_path = Path.join(__DIR__, "SpecialCasing.txt")
-
-  codes = Enum.reduce File.stream!(special_path), codes, fn(line, acc) ->
-    [ codepoint, lower, title, upper, _comment ] = :binary.split(line, "; ", [:global])
-    key = to_binary.(codepoint)
-    :lists.keystore(key, 1, acc, {key, to_binary.(upper), to_binary.(lower), to_binary.(title)})
+  # Don't break CRLF
+  def next_grapheme_size(<<?\r, ?\n, rest::binary>>) do
+    {2, rest}
   end
 
-  # Downcase
-
-  def downcase(string), do: do_downcase(string) |> IO.iodata_to_binary
-
-  for {codepoint, _upper, lower, _title} <- codes, lower && lower != codepoint do
-    defp do_downcase(unquote(codepoint) <> rest) do
-      unquote(:binary.bin_to_list(lower)) ++ downcase(rest)
+  # Break on control
+  for codepoint <- cluster["CR"] ++ cluster["LF"] ++ cluster["Control"] do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      {unquote(byte_size(codepoint)), rest}
     end
   end
 
-  defp do_downcase(<< char, rest :: binary >>) do
-    [char|do_downcase(rest)]
-  end
-
-  defp do_downcase(""), do: []
-
-  # Upcase
-
-  def upcase(string), do: do_upcase(string) |> IO.iodata_to_binary
-
-  for {codepoint, upper, _lower, _title} <- codes, upper && upper != codepoint do
-    defp do_upcase(unquote(codepoint) <> rest) do
-      unquote(:binary.bin_to_list(upper)) ++ do_upcase(rest)
+  # Break on Prepend*
+  for codepoint <- cluster["Prepend"] do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      next_prepend_size(rest, unquote(byte_size(codepoint)))
     end
   end
 
-  defp do_upcase(<< char, rest :: binary >>) do
-    [char|do_upcase(rest)]
-  end
-
-  defp do_upcase(""), do: []
-
-  # Titlecase once
-
-  def titlecase_once(""), do: {"", ""}
-
-  for {codepoint, _upper, _lower, title} <- codes, title && title != codepoint do
-    def titlecase_once(unquote(codepoint) <> rest) do
-      {unquote(title), rest}
+  # Handle Regional
+  for codepoint <- cluster["Regional_Indicator"] do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      next_regional_size(rest, unquote(byte_size(codepoint)))
     end
   end
 
-  def titlecase_once(<< char, rest :: binary >>) do
-    {<< char >>, rest}
-  end
-
-  # Strip
-
-  def lstrip(""), do: ""
-
-  for codepoint <- whitespace do
-    def lstrip(unquote(codepoint) <> rest) do
-      lstrip(rest)
+  # Handle Hangul L
+  for codepoint <- cluster["L"] do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      next_hangul_l_size(rest, unquote(byte_size(codepoint)))
     end
   end
 
-  def lstrip(other) when is_binary(other), do: other
-
-  def rstrip(string) when is_binary(string) do
-    do_rstrip(string, [], [])
-  end
-
-  for codepoint <- whitespace do
-    c = :binary.bin_to_list(codepoint) |> :lists.reverse
-
-    defp do_rstrip(unquote(codepoint) <> rest, acc1, acc2) do
-      do_rstrip(rest, unquote(c) ++ (acc1 || acc2), acc2)
+  # Handle Hangul V
+  for codepoint <- cluster["LV"] ++ cluster["V"]  do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      next_hangul_v_size(rest, unquote(byte_size(codepoint)))
     end
   end
 
-  defp do_rstrip(<< char, rest :: binary >>, nil, acc2) do
-    do_rstrip(rest, nil, [char|acc2])
-  end
-
-  defp do_rstrip(<< char, rest :: binary >>, acc1, _acc2) do
-    do_rstrip(rest, nil, [char|acc1])
-  end
-
-  defp do_rstrip(<<>>, _acc1, acc2), do: acc2 |> :lists.reverse |> IO.iodata_to_binary
-
-  # Split
-
-  def split(""), do: []
-
-  def split(string) when is_binary(string) do
-    :lists.reverse do_split(string, "", [])
-  end
-
-  for codepoint <- whitespace do
-    defp do_split(unquote(codepoint) <> rest, buffer, acc) do
-      do_split(rest, "", add_buffer_to_acc(buffer, acc))
+  # Handle Hangul T
+  for codepoint <- cluster["LVT"] ++ cluster["T"] do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      next_hangul_t_size(rest, unquote(byte_size(codepoint)))
     end
   end
 
-  defp do_split(<< char, rest :: binary >>, buffer, acc) do
-    do_split(rest, << buffer :: binary, char >>, acc)
+  # Handle E_Base
+  for codepoint <- cluster["E_Base"] ++ cluster["E_Base_GAZ"] do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      next_extend_size(rest, unquote(byte_size(codepoint)), :e_base)
+    end
   end
 
-  defp do_split(<<>>, buffer, acc) do
-    add_buffer_to_acc(buffer, acc)
+  # Handle ZWJ
+  for codepoint <- cluster["ZWJ"] do
+    def next_grapheme_size(<<unquote(codepoint), rest::binary>>) do
+      next_extend_size(rest, unquote(byte_size(codepoint)), :zwj)
+    end
   end
 
-  @compile {:inline, add_buffer_to_acc: 2}
+  # Handle extended entries
+  def next_grapheme_size(<<cp::utf8, rest::binary>>) do
+    case cp do
+      x when x <= 0x007F -> next_extend_size(rest, 1, :other)
+      x when x <= 0x07FF -> next_extend_size(rest, 2, :other)
+      x when x <= 0xFFFF -> next_extend_size(rest, 3, :other)
+      _                  -> next_extend_size(rest, 4, :other)
+    end
+  end
 
-  defp add_buffer_to_acc("", acc),     do: acc
-  defp add_buffer_to_acc(buffer, acc), do: [buffer|acc]
+  def next_grapheme_size(<<_, rest::binary>>) do
+    {1, rest}
+  end
+
+  def next_grapheme_size(<<>>) do
+    nil
+  end
+
+  # Handle hanguls
+  defp next_hangul_l_size(rest, size) do
+    case next_hangul(rest, size) do
+      {:l, rest, size} -> next_hangul_l_size(rest, size)
+      {:v, rest, size} -> next_hangul_v_size(rest, size)
+      {:lv, rest, size} -> next_hangul_v_size(rest, size)
+      {:lvt, rest, size} -> next_hangul_t_size(rest, size)
+      _ -> next_extend_size(rest, size, :other)
+    end
+  end
+
+  defp next_hangul_v_size(rest, size) do
+    case next_hangul(rest, size) do
+      {:v, rest, size} -> next_hangul_v_size(rest, size)
+      {:t, rest, size} -> next_hangul_t_size(rest, size)
+      _ -> next_extend_size(rest, size, :other)
+    end
+  end
+
+  defp next_hangul_t_size(rest, size) do
+    case next_hangul(rest, size) do
+      {:t, rest, size} -> next_hangul_t_size(rest, size)
+      _ -> next_extend_size(rest, size, :other)
+    end
+  end
+
+  for codepoint <- cluster["L"] do
+    defp next_hangul(<<unquote(codepoint), rest::binary>>, size) do
+      {:l, rest, size + unquote(byte_size(codepoint))}
+    end
+  end
+
+  for codepoint <- cluster["V"] do
+    defp next_hangul(<<unquote(codepoint), rest::binary>>, size) do
+      {:v, rest, size + unquote(byte_size(codepoint))}
+    end
+  end
+
+  for codepoint <- cluster["T"] do
+    defp next_hangul(<<unquote(codepoint), rest::binary>>, size) do
+      {:t, rest, size + unquote(byte_size(codepoint))}
+    end
+  end
+
+  for codepoint <- cluster["LV"] do
+    defp next_hangul(<<unquote(codepoint), rest::binary>>, size) do
+      {:lv, rest, size + unquote(byte_size(codepoint))}
+    end
+  end
+
+  for codepoint <- cluster["LVT"] do
+    defp next_hangul(<<unquote(codepoint), rest::binary>>, size) do
+      {:lvt, rest, size + unquote(byte_size(codepoint))}
+    end
+  end
+
+  defp next_hangul(_, _) do
+    false
+  end
+
+  # Handle regional
+  for codepoint <- cluster["Regional_Indicator"] do
+    defp next_regional_size(<<unquote(codepoint), rest::binary>>, size) do
+      next_extend_size(rest, size + unquote(byte_size(codepoint)), :other)
+    end
+  end
+  defp next_regional_size(rest, size) do
+    next_extend_size(rest, size, :other)
+  end
+
+  # Handle Extend+SpacingMark+ZWJ
+  for codepoint <- cluster["Extend"] do
+    defp next_extend_size(<<unquote(codepoint), rest::binary>>, size, marker) do
+      next_extend_size(rest, size + unquote(byte_size(codepoint)), keep_ebase(marker))
+    end
+  end
+
+  for codepoint <- cluster["SpacingMark"] do
+    defp next_extend_size(<<unquote(codepoint), rest::binary>>, size, _marker) do
+      next_extend_size(rest, size + unquote(byte_size(codepoint)), :other)
+    end
+  end
+
+  for codepoint <- cluster["ZWJ"] do
+    defp next_extend_size(<<unquote(codepoint), rest::binary>>, size, _marker) do
+      next_extend_size(rest, size + unquote(byte_size(codepoint)), :zwj)
+    end
+  end
+
+  for codepoint <- cluster["E_Modifier"] do
+    defp next_extend_size(<<unquote(codepoint), rest::binary>>, size, :e_base) do
+      next_extend_size(rest, size + unquote(byte_size(codepoint)), :other)
+    end
+  end
+
+  for codepoint <- cluster["Glue_After_Zwj"] do
+    defp next_extend_size(<<unquote(codepoint), rest::binary>>, size, :zwj) do
+      next_extend_size(rest, size + unquote(byte_size(codepoint)), :other)
+    end
+  end
+
+  for codepoint <- cluster["E_Base_GAZ"] do
+    defp next_extend_size(<<unquote(codepoint), rest::binary>>, size, :zwj) do
+      next_extend_size(rest, size + unquote(byte_size(codepoint)), :e_base)
+    end
+  end
+
+  defp next_extend_size(rest, size, _) do
+    {size, rest}
+  end
+
+  defp keep_ebase(:e_base), do: :e_base
+  defp keep_ebase(_), do: :other
+
+  # Handle Prepend
+  for codepoint <- cluster["Prepend"] do
+    defp next_prepend_size(<<unquote(codepoint), rest::binary>>, size) do
+      next_prepend_size(rest, size + unquote(byte_size(codepoint)))
+    end
+  end
+
+  # However, if we see a control character, we have to break it
+  for codepoint <- cluster["CR"] ++ cluster["LF"] ++ cluster["Control"] do
+    defp next_prepend_size(<<unquote(codepoint), _::binary>> = rest, size) do
+      {size, rest}
+    end
+  end
+
+  defp next_prepend_size(rest, size) do
+    case next_grapheme_size(rest) do
+      {more, rest} ->  {more + size, rest}
+      nil -> {size, rest}
+    end
+  end
+
+  # Graphemes
+
+  def graphemes(binary) when is_binary(binary) do
+    do_graphemes(next_grapheme_size(binary), binary)
+  end
+
+  defp do_graphemes({size, rest}, binary) do
+    [:binary.part(binary, 0, size) | do_graphemes(next_grapheme_size(rest), rest)]
+  end
+
+  defp do_graphemes(nil, _) do
+    []
+  end
+
+  # Length
+
+  def length(string) when is_binary(string) do
+    do_length(next_grapheme_size(string), 0)
+  end
+
+  defp do_length({_, rest}, acc) do
+    do_length(next_grapheme_size(rest), acc + 1)
+  end
+
+  defp do_length(nil, acc), do: acc
+
+  # Split at
+
+  def split_at(string, pos) do
+    do_split_at(string, 0, pos, 0)
+  end
+
+  defp do_split_at(string, acc, desired_pos, current_pos) when desired_pos > current_pos do
+    case next_grapheme_size(string) do
+      {count, rest} -> do_split_at(rest, acc + count, desired_pos, current_pos + 1)
+      nil -> {acc, nil}
+    end
+  end
+
+  defp do_split_at(string, acc, desired_pos, desired_pos) do
+    {acc, string}
+  end
 
   # Codepoints
 
-  def next_codepoint(<< cp :: utf8, rest :: binary >>) do
-    {<<cp :: utf8>>, rest}
+  def next_codepoint(<<cp::utf8, rest::binary>>) do
+    {<<cp::utf8>>, rest}
   end
 
-  def next_codepoint(<< cp, rest :: binary >>) do
+  def next_codepoint(<<cp, rest::binary>>) do
     {<<cp>>, rest}
   end
 
@@ -167,186 +311,10 @@ defmodule String.Unicode do
   end
 
   defp do_codepoints({c, rest}) do
-    [c|do_codepoints(next_codepoint(rest))]
+    [c | do_codepoints(next_codepoint(rest))]
   end
 
   defp do_codepoints(nil) do
-    []
-  end
-end
-
-defmodule String.Graphemes do
-  @moduledoc false
-
-  cluster_path = Path.join(__DIR__, "GraphemeBreakProperty.txt")
-  regex = ~r/(?:^([0-9A-F]+)(?:\.\.([0-9A-F]+))?)\s+;\s(\w+)/m
-
-  to_range = fn
-    first, ""   ->
-      [<< String.to_integer(first, 16) :: utf8 >>]
-    first, last ->
-      range = String.to_integer(first, 16)..String.to_integer(last, 16)
-      Enum.map(range, fn(int) -> << int :: utf8 >> end)
-  end
-
-  cluster = Enum.reduce File.stream!(cluster_path), HashDict.new, fn(line, dict) ->
-    [ _full, first, last, class ] = Regex.run(regex, line)
-
-    # Skip surrogates
-    if first == "D800" and last == "DFFF" do
-      dict
-    else
-      list = to_range.(first, last)
-      Dict.update(dict, class, list, &(&1 ++ list))
-    end
-  end
-
-  # There is no codepoint marked as Prepend by Unicode 6.3.0
-  if cluster["Prepend"] do
-    raise "It seems this new unicode version has added Prepend items. " <>
-          "Please remove this error and uncomment the code below."
-  end
-
-  # Don't break CRLF
-  def next_grapheme(<< ?\n, ?\r, rest :: binary >>) do
-    {"\n\r", rest}
-  end
-
-  # Break on control
-  for codepoint <- cluster["CR"] ++ cluster["LF"] ++ cluster["Control"] do
-    def next_grapheme(<< unquote(codepoint), rest :: binary >> = string) do
-      {:binary.part(string, 0, unquote(byte_size(codepoint))), rest}
-    end
-  end
-
-  # Break on Prepend*
-  # for codepoint <- cluster["Prepend"] do
-  #   def next_grapheme(<< unquote(codepoint), rest :: binary >> = string) do
-  #     next_prepend(rest, string, unquote(byte_size(codepoint)))
-  #   end
-  # end
-
-  # Handle Hangul L
-  for codepoint <- cluster["L"] do
-    def next_grapheme(<< unquote(codepoint), rest :: binary >> = string) do
-      next_hangul_l(rest, string, unquote(byte_size(codepoint)))
-    end
-  end
-
-  # Handle Hangul T
-  for codepoint <- cluster["T"] do
-    def next_grapheme(<< unquote(codepoint), rest :: binary >> = string) do
-      next_hangul_t(rest, string, unquote(byte_size(codepoint)))
-    end
-  end
-
-  # Handle Regional
-  for codepoint <- cluster["Regional_Indicator"] do
-    def next_grapheme(<< unquote(codepoint), rest :: binary >> = string) do
-      next_regional(rest, string, unquote(byte_size(codepoint)))
-    end
-  end
-
-  # Handle extended entries
-  def next_grapheme(<< cp :: utf8, rest :: binary >> = string) do
-    next_extend(rest, string, byte_size(<< cp :: utf8 >>))
-  end
-
-  def next_grapheme(<< cp, rest :: binary >>) do
-    {<<cp>>, rest}
-  end
-
-  def next_grapheme(<<>>) do
-    nil
-  end
-
-  # Handle Hangul L
-  for codepoint <- cluster["L"] do
-    defp next_hangul_l(<< unquote(codepoint), rest :: binary >>, string, size) do
-      next_hangul_l(rest, string, size + unquote(byte_size(codepoint)))
-    end
-  end
-
-  for codepoint <- cluster["LV"] do
-    defp next_hangul_l(<< unquote(codepoint), rest :: binary >>, string, size) do
-      next_hangul_v(rest, string, size + unquote(byte_size(codepoint)))
-    end
-  end
-
-  for codepoint <- cluster["LVT"] do
-    defp next_hangul_l(<< unquote(codepoint), rest :: binary >>, string, size) do
-      next_hangul_t(rest, string, size + unquote(byte_size(codepoint)))
-    end
-  end
-
-  defp next_hangul_l(rest, string, size) do
-    next_hangul_v(rest, string, size)
-  end
-
-  # Handle Hangul V
-  for codepoint <- cluster["V"] do
-    defp next_hangul_v(<< unquote(codepoint), rest :: binary >>, string, size) do
-      next_hangul_v(rest, string, size + unquote(byte_size(codepoint)))
-    end
-  end
-
-  defp next_hangul_v(rest, string, size) do
-    next_hangul_t(rest, string, size)
-  end
-
-  # Handle Hangul T
-  for codepoint <- cluster["T"] do
-    defp next_hangul_t(<< unquote(codepoint), rest :: binary >>, string, size) do
-      next_hangul_t(rest, string, size + unquote(byte_size(codepoint)))
-    end
-  end
-
-  defp next_hangul_t(rest, string, size) do
-    next_extend(rest, string, size)
-  end
-
-  # Handle regional
-  for codepoint <- cluster["Regional_Indicator"] do
-    defp next_regional(<< unquote(codepoint), rest :: binary >>, string, size) do
-      next_regional(rest, string, size + unquote(byte_size(codepoint)))
-    end
-  end
-
-  defp next_regional(rest, string, size) do
-    next_extend(rest, string, size)
-  end
-
-  # Handle Extend+SpacingMark
-  for codepoint <- cluster["Extend"] ++ cluster["SpacingMark"]  do
-    defp next_extend(<< unquote(codepoint), rest :: binary >>, string, size) do
-      next_extend(rest, string, size + unquote(byte_size(codepoint)))
-    end
-  end
-
-  defp next_extend(rest, string, size) do
-    {:binary.part(string, 0, size), rest}
-  end
-
-  # Handle Prepend
-  # for codepoint <- cluster["Prepend"] do
-  #   defp next_prepend(<< unquote(codepoint), rest :: binary >>, string, size) do
-  #     next_prepend(rest, string, size + unquote(byte_size(codepoint)))
-  #   end
-  # end
-  #
-  # defp next_prepend(rest, string, size) do
-  #   {:binary.part(string, 0, size), rest}
-  # end
-
-  def graphemes(binary) when is_binary(binary) do
-    do_graphemes(next_grapheme(binary))
-  end
-
-  defp do_graphemes({c, rest}) do
-    [c|do_graphemes(next_grapheme(rest))]
-  end
-
-  defp do_graphemes(nil) do
     []
   end
 end

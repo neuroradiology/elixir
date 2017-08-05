@@ -1,48 +1,52 @@
 Code.require_file "../test_helper.exs", __DIR__
 
 defmodule IEx.ServerTest do
-  use IEx.Case, async: true
+  use IEx.Case
 
-  # Options
+  describe "options" do
+    test "prefix" do
+      assert capture_io(fn ->
+        boot([prefix: "pry"])
+      end) =~ "pry(1)> "
+    end
 
-  test "prefix option" do
-    assert capture_io(fn ->
-      boot([prefix: "pry"])
-    end) =~ "pry(1)> "
+    test "env" do
+      assert capture_io("__ENV__.file", fn ->
+        boot([env: __ENV__])
+      end) =~ "server_test.exs"
+    end
   end
 
-  test "delegate_locals_to option" do
-    assert capture_io("sort([:foo, :bar])", fn ->
-      boot([delegate_locals_to: Enum])
-    end) =~ "[:bar, :foo]"
-  end
+  describe "take_over" do
+    test "allows take over of the shell during boot" do
+      assert capture_io("Y\na+b", fn ->
+        server = self()
+        boot([], fn ->
+          opts = [prefix: "dbg", binding: [a: 1, b: 2]]
+          IEx.Server.take_over("iex:13", opts, server)
+        end)
+      end) =~ "dbg(1)> "
+    end
 
-  test "env option" do
-    assert capture_io("__ENV__.file", fn ->
-      boot([env: __ENV__])
-    end) =~ "server_test.exs"
-  end
+    test "continues if take over is refused" do
+      assert capture_io("N\n", fn ->
+        server = self()
+        boot([], fn ->
+          opts = [prefix: "dbg", binding: [a: 1, b: 2]]
+          IEx.Server.take_over("iex:13", opts, server)
+        end)
+      end) =~ "iex(1)> "
+    end
 
-  # Take over
+    test "fails if callback during boot fails" do
+      assert capture_io(fn ->
+        boot([], fn -> exit(0) end)
+      end) == ""
+    end
 
-  test "allows take over of the shell during boot" do
-    assert capture_io("Y\na+b", fn ->
-      server = self
-      boot([], fn ->
-        opts = [prefix: "dbg", binding: [a: 1, b: 2]]
-        IEx.Server.take_over("iex:13", opts, 1000, server)
-      end)
-    end) =~ "dbg(1)> "
-  end
-
-  test "does not operate if callback during boot fails" do
-    assert capture_io(fn ->
-      boot([], fn -> exit(0) end)
-    end) == ""
-  end
-
-  test "take over fails when there is no shell" do
-    assert IEx.Server.take_over("iex:13", [], 10) == {:error, :no_iex}
+    test "fails when there is no shell" do
+      assert IEx.Server.take_over("iex:13", []) == {:error, :no_iex}
+    end
   end
 
   test "pry wraps around take over" do
@@ -54,7 +58,7 @@ defmodule IEx.ServerTest do
 
   # Helpers
 
-  defp boot(opts, callback \\ fn -> end) do
+  defp boot(opts, callback \\ fn -> nil end) do
     IEx.Server.start(Keyword.merge([dot_iex_path: ""], opts),
                      {:erlang, :apply, [callback, []]})
   end

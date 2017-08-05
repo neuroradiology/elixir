@@ -1,18 +1,15 @@
+%% Elixir compiler front-end to the Erlang backend.
 -module(elixir_compiler).
--export([get_opt/1, string/2, quoted/2, file/1, file/2, file_to_path/2]).
--export([core/0, module/4, eval_forms/3]).
+-export([get_opt/1, string/2, quoted/2, bootstrap/0,
+         file/1, file/2, file_to_path/2, eval_forms/3]).
 -include("elixir.hrl").
 
-%% Public API
-
 get_opt(Key) ->
-  Dict = elixir_code_server:call(compiler_options),
-  case lists:keyfind(Key, 1, Dict) of
-    false -> false;
-    {Key, Value} -> Value
+  Map = elixir_config:get(compiler_options),
+  case maps:find(Key, Map) of
+    {ok, Value} -> Value;
+    error -> false
   end.
-
-%% Compilation entry points.
 
 string(Contents, File) when is_list(Contents), is_binary(File) ->
   string(Contents, File, nil).
@@ -23,18 +20,18 @@ string(Contents, File, Dest) ->
 quoted(Forms, File) when is_binary(File) ->
   quoted(Forms, File, nil).
 quoted(Forms, File, Dest) ->
-  Previous = get(elixir_compiled),
+  Previous = get(elixir_module_binaries),
 
   try
-    put(elixir_compiled, []),
+    put(elixir_module_binaries, []),
     elixir_lexical:run(File, Dest, fun
       (Pid) ->
-        Env = elixir:env_for_eval([{line,1},{file,File}]),
+        Env = elixir:env_for_eval([{line, 1}, {file, File}]),
         eval_forms(Forms, [], Env#{lexical_tracker := Pid})
     end),
-    lists:reverse(get(elixir_compiled))
+    lists:reverse(get(elixir_module_binaries))
   after
-    put(elixir_compiled, Previous)
+    put(elixir_module_binaries, Previous)
   end.
 
 file(Relative) when is_binary(Relative) ->
@@ -53,51 +50,43 @@ file_to_path(File, Dest) when is_binary(File), is_binary(Dest) ->
   _ = [binary_to_path(X, Abs) || X <- Comp],
   Comp.
 
-%% Evaluation
+%% Evaluates the given code through the Erlang compiler.
+%% It may end-up evaluating the code if it is deemed a
+%% more efficient strategy depending on the code snippet.
 
 eval_forms(Forms, Vars, E) ->
-  case (?m(E, module) == nil) andalso allows_fast_compilation(Forms) of
-    true  -> eval_compilation(Forms, Vars, E);
-    false -> code_loading_compilation(Forms, Vars, E)
+  case (?key(E, module) == nil) andalso allows_fast_compilation(Forms) of
+    true  ->
+      Binding = [{Key, Value} || {_Name, _Kind, Key, Value} <- Vars],
+      {Result, _Binding, EE, _S} = elixir:eval_forms(Forms, Binding, E),
+      {Result, EE};
+    false ->
+      compile(Forms, Vars, E)
   end.
 
-eval_compilation(Forms, Vars, E) ->
-  Binding = [{Key, Value} || {_Name, _Kind, Key, Value} <- Vars],
-  {Result, _Binding, EE, _S} = elixir:eval_forms(Forms, Binding, E),
-  {Result, EE}.
-
-code_loading_compilation(Forms, Vars, #{line := Line} = E) ->
-  Dict = [{{Name, Kind}, {Value, 0}} || {Name, Kind, Value, _} <- Vars],
+compile(Forms, Vars, #{line := Line, file := File} = E) ->
+  Dict = [{{Name, Kind}, {Value, 0, true}} || {Name, Kind, Value, _} <- Vars],
   S = elixir_env:env_to_scope_with_vars(E, Dict),
   {Expr, EE, _S} = elixir:quoted_to_erl(Forms, E, S),
 
-  {Module, I} = retrieve_module_name(),
-  Fun  = code_fun(?m(E, module)),
-  Form = code_mod(Fun, Expr, Line, ?m(E, file), Module, Vars),
+  {Module, I} = retrieve_compiler_module(),
+  Fun  = code_fun(?key(E, module)),
+  Form = code_mod(Fun, Expr, Line, File, Module, Vars),
   Args = list_to_tuple([V || {_, _, _, V} <- Vars]),
 
-  %% Pass {native, false} to speed up bootstrap
-  %% process when native is set to true
-  AllOpts   = elixir_code_server:call(erl_compiler_options),
-  FinalOpts = AllOpts -- [native, warn_missing_spec],
-  inner_module(Form, FinalOpts, true, E, fun(_, Binary) ->
-    %% If we have labeled locals, anonymous functions
-    %% were created and therefore we cannot ditch the
-    %% module
-    Purgeable =
-      case beam_lib:chunks(Binary, [labeled_locals]) of
-        {ok, {_, [{labeled_locals, []}]}} -> true;
-        _ -> false
-      end,
-    dispatch_loaded(Module, Fun, Args, Purgeable, I, EE)
-  end).
+  {Module, Binary} = elixir_erl_compiler:noenv_forms(Form, File, [nowarn_nomatch]),
+  code:load_binary(Module, in_memory, Binary),
 
-dispatch_loaded(Module, Fun, Args, Purgeable, I, E) ->
+  Purgeable = beam_lib:chunks(Binary, [labeled_locals]) ==
+              {ok, {Module, [{labeled_locals, []}]}},
+  dispatch(Module, Fun, Args, Purgeable, I, EE).
+
+dispatch(Module, Fun, Args, Purgeable, I, E) ->
   Res = Module:Fun(Args),
   code:delete(Module),
   if Purgeable ->
       code:purge(Module),
-      return_module_name(I);
+      return_compiler_module(I);
      true ->
        ok
   end,
@@ -110,77 +99,38 @@ code_mod(Fun, Expr, Line, File, Module, Vars) when is_binary(File), is_integer(L
   Tuple    = {tuple, Line, [{var, Line, K} || {_, _, K, _} <- Vars]},
   Relative = elixir_utils:relative_to_cwd(File),
 
-  [
-    {attribute, Line, file, {elixir_utils:characters_to_list(Relative), 1}},
-    {attribute, Line, module, Module},
-    {attribute, Line, export, [{Fun, 1}, {'__RELATIVE__', 0}]},
-    {function, Line, Fun, 1, [
-      {clause, Line, [Tuple], [], [Expr]}
-    ]},
-    {function, Line, '__RELATIVE__', 0, [
-      {clause, Line, [], [], [elixir_utils:elixir_to_erl(Relative)]}
-    ]}
-  ].
+  [{attribute, Line, file, {elixir_utils:characters_to_list(Relative), 1}},
+   {attribute, Line, module, Module},
+   {attribute, Line, compile, no_auto_import},
+   {attribute, Line, export, [{Fun, 1}, {'__RELATIVE__', 0}]},
+   {function, Line, Fun, 1, [
+     {clause, Line, [Tuple], [], [Expr]}
+   ]},
+   {function, Line, '__RELATIVE__', 0, [
+     {clause, Line, [], [], [elixir_erl:elixir_to_erl(Relative)]}
+   ]}].
 
-retrieve_module_name() ->
-  elixir_code_server:call(retrieve_module_name).
+retrieve_compiler_module() ->
+  elixir_code_server:call(retrieve_compiler_module).
 
-return_module_name(I) ->
-  elixir_code_server:cast({return_module_name, I}).
+return_compiler_module(I) ->
+  elixir_code_server:cast({return_compiler_module, I}).
 
 allows_fast_compilation({'__block__', _, Exprs}) ->
   lists:all(fun allows_fast_compilation/1, Exprs);
-allows_fast_compilation({defmodule,_,_}) -> true;
+allows_fast_compilation({defmodule, _, _}) -> true;
 allows_fast_compilation(_) -> false.
 
-%% INTERNAL API
+%% Bootstraper
 
-%% Compile the module by forms based on the scope information
-%% executes the callback in case of success. This automatically
-%% handles errors and warnings. Used by this module and elixir_module.
-module(Forms, Opts, E, Callback) ->
-  Final =
-    case (get_opt(debug_info) == true) orelse
-         lists:member(debug_info, Opts) of
-      true  -> [debug_info] ++ elixir_code_server:call(erl_compiler_options);
-      false -> elixir_code_server:call(erl_compiler_options)
-    end,
-  inner_module(Forms, Final, false, E, Callback).
-
-inner_module(Forms, Options, Bootstrap, #{file := File} = E, Callback) when
-    is_list(Forms), is_list(Options), is_boolean(Bootstrap), is_function(Callback) ->
-  Source = elixir_utils:characters_to_list(File),
-
-  case compile:noenv_forms([no_auto_import()|Forms], [return,{source,Source}|Options]) of
-    {ok, Module, Binary, Warnings} ->
-      format_warnings(Bootstrap, Warnings),
-      {module, Module} = code:load_binary(Module, beam_location(E), Binary),
-      Callback(Module, Binary);
-    {error, Errors, Warnings} ->
-      format_warnings(Bootstrap, Warnings),
-      format_errors(Errors)
-  end.
-
-beam_location(#{module := nil}) -> in_memory;
-beam_location(#{lexical_tracker := Pid, module := Module}) ->
-  case elixir_lexical:dest(Pid) of
-    nil  -> in_memory;
-    Dest ->
-      filename:join(elixir_utils:characters_to_list(Dest),
-                    atom_to_list(Module) ++ ".beam")
-  end.
-
-no_auto_import() ->
-  {attribute, 0, compile, no_auto_import}.
-
-%% CORE HANDLING
-
-core() ->
+bootstrap() ->
   {ok, _} = application:ensure_all_started(elixir),
-  elixir_code_server:cast({compiler_options, [{docs,false},{internal,true}]}),
-  [core_file(File) || File <- core_main()].
+  Update = fun(Old) -> maps:merge(Old, #{docs => false, relative_paths => false}) end,
+  _ = elixir_config:update(compiler_options, Update),
+  _ = elixir_config:put(bootstrap, true),
+  [bootstrap_file(File) || File <- bootstrap_main()].
 
-core_file(File) ->
+bootstrap_file(File) ->
   try
     Lists = file(File),
     _ = [binary_to_path(X, "lib/elixir/ebin") || X <- Lists],
@@ -191,7 +141,7 @@ core_file(File) ->
       erlang:halt(1)
   end.
 
-core_main() ->
+bootstrap_main() ->
   [<<"lib/elixir/lib/kernel.ex">>,
    <<"lib/elixir/lib/macro/env.ex">>,
    <<"lib/elixir/lib/keyword.ex">>,
@@ -201,6 +151,8 @@ core_main() ->
    <<"lib/elixir/lib/code.ex">>,
    <<"lib/elixir/lib/module/locals_tracker.ex">>,
    <<"lib/elixir/lib/kernel/typespec.ex">>,
+   <<"lib/elixir/lib/kernel/utils.ex">>,
+   <<"lib/elixir/lib/behaviour.ex">>,
    <<"lib/elixir/lib/exception.ex">>,
    <<"lib/elixir/lib/protocol.ex">>,
    <<"lib/elixir/lib/stream/reducers.ex">>,
@@ -222,22 +174,7 @@ core_main() ->
 
 binary_to_path({ModuleName, Binary}, CompilePath) ->
   Path = filename:join(CompilePath, atom_to_list(ModuleName) ++ ".beam"),
-  ok = file:write_file(Path, Binary),
-  Path.
-
-%% ERROR HANDLING
-
-format_errors([]) ->
-  exit({nocompile, "compilation failed but no error was raised"});
-
-format_errors(Errors) ->
-  lists:foreach(fun ({File, Each}) ->
-    BinFile = elixir_utils:characters_to_binary(File),
-    lists:foreach(fun(Error) -> elixir_errors:handle_file_error(BinFile, Error) end, Each)
-  end, Errors).
-
-format_warnings(Bootstrap, Warnings) ->
-  lists:foreach(fun ({File, Each}) ->
-    BinFile = elixir_utils:characters_to_binary(File),
-    lists:foreach(fun(Warning) -> elixir_errors:handle_file_warning(Bootstrap, BinFile, Warning) end, Each)
-  end, Warnings).
+  case file:write_file(Path, Binary) of
+    ok -> Path;
+    {error, Reason} -> error('Elixir.File.Error':exception([{action, "write to"}, {path, Path}, {reason, Reason}]))
+  end.

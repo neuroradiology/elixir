@@ -1,12 +1,17 @@
 defmodule Mix.Tasks.Compile.Yecc do
-  use Mix.Task
+  use Mix.Task.Compiler
   alias Mix.Compilers.Erlang
 
   @recursive true
   @manifest ".compile.yecc"
 
+  # These options can't be controlled with :yecc_options.
+  @forced_opts [report: true,
+                return_errors: false,
+                return_warnings: false]
+
   @moduledoc """
-  Compile Yecc source files.
+  Compiles Yecc source files.
 
   When this task runs, it will check the modification time of every file, and
   if it has changed, the file will be compiled. Files will be
@@ -23,8 +28,11 @@ defmodule Mix.Tasks.Compile.Yecc do
     * `:erlc_paths` - directories to find source files. Defaults to `["src"]`.
 
     * `:yecc_options` - compilation options that apply
-      to Yecc's compiler. There are many other available
-      options here: http://www.erlang.org/doc/man/yecc.html#file-1.
+      to Yecc's compiler.
+
+      For a complete list of options, see `:yecc.file/1`.
+      Note that the `:report`, `:return_errors`, and `:return_warnings` options
+      are overridden by this compiler, thus setting them has no effect.
 
   """
 
@@ -35,14 +43,21 @@ defmodule Mix.Tasks.Compile.Yecc do
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: [force: :boolean])
 
-    project      = Mix.Project.config
-    source_paths = project[:erlc_paths]
-    mappings     = Enum.zip(source_paths, source_paths)
-    options      = project[:yecc_options] || []
+    project = Mix.Project.config
 
-    Erlang.compile(manifest(), mappings, :yrl, :erl, opts[:force], fn
+    source_paths = project[:erlc_paths]
+    Mix.Compilers.Erlang.assert_valid_erlc_paths(source_paths)
+    mappings = Enum.zip(source_paths, source_paths)
+
+    options = project[:yecc_options] || []
+    unless is_list(options) do
+      Mix.raise ":yecc_options should be a list of options, got: #{inspect(options)}"
+    end
+
+    Erlang.compile(manifest(), mappings, :yrl, :erl, opts, fn
       input, output ->
-        options = options ++ [parserfile: Erlang.to_erl_file(output), report: true]
+        Erlang.ensure_application!(:parsetools, input)
+        options = options ++ @forced_opts ++ [parserfile: Erlang.to_erl_file(output)]
         :yecc.file(Erlang.to_erl_file(input), options)
     end)
   end
@@ -50,7 +65,7 @@ defmodule Mix.Tasks.Compile.Yecc do
   @doc """
   Returns Yecc manifests.
   """
-  def manifests, do: [manifest]
+  def manifests, do: [manifest()]
   defp manifest, do: Path.join(Mix.Project.manifest_path, @manifest)
 
   @doc """

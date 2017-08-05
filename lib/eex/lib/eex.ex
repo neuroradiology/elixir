@@ -1,11 +1,15 @@
 defmodule EEx.SyntaxError do
-  defexception [:message]
+  defexception [:message, :file, :line]
+
+  def message(exception) do
+    "#{exception.file}:#{exception.line}: #{exception.message}"
+  end
 end
 
 defmodule EEx do
   @moduledoc ~S"""
   EEx stands for Embedded Elixir. It allows you to embed
-  Elixir code inside a string in a robust way:
+  Elixir code inside a string in a robust way.
 
       iex> EEx.eval_string "foo <%= bar %>", [bar: "baz"]
       "foo baz"
@@ -31,13 +35,14 @@ defmodule EEx do
 
   ## Options
 
-  All functions in this module accepts EEx-related options.
+  All functions in this module accept EEx-related options.
   They are:
 
     * `:line` - the line to be used as the template start. Defaults to 1.
     * `:file` - the file to be used in the template. Defaults to the given
       file the template is read from or to "nofile" when compiling from a string.
     * `:engine` - the EEx engine to be used for compilation.
+    * `:trim` - trims whitespace left/right of quotation tags
 
   ## Engine
 
@@ -58,9 +63,9 @@ defmodule EEx do
 
   All expressions that output something to the template
   **must** use the equals sign (`=`). Since everything in
-  Elixir is a macro, there are no exceptions for this rule.
-  For example, while some template languages would special-
-  case `if` clauses, they are treated the same in EEx and
+  Elixir is an expression, there are no exceptions for this rule.
+  For example, while some template languages would special-case
+  `if/2` clauses, they are treated the same in EEx and
   also require `=` in order to have their result printed:
 
       <%= if true do %>
@@ -81,11 +86,11 @@ defmodule EEx do
       iex> EEx.eval_string "<%= @foo %>", assigns: [foo: 1]
       "1"
 
-  In other words, `<%= @foo %>` is simply translated to:
+  In other words, `<%= @foo %>` translates to:
 
-      <%= Dict.get assigns, :foo %>
+      <%= {:ok, v} = Access.fetch(assigns, :foo); v %>
 
-  The assigns extension is useful when the number of variables
+  The `assigns` extension is useful when the number of variables
   required by the template is not specified at compilation time.
   """
 
@@ -106,7 +111,7 @@ defmodule EEx do
 
   """
   defmacro function_from_string(kind, name, source, args \\ [], options \\ []) do
-    quote bind_quoted: binding do
+    quote bind_quoted: binding() do
       info = Keyword.merge [file: __ENV__.file, line: __ENV__.line], options
       args = Enum.map args, fn arg -> {arg, [line: info[:line]], nil} end
       compiled = EEx.compile_string(source, info)
@@ -143,7 +148,7 @@ defmodule EEx do
 
   """
   defmacro function_from_file(kind, name, file, args \\ [], options \\ []) do
-    quote bind_quoted: binding do
+    quote bind_quoted: binding() do
       info = Keyword.merge options, [file: file, line: 1]
       args = Enum.map args, fn arg -> {arg, [line: 1], nil} end
       compiled = EEx.compile_file(file, info)
@@ -158,24 +163,26 @@ defmodule EEx do
   end
 
   @doc """
-  Get a string `source` and generate a quoted expression
+  Gets a string `source` and generate a quoted expression
   that can be evaluated by Elixir or compiled to a function.
   """
-  def compile_string(source, options \\ []) do
+  @spec compile_string(String.t, keyword) :: Macro.t | no_return
+  def compile_string(source, options \\ []) when is_binary(source) and is_list(options) do
     EEx.Compiler.compile(source, options)
   end
 
   @doc """
-  Get a `filename` and generate a quoted expression
+  Gets a `filename` and generate a quoted expression
   that can be evaluated by Elixir or compiled to a function.
   """
-  def compile_file(filename, options \\ []) do
+  @spec compile_file(String.t, keyword) :: Macro.t | no_return
+  def compile_file(filename, options \\ []) when is_binary(filename) and is_list(options) do
     options = Keyword.merge options, [file: filename, line: 1]
     compile_string(File.read!(filename), options)
   end
 
   @doc """
-  Get a string `source` and evaluate the values using the `bindings`.
+  Gets a string `source` and evaluate the values using the `bindings`.
 
   ## Examples
 
@@ -183,24 +190,28 @@ defmodule EEx do
       "foo baz"
 
   """
-  def eval_string(source, bindings \\ [], options \\ []) do
+  @spec eval_string(String.t, keyword, keyword) :: any
+  def eval_string(source, bindings \\ [], options \\ [])
+      when is_binary(source) and is_list(bindings) and is_list(options) do
     compiled = compile_string(source, options)
     do_eval(compiled, bindings, options)
   end
 
   @doc """
-  Get a `filename` and evaluate the values using the `bindings`.
+  Gets a `filename` and evaluate the values using the `bindings`.
 
   ## Examples
 
-      # sample.ex
+      # sample.eex
       foo <%= bar %>
 
       # iex
-      EEx.eval_file "sample.ex", [bar: "baz"] #=> "foo baz"
+      EEx.eval_file "sample.eex", [bar: "baz"] #=> "foo baz"
 
   """
-  def eval_file(filename, bindings \\ [], options \\ []) do
+  @spec eval_file(String.t, keyword, keyword) :: any
+  def eval_file(filename, bindings \\ [], options \\ [])
+      when is_binary(filename) and is_list(bindings) and is_list(options) do
     options  = Keyword.put options, :file, filename
     compiled = compile_file(filename, options)
     do_eval(compiled, bindings, options)

@@ -4,8 +4,8 @@ defmodule Inspect.Opts do
 
   The following fields are available:
 
-    * `:structs` - when false, structs are not formatted by the inspect
-      protocol, they are instead printed as maps, defaults to true.
+    * `:structs` - when `false`, structs are not formatted by the inspect
+      protocol, they are instead printed as maps, defaults to `true`.
 
     * `:binaries` - when `:as_strings` all binaries will be printed as strings,
       non-printable bytes will be escaped.
@@ -15,53 +15,90 @@ defmodule Inspect.Opts do
       When the default `:infer`, the binary will be printed as a string if it
       is printable, otherwise in bit syntax.
 
-    * `:char_lists` - when `:as_char_lists` all lists will be printed as char
+    * `:charlists` - when `:as_charlists` all lists will be printed as char
       lists, non-printable elements will be escaped.
 
       When `:as_lists` all lists will be printed as lists.
 
-      When the default `:infer`, the list will be printed as a char list if it
+      When the default `:infer`, the list will be printed as a charlist if it
       is printable, otherwise as list.
 
     * `:limit` - limits the number of items that are printed for tuples,
-      bitstrings, and lists, does not apply to strings nor char lists, defaults
-      to 50.
+      bitstrings, maps, lists and any other collection of items. It does not
+      apply to strings nor charlists and defaults to 50.
 
-    * `:pretty` - if set to true enables pretty printing, defaults to false.
+    * `:printable_limit` - limits the number of bytes that are printed for strings
+      and char lists. Defaults to 4096.
 
-    * `:width` - defaults to the 80 characters, used when pretty is true or
-      when printing to IO devices.
+    * `:pretty` - if set to `true` enables pretty printing, defaults to `false`.
 
-    * `:base` - print integers as :binary, :octal, :decimal, or :hex, defaults
-      to :decimal
+    * `:width` - defaults to 80 characters, used when pretty is `true` or when
+      printing to IO devices. Set to 0 to force each item to be printed on its
+      own line.
 
+    * `:base` - prints integers as `:binary`, `:octal`, `:decimal`, or `:hex`,
+      defaults to `:decimal`. When inspecting binaries any `:base` other than
+      `:decimal` implies `binaries: :as_binaries`.
+
+    * `:safe` - when `false`, failures while inspecting structs will be raised
+      as errors instead of being wrapped in the `Inspect.Error` exception. This
+      is useful when debugging failures and crashes for custom inspect
+      implementations
+
+    * `:syntax_colors` - when set to a keyword list of colors the output will
+      be colorized. The keys are types and the values are the colors to use for
+      each type. e.g. `[number: :red, atom: :blue]`. Types can include
+      `:number`, `:atom`, `regex`, `:tuple`, `:map`, `:list`, and `:reset`.
+      Colors can be any `t:IO.ANSI.ansidata/0` as accepted by `IO.ANSI.format/1`.
   """
 
+  # TODO: Remove :char_lists key by 2.0
   defstruct structs: true,
             binaries: :infer,
+            charlists: :infer,
             char_lists: :infer,
             limit: 50,
+            printable_limit: 4096,
             width: 80,
             base: :decimal,
-            pretty: false
+            pretty: false,
+            safe: true,
+            syntax_colors: []
 
+  @type color_key :: atom
+
+  # TODO: Remove :char_lists key and :as_char_lists value by 2.0
   @type t :: %__MODULE__{
                structs: boolean,
                binaries: :infer | :as_binaries | :as_strings,
+               charlists: :infer | :as_lists | :as_charlists,
                char_lists: :infer | :as_lists | :as_char_lists,
-               limit: pos_integer,
+               limit: pos_integer | :infinity,
+               printable_limit: pos_integer | :infinity,
                width: pos_integer | :infinity,
                base: :decimal | :binary | :hex | :octal,
-               pretty: boolean}
+               pretty: boolean,
+               safe: boolean,
+               syntax_colors: [{color_key, IO.ANSI.ansidata}]
+             }
+end
+
+defmodule Inspect.Error do
+  @moduledoc """
+  Raised when a struct cannot be inspected.
+  """
+  defexception [:message]
 end
 
 defmodule Inspect.Algebra do
   @moduledoc ~S"""
   A set of functions for creating and manipulating algebra
-  documents, as described in ["Strictly Pretty" (2000) by Christian Lindig][0].
+  documents.
 
-  An algebra document is represented by an `Inspect.Algebra` node
-  or a regular string.
+  This module implements the functionality described in
+  ["Strictly Pretty" (2000) by Christian Lindig][0] with small
+  additions, like support for String nodes, and a custom
+  rendering function that maximises horizontal space use.
 
       iex> Inspect.Algebra.empty
       :doc_nil
@@ -78,7 +115,7 @@ defmodule Inspect.Algebra do
 
   The functions `nest/2`, `space/2` and `line/2` help you put the
   document together into a rigid structure. However, the document
-  algebra gets interesting when using functions like `break/2`, which
+  algebra gets interesting when using functions like `break/1`, which
   converts the given string into a line break depending on how much space
   there is to print. Let's glue two docs together with a break and then
   render it:
@@ -104,16 +141,12 @@ defmodule Inspect.Algebra do
   `:flat` (breaks as spaces) and `:break` (breaks as newlines).
   Implementing the same logic in a strict language such as Elixir leads
   to an exponential growth of possible documents, unless document groups
-  are encoded explictly as `:flat` or `:break`. Those groups are then reduced
+  are encoded explicitly as `:flat` or `:break`. Those groups are then reduced
   to a simple document, where the layout is already decided, per [Lindig][0].
 
-  This implementation slightly changes the semantic of Lindig's algorithm
-  to allow elements that belong to the same group to be printed together
-  in the same line, even if they do not fit the line fully. This was achieved
-  by changing `:break` to mean a possible break and `:flat` to force a flat
-  structure. Then deciding if a break works as a newline is just a matter
-  of checking if we have enough space until the next break that is not
-  inside a group (which is still flat).
+  This implementation splits the `:break` mode in two modes: `:strict` and
+  `:flex`. The `:strict` mode has one entry per line, the `:flex` mode tries
+  to fit the maximum amount of entries in a group in the same line.
 
   Custom pretty printers can be implemented using the documents returned
   by this module and by providing their own rendering functions.
@@ -127,11 +160,12 @@ defmodule Inspect.Algebra do
   @tail_separator " |"
   @newline "\n"
   @nesting 1
-  @break " "
+  @mode :flex
+  @space " "
 
-  # Functional interface to `doc` records
+  # Functional interface to "doc" records
 
-  @type t :: :doc_nil | :doc_line | doc_cons | doc_nest | doc_break | doc_group | binary
+  @type t :: :doc_nil | :doc_line | doc_cons | doc_nest | doc_break | doc_group | doc_color | binary
 
   @typep doc_cons :: {:doc_cons, t, t}
   defmacrop doc_cons(left, right) do
@@ -140,7 +174,7 @@ defmodule Inspect.Algebra do
 
   @typep doc_nest :: {:doc_nest, t, non_neg_integer}
   defmacrop doc_nest(doc, indent) do
-    quote do: {:doc_nest, unquote(doc), unquote(indent) }
+    quote do: {:doc_nest, unquote(doc), unquote(indent)}
   end
 
   @typep doc_break :: {:doc_break, binary}
@@ -148,9 +182,14 @@ defmodule Inspect.Algebra do
     quote do: {:doc_break, unquote(break)}
   end
 
-  @typep doc_group :: {:doc_group, t}
-  defmacrop doc_group(group) do
-    quote do: {:doc_group, unquote(group)}
+  @typep doc_group :: {:doc_group, t, :flex | :strict}
+  defmacrop doc_group(group, mode) do
+    quote do: {:doc_group, unquote(group), unquote(mode)}
+  end
+
+  @typep doc_color :: {:doc_color, t, IO.ANSI.ansidata}
+  defmacrop doc_color(doc, color) do
+    quote do: {:doc_color, unquote(doc), unquote(color)}
   end
 
   defmacrop is_doc(doc) do
@@ -170,21 +209,25 @@ defmodule Inspect.Algebra do
       is_binary(unquote(doc)) or
       unquote(doc) in [:doc_nil, :doc_line] or
       (is_tuple(unquote(doc)) and
-       elem(unquote(doc), 0) in [:doc_cons, :doc_nest, :doc_break, :doc_group])
+       elem(unquote(doc), 0) in [:doc_cons, :doc_nest, :doc_break, :doc_group, :doc_color])
     end
   end
 
   @doc """
-  Converts an Elixir structure to an algebra document
-  according to the inspect protocol.
+  Converts an Elixir term to an algebra document
+  according to the `Inspect` protocol.
   """
   @spec to_doc(any, Inspect.Opts.t) :: t
-  def to_doc(%{__struct__: struct} = map, %Inspect.Opts{} = opts) when is_atom(struct) do
+  def to_doc(term, opts)
+
+  def to_doc(%_{} = struct, %Inspect.Opts{} = opts) do
     if opts.structs do
       try do
-        Inspect.inspect(map, opts)
+        Inspect.inspect(struct, opts)
       rescue
-        e ->
+        caught_exception ->
+          stacktrace = System.stacktrace
+
           # Because we try to raise a nice error message in case
           # we can't inspect a struct, there is a chance the error
           # message itself relies on the struct being printed, so
@@ -192,22 +235,31 @@ defmodule Inspect.Algebra do
           # we won't try to render any failed instruct when building
           # the error message.
           if Process.get(:inspect_trap) do
-            Inspect.Map.inspect(map, opts)
+            Inspect.Map.inspect(struct, opts)
           else
             try do
               Process.put(:inspect_trap, true)
-              res = Inspect.Map.inspect(map, opts)
-              formatted = IO.iodata_to_binary(format(res, :infinity))
-              raise ArgumentError,
-                "Got #{inspect e.__struct__} with message " <>
-                "\"#{Exception.message(e)}\" while inspecting #{formatted}"
+
+              res = Inspect.Map.inspect(struct, %{opts | syntax_colors: []})
+              res = IO.iodata_to_binary(format(res, :infinity))
+
+              message =
+                "got #{inspect caught_exception.__struct__} with message " <>
+                "#{inspect Exception.message(caught_exception)} while inspecting #{res}"
+              exception = Inspect.Error.exception(message: message)
+
+              if opts.safe do
+                Inspect.inspect(exception, opts)
+              else
+                reraise(exception, stacktrace)
+              end
             after
               Process.delete(:inspect_trap)
             end
           end
       end
     else
-      Inspect.Map.inspect(map, opts)
+      Inspect.Map.inspect(struct, opts)
     end
   end
 
@@ -227,31 +279,51 @@ defmodule Inspect.Algebra do
   @spec empty() :: :doc_nil
   def empty, do: :doc_nil
 
-  @doc """
-  Concatenates two document entities.
+  @doc ~S"""
+  Concatenates two document entities returning a new document.
 
   ## Examples
 
-      iex> doc = Inspect.Algebra.concat "hello", "world"
+      iex> doc = Inspect.Algebra.concat("hello", "world")
       iex> Inspect.Algebra.format(doc, 80)
       ["hello", "world"]
 
   """
-  @spec concat(t, t) :: doc_cons
-  def concat(x, y) when is_doc(x) and is_doc(y) do
-    doc_cons(x, y)
-  end
-
-  @doc """
-  Concatenates a list of documents.
-  """
-  @spec concat([t]) :: doc_cons
-  def concat(docs) do
-    folddoc(docs, &concat(&1, &2))
+  @spec concat(t, t) :: t
+  def concat(doc1, doc2) when is_doc(doc1) and is_doc(doc2) do
+    doc_cons(doc1, doc2)
   end
 
   @doc ~S"""
-  Nests document entity `x` positions deep.
+  Concatenates a list of documents returning a new document.
+
+  ## Examples
+
+      iex> doc = Inspect.Algebra.concat(["a", "b", "c"])
+      iex> Inspect.Algebra.format(doc, 80)
+      ["a", "b", "c"]
+
+  """
+  @spec concat([t]) :: t
+  def concat(docs) when is_list(docs) do
+    fold_doc(docs, &concat(&1, &2))
+  end
+
+  @doc ~S"""
+  Colors a document if the `color_key` has a color in the options.
+  """
+  @spec color(t, Inspect.Opts.color_key, Inspect.Opts.t) :: doc_color
+  def color(doc, color_key, %Inspect.Opts{syntax_colors: syntax_colors}) when is_doc(doc) do
+    if precolor = Keyword.get(syntax_colors, color_key) do
+      postcolor = Keyword.get(syntax_colors, :reset, :reset)
+      concat(doc_color(doc, precolor), doc_color(empty(), postcolor))
+    else
+      doc
+    end
+  end
+
+  @doc ~S"""
+  Nests the given document at the given `level`.
 
   Nesting will be appended to the line breaks.
 
@@ -263,58 +335,92 @@ defmodule Inspect.Algebra do
 
   """
   @spec nest(t, non_neg_integer) :: doc_nest
-  def nest(x, 0) when is_doc(x) do
-    x
+  def nest(doc, level)
+
+  def nest(doc, 0) when is_doc(doc) do
+    doc
   end
 
-  def nest(x, i) when is_doc(x) and is_integer(i) do
-    doc_nest(x, i)
+  def nest(doc, level) when is_doc(doc) and is_integer(level) and level > 0 do
+    doc_nest(doc, level)
   end
 
   @doc ~S"""
-  Document entity representing a break.
+  Returns a document entity representing a break based on the given
+  `string`.
 
-  This break can be rendered as a linebreak or as spaces,
+  This break can be rendered as a linebreak or as the given `string`,
   depending on the `mode` of the chosen layout or the provided
   separator.
 
   ## Examples
 
-  Let's glue two docs together with a break and then render it:
+  Let's create a document by concatenating two strings with a break between
+  them:
 
-      iex> doc = Inspect.Algebra.glue("a", " ", "b")
+      iex> doc = Inspect.Algebra.concat(["a", Inspect.Algebra.break("\t"), "b"])
       iex> Inspect.Algebra.format(doc, 80)
-      ["a", " ", "b"]
+      ["a", "\t", "b"]
 
-  Notice the break was represented as is, because we haven't reached
-  a line limit. Once we do, it is replaced by a newline:
+  Notice the break was represented with the given string, because we didn't
+  reach a line limit. Once we do, it is replaced by a newline:
 
-      iex> doc = Inspect.Algebra.glue(String.duplicate("a", 20), " ", "b")
+      iex> break = Inspect.Algebra.break("\t")
+      iex> doc = Inspect.Algebra.concat([String.duplicate("a", 20), break, "b"])
       iex> Inspect.Algebra.format(doc, 10)
       ["aaaaaaaaaaaaaaaaaaaa", "\n", "b"]
 
   """
   @spec break(binary) :: doc_break
-  def break(s) when is_binary(s), do: doc_break(s)
-
-  @spec break() :: doc_break
-  def break(), do: doc_break(@break)
-
-  @doc """
-  Inserts a break between two docs. See `break/1` for more info.
-  """
-  @spec glue(t, t) :: doc_cons
-  def glue(x, y), do: concat(x, concat(break, y))
-
-  @doc """
-  Inserts a break, passed as the second argument, between two docs,
-  the first and the third arguments.
-  """
-  @spec glue(t, binary, t) :: doc_cons
-  def glue(x, g, y) when is_binary(g), do: concat(x, concat(break(g), y))
+  def break(string) when is_binary(string), do: doc_break(string)
 
   @doc ~S"""
-  Returns a group containing the specified document.
+  Returns a document entity with the `" "` string as break.
+
+  See `break/1` for more information.
+  """
+  @spec break() :: doc_break
+  def break(), do: doc_break(@space)
+
+  @doc ~S"""
+  Glues two documents together inserting `" "` as a break between them.
+
+  This means the two documents will be separated by `" "` in case they
+  fit in the same line. Otherwise a line break is used.
+
+  ## Examples
+
+      iex> doc = Inspect.Algebra.glue("hello", "world")
+      iex> Inspect.Algebra.format(doc, 80)
+      ["hello", " ", "world"]
+
+  """
+  @spec glue(t, t) :: t
+  def glue(doc1, doc2), do: concat(doc1, concat(break(), doc2))
+
+  @doc ~S"""
+  Glues two documents (`doc1` and `doc2`) together inserting the given
+  break `break_string` between them.
+
+  For more information on how the break is inserted, see `break/1`.
+
+  ## Examples
+
+      iex> doc = Inspect.Algebra.glue("hello", "\t", "world")
+      iex> Inspect.Algebra.format(doc, 80)
+      ["hello", "\t", "world"]
+
+  """
+  @spec glue(t, binary, t) :: t
+  def glue(doc1, break_string, doc2) when is_binary(break_string) do
+    concat(doc1, concat(break(break_string), doc2))
+  end
+
+  @doc ~S"""
+  Returns a group containing the specified document `doc`.
+
+  Documents in a group are attempted to be rendered together
+  to the best of the renderer ability.
 
   ## Examples
 
@@ -341,82 +447,112 @@ defmodule Inspect.Algebra do
 
   """
   @spec group(t) :: doc_group
-  def group(d) when is_doc(d) do
-    doc_group(d)
+  def group(doc, mode \\ @mode) when is_doc(doc) do
+    doc_group(doc, mode)
   end
 
-  @doc """
-  Inserts a mandatory single space between two document entities.
+  @doc ~S"""
+  Inserts a mandatory single space between two documents.
 
   ## Examples
 
-      iex> doc = Inspect.Algebra.space "Hughes", "Wadler"
-      iex> Inspect.Algebra.format(doc, 80)
+      iex> doc = Inspect.Algebra.space("Hughes", "Wadler")
+      iex> Inspect.Algebra.format(doc, 5)
       ["Hughes", " ", "Wadler"]
 
   """
-  @spec space(t, t) :: doc_cons
-  def space(x, y), do: concat(x, concat(" ", y))
+  @spec space(t, t) :: t
+  def space(doc1, doc2), do: concat(doc1, concat(" ", doc2))
 
   @doc ~S"""
-  Inserts a mandatory linebreak between two document entities.
+  Inserts a mandatory linebreak between two documents.
 
   ## Examples
 
-      iex> doc = Inspect.Algebra.line "Hughes", "Wadler"
+      iex> doc = Inspect.Algebra.line("Hughes", "Wadler")
       iex> Inspect.Algebra.format(doc, 80)
       ["Hughes", "\n", "Wadler"]
 
   """
-  @spec line(t, t) :: doc_cons
-  def line(x, y), do: concat(x, concat(:doc_line, y))
+  @spec line(t, t) :: t
+  def line(doc1, doc2), do: concat(doc1, concat(:doc_line, doc2))
 
-  @doc """
-  Folds a list of document entities into a document entity
-  using a function that is passed as the first argument.
+  @doc ~S"""
+  Folds a list of documents into a document using the given folder function.
+
+  The list of documents is folded "from the right"; in that, this function is
+  similar to `List.foldr/3`, except that it doesn't expect an initial
+  accumulator and uses the last element of `docs` as the initial accumulator.
 
   ## Examples
 
-      iex> doc = ["A", "B"]
-      iex> doc = Inspect.Algebra.folddoc(doc, fn(x,y) ->
-      ...>   Inspect.Algebra.concat [x, "!", y]
+      iex> docs = ["A", "B", "C"]
+      iex> docs = Inspect.Algebra.fold_doc(docs, fn(doc, acc) ->
+      ...>   Inspect.Algebra.concat([doc, "!", acc])
       ...> end)
-      iex> Inspect.Algebra.format(doc, 80)
-      ["A", "!", "B"]
+      iex> Inspect.Algebra.format(docs, 80)
+      ["A", "!", "B", "!", "C"]
 
   """
-  @spec folddoc([t], ((t, t) -> t)) :: t
-  def folddoc([], _), do: empty
-  def folddoc([doc], _), do: doc
-  def folddoc([d|ds], f), do: f.(d, folddoc(ds, f))
+  @spec fold_doc([t], ((t, t) -> t)) :: t
+  def fold_doc(docs, folder_fun)
+
+  def fold_doc([], _folder_fun),
+    do: empty()
+  def fold_doc([doc], _folder_fun),
+    do: doc
+  def fold_doc([doc | docs], folder_fun) when is_function(folder_fun, 2),
+    do: folder_fun.(doc, fold_doc(docs, folder_fun))
 
   # Elixir conveniences
 
   @doc ~S"""
   Surrounds a document with characters.
 
-  Puts the document between left and right enclosing and nesting it.
-  The document is marked as a group, to show the maximum as possible
-  concisely together.
+  Puts the given document `doc` between the `left` and `right` documents enclosing
+  and nesting it. The document is marked as a group, to show the maximum as
+  possible concisely together.
+
+  ## Options
+
+    * `:mode` - if the surround contents are `:flex`, which means we try to fit as
+      much as possible on a single line, or `:strict`, which forces a new line on
+      every break, as well, as after `left` and before `right`
+    * `:nest` - how much to nest the surrounded contents
 
   ## Examples
 
-      iex> doc = Inspect.Algebra.surround "[", Inspect.Algebra.glue("a", "b"), "]"
+      iex> doc = Inspect.Algebra.surround("[", Inspect.Algebra.glue("a", "b"), "]")
       iex> Inspect.Algebra.format(doc, 3)
       ["[", "a", "\n ", "b", "]"]
 
   """
-  @spec surround(binary, t, binary) :: t
-  def surround(left, doc, right) do
-    group concat left, concat(nest(doc, @nesting), right)
+  @spec surround(t, t, t, keyword()) :: t
+  def surround(left, doc, right, opts \\ [])
+      when is_doc(left) and is_doc(doc) and is_doc(right) and is_list(opts) do
+    nest = Keyword.get(opts, :nest, @nesting)
+
+    case Keyword.get(opts, :mode, @mode) do
+      :flex ->
+        group(concat(nest(concat(left, doc), nest), right), :flex)
+      :strict ->
+        group(glue(nest(glue(left, "", doc), nest), "", right), :strict)
+    end
   end
 
   @doc ~S"""
   Maps and glues a collection of items.
 
-  It uses the given left and right as surrounding and a separator for
-  each item. A limit can be passed which, once reached, stops gluing
-  and outputs "..." instead.
+  It uses the given `left` and `right` documents as surrounding and the
+  separator document `separator` to separate items in `docs`. A limit can be
+  passed: when this limit is reached, this function stops gluing and outputs
+  `"..."` instead.
+
+  ## Options
+
+    * `:separator` - the separator used between each doc
+
+  Plus all options in `surround/4`.
 
   ## Examples
 
@@ -434,64 +570,86 @@ defmodule Inspect.Algebra do
       ...>         %Inspect.Opts{limit: 3}, fn i, _opts -> to_string(i) end, "!")
       iex> Inspect.Algebra.format(doc, 20) |> IO.iodata_to_binary
       "[1! 2! 3! ...]"
+
   """
-  @spec surround_many(binary, [any], binary, integer | :infinity, (term -> t), binary) :: t
-  def surround_many(left, docs, right, opts, fun, separator \\ @surround_separator) do
-    do_surround_many(left, docs, right, opts.limit, opts, fun, separator)
+  @spec surround_many(t, [any], t, Inspect.Opts.t, (term, Inspect.Opts.t -> t), keyword) :: t
+  def surround_many(left, docs, right, %Inspect.Opts{} = inspect, fun, opts \\ [])
+      when is_doc(left) and is_list(docs) and is_doc(right) and is_function(fun, 2) do
+    cond do
+      is_list(opts) ->
+        separator = Keyword.get(opts, :separator, @surround_separator)
+        surround_many(left, docs, right, inspect.limit, inspect, fun, separator, opts)
+      is_doc(opts) ->
+        # TODO: Deprecate on Elixir v1.8
+        surround_many(left, docs, right, inspect.limit, inspect, fun, opts, [])
+    end
   end
 
-  defp do_surround_many(left, [], right, _, _opts, _fun, _) do
+  defp surround_many(left, [], right, _limit, _inspect, _fun, _sep, _opts) do
     concat(left, right)
   end
 
-  defp do_surround_many(left, docs, right, limit, _opts, fun, sep) do
-    surround(left, do_surround_many(docs, limit, _opts, fun, sep), right)
+  defp surround_many(left, docs, right, limit, inspect, fun, sep, opts) do
+    surround(left, surround_each(docs, limit, inspect, fun, sep), right, opts)
   end
 
-  defp do_surround_many(_, 0, _opts, _fun, _sep) do
+  defp surround_each(_, 0, _opts, _fun, _sep) do
     "..."
   end
 
-  defp do_surround_many([h], limit, opts, fun, _sep) do
+  defp surround_each([], _limit, _opts, _fun, _sep) do
+    :doc_nil
+  end
+
+  defp surround_each([h], limit, opts, fun, _sep) do
     fun.(h, %{opts | limit: limit})
   end
 
-  defp do_surround_many([h|t], limit, opts, fun, sep) when is_list(t) do
+  defp surround_each([h | t], limit, opts, fun, sep) when is_list(t) do
     limit = decrement(limit)
-    glue(
-      concat(fun.(h, %{opts | limit: limit}), sep),
-      do_surround_many(t, limit, opts, fun, sep)
-    )
+    h = fun.(h, %{opts | limit: limit})
+    t = surround_each(t, limit, opts, fun, sep)
+    do_join(h, t, sep)
   end
 
-  defp do_surround_many([h|t], limit, opts, fun, _sep) do
+  defp surround_each([h | t], limit, opts, fun, _sep) do
     limit = decrement(limit)
-    glue(
-      concat(fun.(h, %{opts | limit: limit}), @tail_separator),
-      fun.(t, %{opts | limit: limit})
-    )
+    h = fun.(h, %{opts | limit: limit})
+    t = fun.(t, %{opts | limit: limit})
+    do_join(h, t, @tail_separator)
   end
+
+  defp do_join(:doc_nil, :doc_nil, _), do: :doc_nil
+  defp do_join(h, :doc_nil, _),        do: h
+  defp do_join(:doc_nil, t, _),        do: t
+  defp do_join(h, t, sep),             do: glue(concat(h, sep), t)
 
   defp decrement(:infinity), do: :infinity
   defp decrement(counter),   do: counter - 1
 
-  @doc """
-  The formatting function.
+  @doc ~S"""
+  Formats a given document for a given width.
 
   Takes the maximum width and a document to print as its arguments
   and returns an IO data representation of the best layout for the
   document to fit in the given width.
+
+  ## Examples
+
+      iex> doc = Inspect.Algebra.glue("hello", " ", "world")
+      iex> Inspect.Algebra.format(doc, 30) |> IO.iodata_to_binary()
+      "hello world"
+      iex> Inspect.Algebra.format(doc, 10) |> IO.iodata_to_binary()
+      "hello\nworld"
+
   """
   @spec format(t, non_neg_integer | :infinity) :: iodata
-  def format(d, w) do
-    format(w, 0, [{0, default_mode(w), doc_group(d)}])
+  def format(doc, width) when is_doc(doc) and (width == :infinity or width >= 0) do
+    format(width, 0, [{0, :flat, group(doc)}])
   end
 
-  defp default_mode(:infinity), do: :flat
-  defp default_mode(_),         do: :break
-
   # Record representing the document mode to be rendered: flat or broken
-  @typep mode :: :flat | :break
+  @typep mode :: :flat | :flex | :strict
 
   @spec fits?(integer, [{integer, mode, t}]) :: boolean
   defp fits?(w, _) when w < 0,                      do: false
@@ -499,11 +657,13 @@ defmodule Inspect.Algebra do
   defp fits?(_, [{_, _, :doc_line} | _]),           do: true
   defp fits?(w, [{_, _, :doc_nil} | t]),            do: fits?(w, t)
   defp fits?(w, [{i, m, doc_cons(x, y)} | t]),      do: fits?(w, [{i, m, x} | [{i, m, y} | t]])
+  defp fits?(w, [{i, m, doc_color(x, _)} | t]),     do: fits?(w, [{i, m, x} | t])
   defp fits?(w, [{i, m, doc_nest(x, j)} | t]),      do: fits?(w, [{i + j, m, x} | t])
-  defp fits?(w, [{i, _, doc_group(x)} | t]),        do: fits?(w, [{i, :flat, x} | t])
-  defp fits?(w, [{_, _, s} | t]) when is_binary(s), do: fits?((w - byte_size s), t)
-  defp fits?(w, [{_, :flat, doc_break(s)} | t]),    do: fits?((w - byte_size s), t)
-  defp fits?(_, [{_, :break, doc_break(_)} | _]),   do: true
+  defp fits?(w, [{i, _, doc_group(x, _)} | t]),     do: fits?(w, [{i, :flat, x} | t])
+  defp fits?(w, [{_, _, s} | t]) when is_binary(s), do: fits?((w - byte_size(s)), t)
+  defp fits?(w, [{_, :flat, doc_break(s)} | t]),    do: fits?((w - byte_size(s)), t)
+  defp fits?(_, [{_, :strict, doc_break(_)} | _]),  do: true
+  defp fits?(_, [{_, :flex, doc_break(_)} | _]),    do: true
 
   @spec format(integer | :infinity, integer, [{integer, mode, t}]) :: [binary]
   defp format(_, _, []),                                do: []
@@ -511,10 +671,11 @@ defmodule Inspect.Algebra do
   defp format(w, k, [{_, _, :doc_nil} | t]),            do: format(w, k, t)
   defp format(w, k, [{i, m, doc_cons(x, y)} | t]),      do: format(w, k, [{i, m, x} | [{i, m, y} | t]])
   defp format(w, k, [{i, m, doc_nest(x, j)} | t]),      do: format(w, k, [{i + j, m, x} | t])
-  defp format(w, k, [{i, m, doc_group(x)} | t]),        do: format(w, k, [{i, m, x} | t])
-  defp format(w, k, [{_, _, s} | t]) when is_binary(s), do: [s | format(w, (k + byte_size s), t)]
-  defp format(w, k, [{_, :flat, doc_break(s)} | t]),    do: [s | format(w, (k + byte_size s), t)]
-  defp format(w, k, [{i, :break, doc_break(s)} | t]) do
+  defp format(w, k, [{i, m, doc_color(x, c)} | t]),     do: [ansi(c) | format(w, k, [{i, m, x} | t])]
+  defp format(w, k, [{_, _, s} | t]) when is_binary(s), do: [s | format(w, (k + byte_size(s)), t)]
+  defp format(w, k, [{_, :flat, doc_break(s)} | t]),    do: [s | format(w, (k + byte_size(s)), t)]
+  defp format(w, _, [{i, :strict, doc_break(_)} | t]),  do: [indent(i) | format(w, i, t)]
+  defp format(w, k, [{i, :flex, doc_break(s)} | t]) do
     k = k + byte_size(s)
 
     if w == :infinity or fits?(w - k, t) do
@@ -522,6 +683,22 @@ defmodule Inspect.Algebra do
     else
       [indent(i) | format(w, i, t)]
     end
+  end
+  # If the doc_group is flex, the fitting decision happens later.
+  defp format(w, k, [{i, _, doc_group(x, :flex)} | t]) do
+    format(w, k, [{i, :flex, x} | t])
+  end
+  # If the doc_group is strict, the fitting decision happens now.
+  defp format(w, k, [{i, _, doc_group(x, :strict)} | t]) do
+    if w == :infinity or fits?(w - k, [{i, :flat, x} | t]) do
+      format w, k, [{i, :flat, x} | t]
+    else
+      format w, k, [{i, :strict, x} | t]
+    end
+  end
+
+  defp ansi(color) do
+    IO.ANSI.format_fragment(color, true)
   end
 
   defp indent(0), do: @newline

@@ -4,68 +4,40 @@
 # deps.* tasks. We also keep the Elixir version in the manifest file.
 defmodule Mix.Dep.Lock do
   @moduledoc false
+
   @manifest ".compile.lock"
 
   @doc """
   Returns the manifest file for dependencies.
+
+  The manifest is used to check if the lockfile
+  itself is up to date.
   """
-  @spec manifest(Path.t) :: Path.t
-  def manifest(manifest_path \\ Mix.Project.manifest_path) do
-    Path.join(manifest_path, @manifest)
+  def manifest(path \\ Mix.Project.manifest_path) do
+    Path.join(path, @manifest)
   end
 
   @doc """
-  Touches the manifest timestamp unless it is an umbrella application.
+  Touches the manifest file to force recompilation.
   """
-  @spec touch() :: :ok
-  def touch() do
-    _ = unless Mix.Project.umbrella?, do: touch(Mix.Project.manifest_path)
-    :ok
+  def touch_manifest do
+    path = Mix.Project.manifest_path
+    File.mkdir_p!(path)
+    File.touch!(manifest(path))
   end
 
   @doc """
-  Touches the manifest timestamp and updates the elixir version.
-  """
-  @spec touch(Path.t) :: :ok
-  def touch(manifest_path) do
-    File.mkdir_p!(manifest_path)
-    File.write!(Path.join(manifest_path, @manifest), System.version)
-  end
-
-  @doc """
-  Returns the elixir version in the lock manifest.
-  """
-  @spec elixir_vsn() :: binary | nil
-  def elixir_vsn() do
-    elixir_vsn(Mix.Project.manifest_path)
-  end
-
-  @doc """
-  Returns the elixir version in the lock manifest in the given path.
-  """
-  @spec elixir_vsn(Path.t) :: binary | nil
-  def elixir_vsn(manifest_path) do
-    case File.read(manifest(manifest_path)) do
-      {:ok, contents} ->
-        contents
-      {:error, _} ->
-        nil
-    end
-  end
-
-  @doc """
-  Read the lockfile, returns a map containing
+  Reads the lockfile, returns a map containing
   each app name and its current lock information.
   """
   @spec read() :: map
   def read() do
-    case File.read(lockfile) do
+    case File.read(lockfile()) do
       {:ok, info} ->
-        case Code.eval_string(info) do
-          # lock could be a keyword list
-          {lock, _binding} when is_list(lock) -> Enum.into(lock, %{})
+        assert_no_merge_conflicts_in_lockfile(lockfile(), info)
+        case Code.eval_string(info, [], file: lockfile()) do
           {lock, _binding} when is_map(lock)  -> lock
-          {nil, _binding}                     -> %{}
+          {_, _binding} -> %{}
         end
       {:error, _} ->
         %{}
@@ -77,18 +49,25 @@ defmodule Mix.Dep.Lock do
   """
   @spec write(map) :: :ok
   def write(map) do
-    unless map == read do
+    unless map == read() do
       lines =
-        for {app, rev} <- map, rev != nil do
+        for {app, rev} <- Enum.sort(map), rev != nil do
           ~s("#{app}": #{inspect rev, limit: :infinity})
         end
-      File.write! lockfile, "%{" <> Enum.join(lines, ",\n  ") <> "}\n"
-      touch
+      File.write! lockfile(), "%{" <> Enum.join(lines, ",\n  ") <> "}\n"
+      touch_manifest()
     end
     :ok
   end
 
   defp lockfile do
     Mix.Project.config[:lockfile]
+  end
+
+  defp assert_no_merge_conflicts_in_lockfile(lockfile, info) do
+    if String.contains?(info, ~w(<<<<<<< ======= >>>>>>>)) do
+      Mix.raise "Your #{lockfile} contains merge conflicts. Please resolve the conflicts " <>
+                "and run the command again"
+    end
   end
 end

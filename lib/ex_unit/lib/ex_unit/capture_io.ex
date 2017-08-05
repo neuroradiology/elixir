@@ -9,10 +9,18 @@ defmodule ExUnit.CaptureIO do
 
         import ExUnit.CaptureIO
 
-        test :example do
+        test "example" do
           assert capture_io(fn ->
             IO.puts "a"
           end) == "a\n"
+        end
+
+        test "checking the return value and the IO output" do
+          fun = fn ->
+            assert Enum.each(["some", "example"], &(IO.puts &1)) == :ok
+          end
+          assert capture_io(fun) == "some\nexample\n"
+          # tip: or use only: "capture_io(fun)" to silence the IO output (so only assert the return value)
         end
       end
 
@@ -35,8 +43,7 @@ defmodule ExUnit.CaptureIO do
   prompts (specified as arguments to `IO.get*` functions) are not
   captured.
 
-  A developer can set a string as an input. The default
-  input is `:eof`.
+  A developer can set a string as an input. The default input is `:eof`.
 
   ## Examples
 
@@ -57,6 +64,20 @@ defmodule ExUnit.CaptureIO do
       ...>   IO.write input
       ...> end) == "this is input"
       true
+
+  ## Returning values
+
+  As seen in the examples above, `capture_io` returns the captured output.
+  If you want to also capture the result of the function executed inside
+  the `capture_io`, you can use `Kernel.send/2` to send yourself a message
+  and use `ExUnit.Assertions.assert_received/2` to match on the results:
+
+      capture_io([input: "this is input", capture_prompt: false], fn ->
+        send self(), {:block_result, 42}
+        # ...
+      end)
+
+      assert_received {:block_result, 42}
 
   """
   def capture_io(fun) do
@@ -91,44 +112,48 @@ defmodule ExUnit.CaptureIO do
     prompt_config = Keyword.get(options, :capture_prompt, true)
     input = Keyword.get(options, :input, "")
 
-    original_gl = :erlang.group_leader
+    original_gl = Process.group_leader()
     {:ok, capture_gl} = StringIO.open(input, capture_prompt: prompt_config)
-    :erlang.group_leader(capture_gl, self)
-
     try do
-      fun.()
-      StringIO.close(capture_gl) |> elem(1) |> elem(1)
+      Process.group_leader(self(), capture_gl)
+      do_capture_io(capture_gl, fun)
     after
-      :erlang.group_leader(original_gl, self)
+      Process.group_leader(self(), original_gl)
     end
   end
 
   defp do_capture_io(device, options, fun) do
-    unless original_io = Process.whereis(device) do
-      raise "could not find IO device registered at #{inspect device}"
-    end
-
-    unless ExUnit.Server.add_device(device) do
-      raise "IO device registered at #{inspect device} is already captured"
-    end
-
     input = Keyword.get(options, :input, "")
+    {:ok, string_io} = StringIO.open(input)
+    case ExUnit.CaptureServer.device_capture_on(device, string_io) do
+      {:ok, ref} ->
+        try do
+          do_capture_io(string_io, fun)
+        after
+          ExUnit.CaptureServer.device_capture_off(ref)
+        end
+      {:error, :no_device} ->
+        _ = StringIO.close(string_io)
+        raise "could not find IO device registered at #{inspect device}"
+      {:error, :already_captured} ->
+        _ = StringIO.close(string_io)
+        raise "IO device registered at #{inspect device} is already captured"
+    end
+  end
 
-    Process.unregister(device)
-    {:ok, capture_io} = StringIO.open(input)
-    Process.register(capture_io, device)
-
+  defp do_capture_io(string_io, fun) do
     try do
-      fun.()
-      StringIO.close(capture_io) |> elem(1) |> elem(1)
-    after
-      try do
-        Process.unregister(device)
-      rescue
-        ArgumentError -> nil
-      end
-      Process.register(original_io, device)
-      ExUnit.Server.remove_device(device)
+       _ = fun.()
+      :ok
+    catch
+      kind, reason ->
+        stack = System.stacktrace()
+        _ = StringIO.close(string_io)
+        :erlang.raise(kind, reason, stack)
+    else
+      :ok ->
+        {:ok, output} = StringIO.close(string_io)
+        elem(output, 1)
     end
   end
 end

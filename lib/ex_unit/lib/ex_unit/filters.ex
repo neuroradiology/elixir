@@ -14,10 +14,11 @@ defmodule ExUnit.Filters do
   """
   @spec parse_path(String.t) :: {String.t, any}
   def parse_path(file) do
-    case Regex.run(~r/^(.+):(\d+)$/, file, capture: :all_but_first) do
-      [file, line_number] ->
-        {file, exclude: [:test], include: [line: line_number]}
-      nil ->
+    {paths, [line]} = file |> String.split(":") |> Enum.split(-1)
+    case Integer.parse(line) do
+      {_, ""} ->
+        {Enum.join(paths, ":"), exclude: [:test], include: [line: line]}
+      _ ->
         {file, []}
     end
   end
@@ -77,20 +78,29 @@ defmodule ExUnit.Filters do
       :ok
 
       iex> ExUnit.Filters.eval([foo: "bar"], [:foo], %{foo: "baz"}, [])
-      {:error, :foo}
+      {:error, "due to foo filter"}
 
   """
-  @spec eval(t, t, map, [ExUnit.Test.t]) :: :ok | {:error, atom}
+  @spec eval(t, t, map, [ExUnit.Test.t]) :: :ok | {:error, binary}
   def eval(include, exclude, tags, collection) when is_map(tags) do
-    excluded = Enum.find_value exclude, &has_tag(&1, tags, collection)
-    if !excluded or Enum.any?(include, &has_tag(&1, tags, collection)) do
-      :ok
-    else
-      {:error, excluded}
+    skip? = not Enum.any?(include, &has_tag(&1, %{skip: true}, collection))
+
+    case Map.fetch(tags, :skip) do
+      {:ok, msg} when is_binary(msg) and skip? ->
+        {:error, msg}
+      {:ok, true} when skip? ->
+        {:error, "due to skip tag"}
+      _ ->
+        excluded = Enum.find_value exclude, &has_tag(&1, tags, collection)
+        if !excluded or Enum.any?(include, &has_tag(&1, tags, collection)) do
+          :ok
+        else
+          {:error, "due to #{excluded} filter"}
+        end
     end
   end
 
-  defp has_tag({:line, line}, tags, collection) do
+  defp has_tag({:line, line}, %{line: _} = tags, collection) do
     line = to_integer(line)
     tags.line <= line and
       closest_test_before_line(line, collection).tags.line == tags.line

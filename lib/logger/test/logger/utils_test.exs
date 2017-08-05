@@ -28,6 +28,10 @@ defmodule Logger.UtilsTest do
     assert truncate('ol' ++ "á", 2) == ['ol' ++ "", " (truncated)"]
     assert truncate('ol' ++ "á", 3) == ['ol' ++ "", " (truncated)"]
     assert truncate('ol' ++ "á", 4) == 'ol' ++ "á"
+
+    # :infinity
+    long_string = String.duplicate("foo", 10_000)
+    assert truncate(long_string, :infinity) == long_string
   end
 
   test "inspect/2 formats" do
@@ -80,20 +84,7 @@ defmodule Logger.UtilsTest do
            {'~ts~ts~ts', ["abcdeabcde", "", ""]}
   end
 
-  test "timestamp" do
+  test "timestamp/1" do
     assert {{_, _, _}, {_, _, _, _}} = timestamp(true)
-  end
-
-  test "format_date" do
-    date = {2015, 1, 30}
-    assert format_date(date) == ["2015", ?-, [?0, "1"], ?-, "30"]
-  end
-
-  test "format_time" do
-    time = {12, 30, 10, 1}
-    assert format_time(time) == ["12", ?:, "30", ?:, "10", ?., [?0, ?0, "1"]]
-
-    time = {12, 30, 10, 10}
-    assert format_time(time) == ["12", ?:, "30", ?:, "10", ?., [?0, "10"]]
   end
 end

@@ -1,4 +1,3 @@
-defmodule Bar do
-  defstruct name: ""
-  def foo?(%Foo{}), do: true
+defmodule BarStruct do
+  defstruct name: "", foo: %FooStruct{}
 end

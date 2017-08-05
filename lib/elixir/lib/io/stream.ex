@@ -10,13 +10,16 @@ end
 
 defmodule IO.Stream do
   @moduledoc """
-  Defines a `IO.Stream` struct returned by `IO.stream/2` and `IO.binstream/2`.
+  Defines an `IO.Stream` struct returned by `IO.stream/2` and `IO.binstream/2`.
 
   The following fields are public:
 
     * `device`        - the IO device
     * `raw`           - a boolean indicating if bin functions should be used
     * `line_or_bytes` - if reading should read lines or a given amount of bytes
+
+  It is worth noting that an IO stream has side effects and every time you go
+  over the stream you may get different results.
 
   """
 
@@ -30,10 +33,6 @@ defmodule IO.Stream do
   end
 
   defimpl Collectable do
-    def empty(stream) do
-      stream
-    end
-
     def into(%{device: device, raw: raw} = stream) do
       {:ok, into(stream, device, raw)}
     end

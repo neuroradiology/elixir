@@ -1,10 +1,30 @@
 language: erlang
-script: "make compile && rm -rf .git && make test"
+sudo: false
+
+os: linux
+otp_release: 19.0
+
+matrix:
+  include:
+    - os: linux
+      otp_release: 19.1
+    - os: linux
+      otp_release: 19.2
+    - os: linux
+      otp_release: 19.3
+    - os: linux
+      otp_release: 20.0
+
+env:
+  - ELIXIR_ASSERT_TIMEOUT=2000
+
+script:
+  - make compile
+  - rm -rf .git
+  - make test
+  - dialyzer -pa lib/elixir/ebin --build_plt --output_plt elixir.plt --apps lib/elixir/ebin/elixir.beam lib/elixir/ebin/Elixir.Kernel.beam
+
 notifications:
-  irc: "irc.freenode.org#elixir-lang"
   recipients:
     - jose.valim@plataformatec.com.br
     - eric.meadows.jonsson@gmail.com
-otp_release:
-  - 17.0
-  - 17.1

@@ -3,38 +3,6 @@ Code.require_file "../test_helper.exs", __DIR__
 defmodule Mix.CLITest do
   use MixTest.Case
 
-  test "env and path configs" do
-    in_fixture "no_mixfile", fn ->
-      File.write! "custom.exs", """
-      defmodule P do
-        use Mix.Project
-        def project, do: [app: :p, version: "0.1.0"]
-      end
-      """
-
-      System.put_env("MIX_ENV", "prod")
-      System.put_env("MIX_EXS", "custom.exs")
-
-      # Emulate protocol consolidation
-      File.mkdir_p!("_build/prod/consolidated")
-
-      {output, _status} =
-        System.cmd elixir_executable,
-                   ["-pa", "_build/prod/consolidated",
-                    mix_executable, "run",
-                    "-e", "IO.inspect {Mix.env, System.argv}",
-                    "-e", "IO.inspect hd(:code.get_path)",
-                    "--", "1", "2", "3"]
-
-      System.delete_env("MIX_ENV")
-      System.delete_env("MIX_EXS")
-
-      assert output =~ "Compiled lib/a.ex"
-      assert output =~ ~s({:prod, ["1", "2", "3"]})
-      assert output =~ ~s('#{Path.expand("_build/prod/consolidated")}')
-    end
-  end
-
   test "default task" do
     in_fixture "no_mixfile", fn ->
       File.write! "mix.exs", """
@@ -43,28 +11,13 @@ defmodule Mix.CLITest do
         def project, do: [app: :p, version: "0.1.0"]
       end
       """
-      output = mix ~w[]
+      mix ~w[]
       assert File.regular?("_build/dev/lib/p/ebin/Elixir.A.beam")
-      assert output =~ "Compiled lib/a.ex"
     end
   end
 
-  test "custom mix.exs" do
-    in_fixture "no_mixfile", fn ->
-      File.write! "mix.exs", """
-      defmodule P do
-        use Mix.Project
-        def project, do: [app: :p]
-      end
-      """
-      output = mix ~w[]
-      assert File.regular?("_build/dev/lib/p/ebin/Elixir.A.beam")
-      assert output =~ "Compiled lib/a.ex"
-    end
-  end
-
-  test "compiles and invokes simple task from CLI" do
-    in_fixture "no_mixfile", fn ->
+  test "compiles and invokes simple task from CLI", context do
+    in_tmp context.test, fn ->
       File.mkdir_p!("lib")
 
       File.write! "mix.exs", """
@@ -82,43 +35,112 @@ defmodule Mix.CLITest do
       """
 
       File.write! "lib/hello.ex", """
-      defmodule Mix.Tasks.Hello do
+      defmodule Mix.Tasks.MyHello do
         use Mix.Task
 
-        @shortdoc "Hello"
+        @shortdoc "Says hello"
 
         def run(_) do
           IO.puts Mix.Project.get!.hello_world
+          Mix.shell.info("This won't appear")
+          Mix.raise("oops")
         end
       end
       """
 
-      contents = mix ~w[hello]
+      contents = mix ~w[my_hello], [{"MIX_QUIET", "1"}]
       assert contents =~ "Hello from MyProject!\n"
-      assert contents =~ "Compiled lib/hello.ex\n"
+      refute contents =~ "This won't appear"
+
+      contents = mix ~w[my_hello], [{"MIX_QUIET", "0"}]
+      assert contents =~ "Hello from MyProject!\n"
+      assert contents =~ "This won't appear"
+
+      contents = mix ~w[my_hello], [{"MIX_DEBUG", "1"}]
+      assert contents =~ "** Running mix my_hello (inside MyProject)"
+      assert contents =~ "** (Mix.Error) oops"
+
+      contents = mix ~w[my_hello], [{"MIX_DEBUG", "0"}]
+      refute contents =~ "** Running mix my_hello (inside MyProject)"
+      refute contents =~ "** (Mix.Error) oops"
     end
   end
 
-  test "no task error" do
-    in_fixture "no_mixfile", fn ->
+  test "no task error", context do
+    in_tmp context.test, fn ->
       contents = mix ~w[no_task]
-      assert contents =~ "** (Mix) The task no_task could not be found"
+      assert contents =~ "** (Mix) The task \"no_task\" could not be found"
     end
   end
 
-  test "--help smoke test" do
-    in_fixture "no_mixfile", fn ->
+  test "tasks with slashes in them raise a NoTaskError right away", context do
+    in_tmp context.test, fn ->
+      contents = mix ~w[my/task]
+      assert contents =~ "** (Mix) The task \"my/task\" could not be found"
+    end
+  end
+
+  test "--help smoke test", context do
+    in_tmp context.test, fn ->
       output = mix ~w[--help]
-      assert output =~ ~r/mix compile\s+# Compile source files/
+      assert output =~ ~r/mix compile\s+# Compiles source files/
       refute output =~ "mix invalid"
     end
   end
 
-  test "--version smoke test" do
-    in_fixture "no_mixfile", fn ->
+  test "--version smoke test", context do
+    in_tmp context.test, fn ->
       output = mix ~w[--version]
-      assert output =~ ~r/Mix [0-9\.a-z]+/
+      assert output =~ ~r/Erlang.+\n\nMix [0-9\.a-z]+/
     end
+  end
+
+  test "env config", context do
+    in_tmp context.test, fn ->
+      File.write! "custom.exs", """
+      defmodule P do
+        use Mix.Project
+        def project, do: [app: :p, version: "0.1.0"]
+      end
+      """
+
+      System.put_env("MIX_ENV", "prod")
+      System.put_env("MIX_EXS", "custom.exs")
+
+      output = mix ["run", "-e", "IO.inspect {Mix.env, System.argv}",
+                    "--", "1", "2", "3"]
+      assert output =~ ~s({:prod, ["1", "2", "3"]})
+    end
+  after
+    System.delete_env("MIX_ENV")
+    System.delete_env("MIX_EXS")
+  end
+
+  test "env config defaults to the tasks's preferred cli environment", context do
+    in_tmp context.test, fn ->
+      File.write! "custom.exs", """
+      defmodule P do
+        use Mix.Project
+        def project, do: [app: :p, version: "0.1.0"]
+      end
+
+      defmodule Mix.Tasks.TestTask do
+        use Mix.Task
+        @preferred_cli_env :prod
+
+        def run(args) do
+          IO.inspect {Mix.env, args}
+        end
+      end
+      """
+
+      System.put_env("MIX_EXS", "custom.exs")
+
+      output = mix ["test_task", "a", "b", "c"]
+      assert output =~ ~s({:prod, ["a", "b", "c"]})
+    end
+  after
+    System.delete_env("MIX_EXS")
   end
 
   test "new with tests" do
@@ -128,7 +150,7 @@ defmodule Mix.CLITest do
 
       output = mix ~w[test test/new_with_tests_test.exs --cover]
       assert File.regular?("_build/test/lib/new_with_tests/ebin/Elixir.NewWithTests.beam")
-      assert output =~ "1 tests, 0 failures"
+      assert output =~ "2 tests, 0 failures"
       assert output =~ "Generating cover results ..."
       assert File.regular?("cover/Elixir.NewWithTests.html")
     end
@@ -141,21 +163,7 @@ defmodule Mix.CLITest do
 
       output = mix ~w[test]
       assert File.regular?("_build/test/lib/sup_with_tests/ebin/Elixir.SupWithTests.beam")
-      assert output =~ "1 tests, 0 failures"
+      assert output =~ "2 tests, 0 failures"
     end
-  end
-
-  defp mix(args) when is_list(args) do
-    System.cmd(elixir_executable,
-               ["-r", mix_executable, "--"|args],
-               [stderr_to_stdout: true]) |> elem(0)
-  end
-
-  defp mix_executable do
-    Path.expand("../../../../bin/mix", __DIR__)
-  end
-
-  defp elixir_executable do
-    Path.expand("../../../../bin/elixir", __DIR__)
   end
 end

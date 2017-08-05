@@ -1,18 +1,12 @@
 defmodule HashDict do
   @moduledoc """
-  A key-value store.
+  WARNING: this module is deprecated.
 
-  The `HashDict` is represented internally as a struct, therefore
-  `%HashDict{}` can be used whenever there is a need to match
-  on any `HashDict`. Note though the struct fields are private and
-  must not be accessed directly. Instead, use the functions on this
-  or in the `Dict` module.
-
-  Implementation-wise, `HashDict` is implemented using tries, which
-  grows in space as the number of keys grows, working well with both
-  small and large set of keys. For more information about the
-  functions and their APIs, please consult the `Dict` module.
+  Use the `Map` module instead.
   """
+
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
 
   use Dict
 
@@ -99,7 +93,7 @@ defmodule HashDict do
   defp do_fetch(node, key, hash) do
     index = key_mask(hash)
     case elem(node, index) do
-      [^key|v]     -> {:ok, v}
+      [^key | v]   -> {:ok, v}
       {^key, v, _} -> {:ok, v}
       {_, _, n}    -> do_fetch(n, key, key_shift(hash))
       _            -> :error
@@ -110,11 +104,11 @@ defmodule HashDict do
     index = key_mask(hash)
     case elem(node, index) do
       [] ->
-        {put_elem(node, index, [key|value]), 1}
-      [^key|_] ->
-        {put_elem(node, index, [key|value]), 0}
-      [k|v] ->
-        n = put_elem(@node_template, key_mask(key_shift(hash)), [key|value])
+        {put_elem(node, index, [key | value]), 1}
+      [^key | _] ->
+        {put_elem(node, index, [key | value]), 0}
+      [k | v] ->
+        n = put_elem(@node_template, key_mask(key_shift(hash)), [key | value])
         {put_elem(node, index, {k, v, n}), 1}
       {^key, _, n} ->
         {put_elem(node, index, {key, value, n}), 0}
@@ -128,11 +122,11 @@ defmodule HashDict do
     index = key_mask(hash)
     case elem(node, index) do
       [] ->
-        {put_elem(node, index, [key|initial.()]), 1}
-      [^key|value] ->
-        {put_elem(node, index, [key|fun.(value)]), 0}
-      [k|v] ->
-        n = put_elem(@node_template, key_mask(key_shift(hash)), [key|initial.()])
+        {put_elem(node, index, [key | initial.()]), 1}
+      [^key | value] ->
+        {put_elem(node, index, [key | fun.(value)]), 0}
+      [k | v] ->
+        n = put_elem(@node_template, key_mask(key_shift(hash)), [key | initial.()])
         {put_elem(node, index, {k, v, n}), 1}
       {^key, value, n} ->
         {put_elem(node, index, {key, fun.(value), n}), 0}
@@ -147,16 +141,16 @@ defmodule HashDict do
     case elem(node, index) do
       [] ->
         :error
-      [^key|value] ->
+      [^key | value] ->
         {put_elem(node, index, []), value}
-      [_|_] ->
+      [_ | _] ->
         :error
       {^key, value, n} ->
         {put_elem(node, index, do_compact_node(n)), value}
       {k, v, n} ->
         case do_delete(n, key, key_shift(hash)) do
           {@node_template, value} ->
-            {put_elem(node, index, [k|v]), value}
+            {put_elem(node, index, [k | v]), value}
           {n, value} ->
             {put_elem(node, index, {k, v, n}), value}
           :error ->
@@ -168,9 +162,9 @@ defmodule HashDict do
   Enum.each 0..(@node_size - 1), fn index ->
     defp do_compact_node(node) when elem(node, unquote(index)) != [] do
       case elem(node, unquote(index)) do
-        [k|v] ->
+        [k | v] ->
           case put_elem(node, unquote(index), []) do
-            @node_template -> [k|v]
+            @node_template -> [k | v]
             n -> {k, v, n}
           end
         {k, v, n} ->
@@ -193,8 +187,8 @@ defmodule HashDict do
     next.(acc)
   end
 
-  defp do_reduce_each([k|v], {:cont, acc}, fun, next) do
-    next.(fun.({k,v}, acc))
+  defp do_reduce_each([k | v], {:cont, acc}, fun, next) do
+    next.(fun.({k, v}, acc))
   end
 
   defp do_reduce_each({k, v, n}, {:cont, acc}, fun, next) do
@@ -227,31 +221,35 @@ defmodule HashDict do
 end
 
 defimpl Enumerable, for: HashDict do
-  def reduce(dict, acc, fun),  do: HashDict.reduce(dict, acc, fun)
-  def member?(dict, {k, v}), do: {:ok, match?({:ok, ^v}, HashDict.fetch(dict, k))}
-  def member?(_dict, _),       do: {:ok, false}
-  def count(dict),             do: {:ok, HashDict.size(dict)}
-end
-
-defimpl Access, for: HashDict do
-  def get(dict, key) do
-    HashDict.get(dict, key, nil)
+  def reduce(dict, acc, fun) do
+    # Avoid warnings about HashDict being deprecated.
+    module = HashDict
+    module.reduce(dict, acc, fun)
   end
 
-  def get_and_update(dict, key, fun) do
-    {get, update} = fun.(HashDict.get(dict, key, nil))
-    {get, HashDict.put(dict, key, update)}
+  def member?(dict, {key, value}) do
+    # Avoid warnings about HashDict being deprecated.
+    module = HashDict
+    {:ok, match?({:ok, ^value}, module.fetch(dict, key))}
+  end
+
+  def member?(_dict, _) do
+    {:ok, false}
+  end
+
+  def count(dict) do
+    # Avoid warnings about HashDict being deprecated.
+    module = HashDict
+    {:ok, module.size(dict)}
   end
 end
 
 defimpl Collectable, for: HashDict do
-  def empty(_dict) do
-    HashDict.new
-  end
-
   def into(original) do
+    # Avoid warnings about HashDict being deprecated.
+    module = HashDict
     {original, fn
-      dict, {:cont, {k, v}} -> Dict.put(dict, k, v)
+      dict, {:cont, {key, value}} -> module.put(dict, key, value)
       dict, :done -> dict
       _, :halt -> :ok
     end}
@@ -262,6 +260,8 @@ defimpl Inspect, for: HashDict do
   import Inspect.Algebra
 
   def inspect(dict, opts) do
-    concat ["#HashDict<", Inspect.List.inspect(HashDict.to_list(dict), opts), ">"]
+    # Avoid warnings about HashDict being deprecated.
+    module = HashDict
+    concat ["#HashDict<", Inspect.List.inspect(module.to_list(dict), opts), ">"]
   end
 end

@@ -1,97 +1,117 @@
 defmodule EEx.Tokenizer do
   @moduledoc false
 
+  @type content :: IO.chardata
+  @type line :: non_neg_integer
+  @type marker :: '=' | '/' | '|' | ''
+  @type token :: {:text, content} |
+                 {:expr | :start_expr | :middle_expr | :end_expr, line, marker, content}
+
   @doc """
-  Tokenizes the given char list or binary.
-  It returns 4 different types of tokens as result:
+  Tokenizes the given charlist or binary.
 
-    * `{:text, contents}`
-    * `{:expr, line, marker, contents}`
-    * `{:start_expr, line, marker, contents}`
-    * `{:middle_expr, line, marker, contents}`
-    * `{:end_expr, line, marker, contents}`
+  It returns {:ok, list} with the following tokens:
 
+    * `{:text, content}`
+    * `{:expr, line, marker, content}`
+    * `{:start_expr, line, marker, content}`
+    * `{:middle_expr, line, marker, content}`
+    * `{:end_expr, line, marker, content}`
+
+  Or `{:error, line, error}` in case of errors.
   """
-  def tokenize(bin, line) when is_binary(bin) do
-    tokenize(String.to_char_list(bin), line)
+  @spec tokenize(binary | charlist, line, keyword) :: {:ok, [token]} | {:error, line, String.t}
+  def tokenize(bin, line, opts \\ [])
+
+  def tokenize(bin, line, opts)
+      when is_binary(bin) and is_integer(line) and line >= 0 and is_list(opts) do
+    tokenize(String.to_charlist(bin), line, opts)
   end
 
-  def tokenize(list, line) do
-    Enum.reverse(tokenize(list, line, [], []))
+  def tokenize(list, line, opts)
+      when is_list(list) and is_integer(line) and line >= 0 and is_list(opts) do
+    tokenize(list, line, opts, [], [])
   end
 
-  defp tokenize('<%%' ++ t, line, buffer, acc) do
-    {buffer, new_line, rest} = tokenize_expr t, line, [?%, ?<|buffer]
-    tokenize rest, new_line, [?>, ?%|buffer], acc
+  defp tokenize('<%%' ++ t, line, opts, buffer, acc) do
+   tokenize t, line, opts, [?%, ?< | buffer], acc
   end
 
-  defp tokenize('<%#' ++ t, line, buffer, acc) do
-    {_, new_line, rest} = tokenize_expr t, line, []
-    tokenize rest, new_line, buffer, acc
+  defp tokenize('<%#' ++ t, line, opts, buffer, acc) do
+    case expr(t, line, []) do
+      {:error, _, _} = error -> error
+      {:ok, _, new_line, rest} ->
+        {rest, new_line, buffer} = trim_if_needed(rest, new_line, opts, buffer, acc)
+        tokenize rest, new_line, opts, buffer, acc
+    end
   end
 
-  defp tokenize('<%' ++ t, line, buffer, acc) do
+  defp tokenize('<%' ++ t, line, opts, buffer, acc) do
     {marker, t} = retrieve_marker(t)
-    {expr, new_line, rest} = tokenize_expr t, line, []
 
-    token = token_name(expr)
-    acc   = tokenize_text(buffer, acc)
-    final = {token, line, marker, Enum.reverse(expr)}
-    tokenize rest, new_line, [], [final | acc]
+    case expr(t, line, []) do
+      {:error, _, _} = error -> error
+      {:ok, expr, new_line, rest} ->
+        token = token_name(expr)
+        {rest, new_line, buffer} = trim_if_needed(rest, new_line, opts, buffer, acc)
+        acc   = tokenize_text(buffer, acc)
+        final = {token, line, marker, Enum.reverse(expr)}
+        tokenize rest, new_line, opts, [], [final | acc]
+    end
   end
 
-  defp tokenize('\n' ++ t, line, buffer, acc) do
-    tokenize t, line + 1, [?\n|buffer], acc
+  defp tokenize('\n' ++ t, line, opts, buffer, acc) do
+    tokenize t, line + 1, opts, [?\n | buffer], acc
   end
 
-  defp tokenize([h|t], line, buffer, acc) do
-    tokenize t, line, [h|buffer], acc
+  defp tokenize([h | t], line, opts, buffer, acc) do
+    tokenize t, line, opts, [h | buffer], acc
   end
 
-  defp tokenize([], _line, buffer, acc) do
-    tokenize_text(buffer, acc)
+  defp tokenize([], _line, _opts, buffer, acc) do
+    {:ok, Enum.reverse(tokenize_text(buffer, acc))}
   end
 
   # Retrieve marker for <%
 
-  defp retrieve_marker('=' ++ t) do
-    {"=", t}
+  defp retrieve_marker([marker | t]) when marker in [?=, ?/, ?|] do
+    {[marker], t}
   end
 
   defp retrieve_marker(t) do
-    {"", t}
+    {'', t}
   end
 
   # Tokenize an expression until we find %>
 
-  defp tokenize_expr([?%, ?>|t], line, buffer) do
-    {buffer, line, t}
+  defp expr([?%, ?> | t], line, buffer) do
+    {:ok, buffer, line, t}
   end
 
-  defp tokenize_expr('\n' ++ t, line, buffer) do
-    tokenize_expr t, line + 1, [?\n|buffer]
+  defp expr('\n' ++ t, line, buffer) do
+    expr t, line + 1, [?\n | buffer]
   end
 
-  defp tokenize_expr([h|t], line, buffer) do
-    tokenize_expr t, line, [h|buffer]
+  defp expr([h | t], line, buffer) do
+    expr t, line, [h | buffer]
   end
 
-  defp tokenize_expr([], _line, _buffer) do
-    raise EEx.SyntaxError, message: "missing token: %>"
+  defp expr([], line, _buffer) do
+    {:error, line, "missing token '%>'"}
   end
 
   # Receive an expression content and check
   # if it is a start, middle or an end token.
   #
-  # Start tokens finish with `do` and `fn ->`
-  # Middle tokens are marked with `->` or keywords
-  # End tokens contain only the end word
+  # Start tokens finish with "do" and "fn ->"
+  # Middle tokens are marked with "->" or keywords
+  # End tokens contain only the end word and optionally ")"
 
-  defp token_name([h|t]) when h in [?\s, ?\t] do
+  defp token_name([h | t]) when h in [?\s, ?\t, ?)] do
     token_name(t)
   end
 
-  defp token_name('od' ++ [h|_]) when h in [?\s, ?\t, ?)] do
+  defp token_name('od' ++ [h | _]) when h in [?\s, ?\t, ?)] do
     :start_expr
   end
 
@@ -104,7 +124,7 @@ defmodule EEx.Tokenizer do
     # token and, if so, it is not followed by an "end"
     # token. If this is the case, we are on a start expr.
     case :elixir_tokenizer.tokenize(rest, 1, file: "eex", check_terminators: false) do
-      {:ok, _line, tokens} ->
+      {:ok, _line, _column, tokens} ->
         tokens   = Enum.reverse(tokens)
         fn_index = fn_index(tokens)
 
@@ -132,7 +152,7 @@ defmodule EEx.Tokenizer do
     Enum.find_index tokens, fn
       {:fn_paren, _} -> true
       {:fn, _}       -> true
-      _                -> false
+      _              -> false
     end
   end
 
@@ -157,5 +177,47 @@ defmodule EEx.Tokenizer do
 
   defp tokenize_text(buffer, acc) do
     [{:text, Enum.reverse(buffer)} | acc]
+  end
+
+  # If trim mode is enabled and the token is on a line with
+  # only itself and whitespace, trim the whitespace around it,
+  # including the line break following it if there is one.
+  defp trim_if_needed(rest, line, opts, buffer, acc) do
+    original = {rest, line, buffer}
+    if opts[:trim] do
+      case {trim_left(buffer, acc), trim_right(rest, line)} do
+        {{true, new_buffer}, {true, new_rest, new_line}} ->
+          {new_rest, new_line, new_buffer}
+        _ ->
+          original
+      end
+    else
+      original
+    end
+  end
+
+  defp trim_left(buffer, acc) do
+    case {trim_whitespace(buffer), acc} do
+      {[?\n | _] = trimmed_buffer, _} -> {true, trimmed_buffer}
+      {[], []} -> {true, []}
+      _ -> {false, buffer}
+    end
+  end
+
+  defp trim_right(rest, line) do
+    case trim_whitespace(rest) do
+      [?\r, ?\n | trimmed_rest] -> {true, trimmed_rest, line + 1}
+      [?\n | trimmed_rest] -> {true, trimmed_rest, line + 1}
+      [] -> {true, [], line}
+      _ -> {false, rest, line}
+    end
+  end
+
+  defp trim_whitespace([h | t]) when h == ?\s or h == ?\t do
+    trim_whitespace(t)
+  end
+
+  defp trim_whitespace(list) do
+    list
   end
 end

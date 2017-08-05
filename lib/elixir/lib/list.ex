@@ -1,41 +1,125 @@
 defmodule List do
   @moduledoc """
-  Implements functions that only make sense for lists
-  and cannot be part of the Enum protocol. In general,
-  favor using the Enum API instead of List.
+  Functions that work on (linked) lists.
 
-  Some functions in this module expect an index. Index
-  access for list is linear. Negative indexes are also
-  supported but they imply the list will be iterated twice,
-  one to calculate the proper index and another to the
-  operation.
+  Lists in Elixir are specified between square brackets:
 
-  A decision was taken to delegate most functions to
-  Erlang's standard library but follow Elixir's convention
-  of receiving the target (in this case, a list) as the
-  first argument.
+      iex> [1, "two", 3, :four]
+      [1, "two", 3, :four]
+
+  Two lists can be concatenated and subtracted using the
+  `Kernel.++/2` and `Kernel.--/2` operators:
+
+      iex> [1, 2, 3] ++ [4, 5, 6]
+      [1, 2, 3, 4, 5, 6]
+      iex> [1, true, 2, false, 3, true] -- [true, false]
+      [1, 2, 3, true]
+
+  Lists in Elixir are effectively linked lists, which means
+  they are internally represented in pairs containing the
+  head and the tail of a list:
+
+      iex> [head | tail] = [1, 2, 3]
+      iex> head
+      1
+      iex> tail
+      [2, 3]
+
+  Similarly, we could write the list `[1, 2, 3]` using only
+  such pairs (called cons cells):
+
+      iex> [1 | [2 | [3 | []]]]
+      [1, 2, 3]
+
+  Some lists, called improper lists, do not have an empty list as
+  the second element in the last cons cell:
+
+      iex> [1 | [2 | [3 | 4]]]
+      [1, 2, 3 | 4]
+
+  Although improper lists are generally avoided, they are used in some
+  special circumstances like iodata and chardata entities (see the `IO` module).
+
+  Due to their cons cell based representation, prepending an element
+  to a list is always fast (constant time), while appending becomes
+  slower as the list grows in size (linear time):
+
+      iex> list = [1, 2, 3]
+      iex> [0 | list]   # fast
+      [0, 1, 2, 3]
+      iex> list ++ [4]  # slow
+      [1, 2, 3, 4]
+
+  The `Kernel` module contains many functions to manipulate lists
+  and that are allowed in guards. For example, `Kernel.hd/1` to
+  retrieve the head, `Kernel.tl/1` to fetch the tail and
+  `Kernel.length/1` for calculating the length. Keep in mind that,
+  similar to appending to a list, calculating the length needs to
+  traverse the whole list.
+
+  ## Charlists
+
+  If a list is made of non-negative integers, it can also be called
+  a charlist. Elixir uses single quotes to define charlists:
+
+      iex> 'héllo'
+      [104, 233, 108, 108, 111]
+
+  In particular, charlists may be printed back in single
+  quotes if they contain only ASCII-printable codepoints:
+
+      iex> 'abc'
+      'abc'
+
+  The rationale behind this behaviour is to better support
+  Erlang libraries which may return text as charlists
+  instead of Elixir strings. One example of such functions
+  is `Application.loaded_applications/0`:
+
+      Application.loaded_applications
+      #=>  [{:stdlib, 'ERTS  CXC 138 10', '2.6'},
+            {:compiler, 'ERTS  CXC 138 10', '6.0.1'},
+            {:elixir, 'elixir', '1.0.0'},
+            {:kernel, 'ERTS  CXC 138 10', '4.1'},
+            {:logger, 'logger', '1.0.0'}]
+
+  ## List and Enum modules
+
+  This module aims to provide operations that are specific
+  to lists, like conversion between data types, updates,
+  deletions and key lookups (for lists of tuples). For traversing
+  lists in general, developers should use the functions in the
+  `Enum` module that work across a variety of data types.
+
+  In both `Enum` and `List` modules, any kind of index access
+  on a list is linear. Negative indexes are also supported but
+  they imply the list will be iterated twice, one to calculate
+  the proper index and another to perform the operation.
   """
 
   @compile :inline_list_funcs
 
   @doc """
-  Deletes the given item from the list. Returns a list without
-  the item. If the item occurs more than once in the list, just
+  Deletes the given `item` from the `list`. Returns a new list without
+  the item.
+
+  If the `item` occurs more than once in the `list`, just
   the first occurrence is removed.
 
   ## Examples
 
-      iex> List.delete([1, 2, 3], 1)
-      [2,3]
+      iex> List.delete([:a, :b, :c], :a)
+      [:b, :c]
 
-      iex> List.delete([1, 2, 2, 3], 2)
-      [1, 2, 3]
+      iex> List.delete([:a, :b, :b, :c], :b)
+      [:a, :b, :c]
 
   """
   @spec delete(list, any) :: list
-  def delete(list, item) do
-    :lists.delete(item, list)
-  end
+  def delete(list, item)
+  def delete([item | list], item), do: list
+  def delete([other | list], item), do: [other | delete(list, item)]
+  def delete([], _item), do: []
 
   @doc """
   Duplicates the given element `n` times in a list.
@@ -43,10 +127,10 @@ defmodule List do
   ## Examples
 
       iex> List.duplicate("hello", 3)
-      ["hello","hello","hello"]
+      ["hello", "hello", "hello"]
 
       iex> List.duplicate([1, 2], 2)
-      [[1,2],[1,2]]
+      [[1, 2], [1, 2]]
 
   """
   @spec duplicate(elem, non_neg_integer) :: [elem] when elem: var
@@ -60,7 +144,7 @@ defmodule List do
   ## Examples
 
       iex> List.flatten([1, [[2], 3]])
-      [1,2,3]
+      [1, 2, 3]
 
   """
   @spec flatten(deep_list) :: list when deep_list: [any | deep_list]
@@ -76,7 +160,7 @@ defmodule List do
   ## Examples
 
       iex> List.flatten([1, [[2], 3]], [4, 5])
-      [1,2,3,4,5]
+      [1, 2, 3, 4, 5]
 
   """
   @spec flatten(deep_list, [elem]) :: [elem] when elem: var, deep_list: [elem | deep_list]
@@ -85,15 +169,15 @@ defmodule List do
   end
 
   @doc """
-  Folds (reduces) the given list to the left with
+  Folds (reduces) the given list from the left with
   a function. Requires an accumulator.
 
   ## Examples
 
-      iex> List.foldl([5, 5], 10, fn (x, acc) -> x + acc end)
+      iex> List.foldl([5, 5], 10, fn(x, acc) -> x + acc end)
       20
 
-      iex> List.foldl([1, 2, 3, 4], 0, fn (x, acc) -> x - acc end)
+      iex> List.foldl([1, 2, 3, 4], 0, fn(x, acc) -> x - acc end)
       2
 
   """
@@ -103,12 +187,12 @@ defmodule List do
   end
 
   @doc """
-  Folds (reduces) the given list to the right with
+  Folds (reduces) the given list from the right with
   a function. Requires an accumulator.
 
   ## Examples
 
-      iex> List.foldr([1, 2, 3, 4], 0, fn (x, acc) -> x - acc end)
+      iex> List.foldr([1, 2, 3, 4], 0, fn(x, acc) -> x - acc end)
       -2
 
   """
@@ -133,8 +217,8 @@ defmodule List do
 
   """
   @spec first([elem]) :: nil | elem when elem: var
-  def first([]),    do: nil
-  def first([h|_]), do: h
+  def first([]),      do: nil
+  def first([head | _]), do: head
 
   @doc """
   Returns the last element in `list` or `nil` if `list` is empty.
@@ -152,14 +236,14 @@ defmodule List do
 
   """
   @spec last([elem]) :: nil | elem when elem: var
-  def last([]),    do: nil
-  def last([h]),   do: h
-  def last([_|t]), do: last(t)
+  def last([]), do: nil
+  def last([head]), do: head
+  def last([_ | tail]), do: last(tail)
 
   @doc """
   Receives a list of tuples and returns the first tuple
   where the item at `position` in the tuple matches the
-  given `item`.
+  given `key`.
 
   ## Examples
 
@@ -181,7 +265,7 @@ defmodule List do
   @doc """
   Receives a list of tuples and returns `true` if there is
   a tuple where the item at `position` in the tuple matches
-  the given `item`.
+  the given `key`.
 
   ## Examples
 
@@ -195,7 +279,7 @@ defmodule List do
       false
 
   """
-  @spec keymember?([tuple], any, non_neg_integer) :: any
+  @spec keymember?([tuple], any, non_neg_integer) :: boolean
   def keymember?(list, key, position) do
     :lists.keymember(key, position + 1, list)
   end
@@ -234,9 +318,10 @@ defmodule List do
   end
 
   @doc """
-  Receives a list of tuples and replaces the item
-  identified by `key` at `position`. If the item
-  does not exist, it is added to the end of the list.
+  Receives a `list` of tuples and replaces the item
+  identified by `key` at `position`.
+
+  If the item does not exist, it is added to the end of the `list`.
 
   ## Examples
 
@@ -253,9 +338,9 @@ defmodule List do
   end
 
   @doc """
-  Receives a list of tuples and deletes the first tuple
+  Receives a `list` of tuples and deletes the first tuple
   where the item at `position` matches the
-  given `item`. Returns the new list.
+  given `key`. Returns the new list.
 
   ## Examples
 
@@ -275,7 +360,35 @@ defmodule List do
   end
 
   @doc """
+  Receives a `list` of tuples and returns the first tuple
+  where the element at `position` in the tuple matches the
+  given `key`, as well as the `list` without found tuple.
+
+  If such a tuple is not found, `nil` will be returned.
+
+  ## Examples
+
+      iex> List.keytake([a: 1, b: 2], :a, 0)
+      {{:a, 1}, [b: 2]}
+
+      iex> List.keytake([a: 1, b: 2], 2, 1)
+      {{:b, 2}, [a: 1]}
+
+      iex> List.keytake([a: 1, b: 2], :c, 0)
+      nil
+
+  """
+  @spec keytake([tuple], any, non_neg_integer) :: {tuple, [tuple]} | nil
+  def keytake(list, key, position) do
+    case :lists.keytake(key, position + 1, list) do
+      {:value, item, list} -> {item, list}
+      false                -> nil
+    end
+  end
+
+  @doc """
   Wraps the argument in a list.
+
   If the argument is already a list, returns the list.
   If the argument is `nil`, returns an empty list.
 
@@ -285,7 +398,7 @@ defmodule List do
       ["hello"]
 
       iex> List.wrap([1, 2, 3])
-      [1,2,3]
+      [1, 2, 3]
 
       iex> List.wrap(nil)
       []
@@ -326,8 +439,9 @@ defmodule List do
 
   @doc """
   Returns a list with `value` inserted at the specified `index`.
+
   Note that `index` is capped at the list length. Negative indices
-  indicate an offset from the end of the list.
+  indicate an offset from the end of the `list`.
 
   ## Examples
 
@@ -345,7 +459,7 @@ defmodule List do
 
   """
   @spec insert_at(list, integer, any) :: list
-  def insert_at(list, index, value) do
+  def insert_at(list, index, value) when is_integer(index) do
     if index < 0 do
       do_insert_at(list, length(list) + index + 1, value)
     else
@@ -355,7 +469,8 @@ defmodule List do
 
   @doc """
   Returns a list with a replaced value at the specified `index`.
-  Negative indices indicate an offset from the end of the list.
+
+  Negative indices indicate an offset from the end of the `list`.
   If `index` is out of bounds, the original `list` is returned.
 
   ## Examples
@@ -374,7 +489,7 @@ defmodule List do
 
   """
   @spec replace_at(list, integer, any) :: list
-  def replace_at(list, index, value) do
+  def replace_at(list, index, value) when is_integer(index) do
     if index < 0 do
       do_replace_at(list, length(list) + index, value)
     else
@@ -384,7 +499,8 @@ defmodule List do
 
   @doc """
   Returns a list with an updated value at the specified `index`.
-  Negative indices indicate an offset from the end of the list.
+
+  Negative indices indicate an offset from the end of the `list`.
   If `index` is out of bounds, the original `list` is returned.
 
   ## Examples
@@ -403,7 +519,7 @@ defmodule List do
 
   """
   @spec update_at([elem], integer, (elem -> any)) :: list when elem: var
-  def update_at(list, index, fun) do
+  def update_at(list, index, fun) when is_function(fun, 1) and is_integer(index) do
     if index < 0 do
       do_update_at(list, length(list) + index, fun)
     else
@@ -413,7 +529,8 @@ defmodule List do
 
   @doc """
   Produces a new list by removing the value at the specified `index`.
-  Negative indices indicate an offset from the end of the list.
+
+  Negative indices indicate an offset from the end of the `list`.
   If `index` is out of bounds, the original `list` is returned.
 
   ## Examples
@@ -421,7 +538,7 @@ defmodule List do
       iex> List.delete_at([1, 2, 3], 0)
       [2, 3]
 
-      iex List.delete_at([1, 2, 3], 10)
+      iex> List.delete_at([1, 2, 3], 10)
       [1, 2, 3]
 
       iex> List.delete_at([1, 2, 3], -1)
@@ -429,18 +546,73 @@ defmodule List do
 
   """
   @spec delete_at(list, integer) :: list
-  def delete_at(list, index) do
+  def delete_at(list, index) when is_integer(index) do
+    elem(pop_at(list, index), 1)
+  end
+
+  @doc """
+  Returns and removes the value at the specified `index` in the `list`.
+
+  Negative indices indicate an offset from the end of the `list`.
+  If `index` is out of bounds, the original `list` is returned.
+
+  ## Examples
+
+      iex> List.pop_at([1, 2, 3], 0)
+      {1, [2, 3]}
+      iex> List.pop_at([1, 2, 3], 5)
+      {nil, [1, 2, 3]}
+      iex> List.pop_at([1, 2, 3], 5, 10)
+      {10, [1, 2, 3]}
+      iex> List.pop_at([1, 2, 3], -1)
+      {3, [1, 2]}
+
+  """
+  @spec pop_at(list, integer, any) :: {any, list}
+  def pop_at(list, index, default \\ nil) when is_integer(index) do
     if index < 0 do
-      do_delete_at(list, length(list) + index)
+      do_pop_at(list, length(list) + index, default, [])
     else
-      do_delete_at(list, index)
+      do_pop_at(list, index, default, [])
     end
   end
 
   @doc """
-  Converts a char list to an atom.
+  Returns `true` if `list` starts with the given `prefix` list; otherwise returns `false`.
 
-  Currently Elixir does not support conversions from char lists
+  If `prefix` is an empty list, it returns `true`.
+
+  ### Examples
+
+      iex> List.starts_with?([1, 2, 3], [1, 2])
+      true
+
+      iex> List.starts_with?([1, 2], [1, 2, 3])
+      false
+
+      iex> List.starts_with?([:alpha], [])
+      true
+
+      iex> List.starts_with?([], [:alpha])
+      false
+
+  """
+  @spec starts_with?(list, list) :: boolean
+  @spec starts_with?(list, []) :: true
+  @spec starts_with?([], nonempty_list) :: false
+  def starts_with?(list, prefix)
+
+  def starts_with?([head | tail], [head | prefix_tail]),
+    do: starts_with?(tail, prefix_tail);
+  def starts_with?(list, []) when is_list(list),
+    do: true
+  def starts_with?(list, [_ | _]) when is_list(list),
+    do: false
+
+  @doc """
+  Converts a charlist to an atom.
+
+  Currently Elixir does not support conversions from charlists
   which contains Unicode codepoints greater than 0xFF.
 
   Inlined by the compiler.
@@ -451,26 +623,37 @@ defmodule List do
       :elixir
 
   """
-  @spec to_atom(char_list) :: atom
-  def to_atom(char_list) do
-    :erlang.list_to_atom(char_list)
+  @spec to_atom(charlist) :: atom
+  def to_atom(charlist) do
+    :erlang.list_to_atom(charlist)
   end
 
   @doc """
-  Converts a char list to an existing atom.
+  Converts a charlist to an existing atom. Raises an `ArgumentError`
+  if the atom does not exist.
 
-  Currently Elixir does not support conversions from char lists
+  Currently Elixir does not support conversions from charlists
   which contains Unicode codepoints greater than 0xFF.
 
   Inlined by the compiler.
+
+  ## Examples
+
+      iex> _ = :my_atom
+      iex> List.to_existing_atom('my_atom')
+      :my_atom
+
+      iex> List.to_existing_atom('this_atom_will_never_exist')
+      ** (ArgumentError) argument error
+
   """
-  @spec to_existing_atom(char_list) :: atom
-  def to_existing_atom(char_list) do
-    :erlang.list_to_existing_atom(char_list)
+  @spec to_existing_atom(charlist) :: atom
+  def to_existing_atom(charlist) do
+    :erlang.list_to_existing_atom(charlist)
   end
 
   @doc """
-  Returns the float whose text representation is `char_list`.
+  Returns the float whose text representation is `charlist`.
 
   Inlined by the compiler.
 
@@ -480,13 +663,13 @@ defmodule List do
       2.2017764
 
   """
-  @spec to_float(char_list) :: float
-  def to_float(char_list) do
-    :erlang.list_to_float(char_list)
+  @spec to_float(charlist) :: float
+  def to_float(charlist) do
+    :erlang.list_to_float(charlist)
   end
 
   @doc """
-  Returns an integer whose text representation is `char_list`.
+  Returns an integer whose text representation is `charlist`.
 
   Inlined by the compiler.
 
@@ -496,13 +679,13 @@ defmodule List do
       123
 
   """
-  @spec to_integer(char_list) :: integer
-  def to_integer(char_list) do
-    :erlang.list_to_integer(char_list)
+  @spec to_integer(charlist) :: integer
+  def to_integer(charlist) do
+    :erlang.list_to_integer(charlist)
   end
 
   @doc """
-  Returns an integer whose text representation is `char_list` in base `base`.
+  Returns an integer whose text representation is `charlist` in base `base`.
 
   Inlined by the compiler.
 
@@ -512,9 +695,9 @@ defmodule List do
       1023
 
   """
-  @spec to_integer(char_list, 2..36) :: integer
-  def to_integer(char_list, base) do
-    :erlang.list_to_integer(char_list, base)
+  @spec to_integer(charlist, 2..36) :: integer
+  def to_integer(charlist, base) do
+    :erlang.list_to_integer(charlist, base)
   end
 
   @doc """
@@ -537,9 +720,9 @@ defmodule List do
   Converts a list of integers representing codepoints, lists or
   strings into a string.
 
-  Notice that this function expect a list of integer representing
+  Notice that this function expects a list of integers representing
   UTF-8 codepoints. If you have a list of bytes, you must instead use
-  [the `:binary` module](http://erlang.org/doc/man/binary.html).
+  the [`:binary` module](http://www.erlang.org/doc/man/binary.html).
 
   ## Examples
 
@@ -552,7 +735,24 @@ defmodule List do
   """
   @spec to_string(:unicode.charlist) :: String.t
   def to_string(list) when is_list(list) do
-    case :unicode.characters_to_binary(list) do
+    try do
+      :unicode.characters_to_binary(list)
+    rescue
+      ArgumentError ->
+        raise ArgumentError, """
+        cannot convert the given list to a string.
+
+        To be converted to a string, a list must contain only:
+
+          * strings
+          * integers representing Unicode codepoints
+          * or a list containing one of these three elements
+
+        Please check the given list or call inspect/1 to get the list representation, got:
+
+        #{inspect list}
+        """
+    else
       result when is_binary(result) ->
         result
 
@@ -562,6 +762,109 @@ defmodule List do
       {:incomplete, encoded, rest} ->
         raise UnicodeConversionError, encoded: encoded, rest: rest, kind: :incomplete
     end
+  end
+
+  @doc """
+  Returns a keyword list that represents an *edit script*.
+
+  The algorithm is outlined in the
+  "An O(ND) Difference Algorithm and Its Variations" paper by E. Myers.
+
+  An *edit script* is a keyword list. Each key describes the "editing action" to
+  take in order to bring `list1` closer to being equal to `list2`; a key can be
+  `:eq`, `:ins`, or `:del`. Each value is a sublist of either `list1` or `list2`
+  that should be inserted (if the corresponding key `:ins`), deleted (if the
+  corresponding key is `:del`), or left alone (if the corresponding key is
+  `:eq`) in `list1` in order to be closer to `list2`.
+
+  ## Examples
+
+      iex> List.myers_difference([1, 4, 2, 3], [1, 2, 3, 4])
+      [eq: [1], del: [4], eq: [2, 3], ins: [4]]
+
+  """
+  @spec myers_difference(list, list) :: [{:eq | :ins | :del, list}] | nil
+  def myers_difference(list1, list2) when is_list(list1) and is_list(list2) do
+    path = {0, 0, list1, list2, []}
+    find_script(0, length(list1) + length(list2), [path])
+  end
+
+  defp find_script(envelope, max, _paths) when envelope > max do
+    nil
+  end
+
+  defp find_script(envelope, max, paths) do
+    case each_diagonal(-envelope, envelope, paths, []) do
+      {:done, edits} -> compact_reverse(edits, [])
+      {:next, paths} -> find_script(envelope + 1, max, paths)
+    end
+  end
+
+  defp compact_reverse([], acc), do: acc
+
+  defp compact_reverse([{kind, elem} | rest], [{kind, result} | acc]) do
+    compact_reverse(rest, [{kind, [elem | result]} | acc])
+  end
+
+  defp compact_reverse([{kind, elem} | rest], acc) do
+    compact_reverse(rest, [{kind, [elem]} | acc])
+  end
+
+  defp each_diagonal(diag, limit, _paths, next_paths) when diag > limit do
+    {:next, Enum.reverse(next_paths)}
+  end
+
+  defp each_diagonal(diag, limit, paths, next_paths) do
+    {path, rest} = proceed_path(diag, limit, paths)
+    with {:cont, path} <- follow_snake(path) do
+      each_diagonal(diag + 2, limit, rest, [path | next_paths])
+    end
+  end
+
+  defp proceed_path(0, 0, [path]), do: {path, []}
+
+  defp proceed_path(diag, limit, [path | _] = paths) when diag == -limit do
+    {move_down(path), paths}
+  end
+
+  defp proceed_path(diag, limit, [path]) when diag == limit do
+    {move_right(path), []}
+  end
+
+  defp proceed_path(_diag, _limit, [path1, path2 | rest]) do
+    if elem(path1, 1) > elem(path2, 1) do
+      {move_right(path1), [path2 | rest]}
+    else
+      {move_down(path2), [path2 | rest]}
+    end
+  end
+
+  defp move_right({x, y, list1, [elem | rest], edits}) do
+    {x + 1, y, list1, rest, [{:ins, elem} | edits]}
+  end
+
+  defp move_right({x, y, list1, [], edits}) do
+    {x + 1, y, list1, [], edits}
+  end
+
+  defp move_down({x, y, [elem | rest], list2, edits}) do
+    {x, y + 1, rest, list2, [{:del, elem} | edits]}
+  end
+
+  defp move_down({x, y, [], list2, edits}) do
+    {x, y + 1, [], list2, edits}
+  end
+
+  defp follow_snake({x, y, [elem | rest1], [elem | rest2], edits}) do
+    follow_snake({x + 1, y + 1, rest1, rest2, [{:eq, elem} | edits]})
+  end
+
+  defp follow_snake({_x, _y, [], [], edits}) do
+    {:done, edits}
+  end
+
+  defp follow_snake(path) do
+    {:cont, path}
   end
 
   ## Helpers
@@ -576,73 +879,72 @@ defmodule List do
     list
   end
 
-  defp do_replace_at([_old|rest], 0, value) do
-    [ value | rest ]
+  defp do_replace_at([_old | rest], 0, value) do
+    [value | rest]
   end
 
-  defp do_replace_at([h|t], index, value) do
-    [ h | do_replace_at(t, index - 1, value) ]
+  defp do_replace_at([head | tail], index, value) do
+    [head | do_replace_at(tail, index - 1, value)]
   end
 
   # insert_at
 
   defp do_insert_at([], _index, value) do
-    [ value ]
+    [value]
   end
 
   defp do_insert_at(list, index, value) when index <= 0 do
-    [ value | list ]
+    [value | list]
   end
 
-  defp do_insert_at([h|t], index, value) do
-    [ h | do_insert_at(t, index - 1, value) ]
+  defp do_insert_at([head | tail], index, value) do
+    [head | do_insert_at(tail, index - 1, value)]
   end
 
   # update_at
 
-  defp do_update_at([value|list], 0, fun) do
-    [ fun.(value) | list ]
+  defp do_update_at([value | list], 0, fun) do
+    [fun.(value) | list]
   end
 
   defp do_update_at(list, index, _fun) when index < 0 do
     list
   end
 
-  defp do_update_at([h|t], index, fun) do
-    [ h | do_update_at(t, index - 1, fun) ]
+  defp do_update_at([head | tail], index, fun) do
+    [head | do_update_at(tail, index - 1, fun)]
   end
 
   defp do_update_at([], _index, _fun) do
     []
   end
 
-  # delete_at
+  # pop_at
 
-  defp do_delete_at([], _index) do
-    []
+  defp do_pop_at([], _index, default, acc) do
+    {default, :lists.reverse(acc)}
   end
 
-  defp do_delete_at([_|t], 0) do
-    t
+  defp do_pop_at(list, index, default, []) when index < 0 do
+    {default, list}
   end
 
-  defp do_delete_at(list, index) when index < 0 do
-    list
+  defp do_pop_at([head | tail], 0, _default, acc) do
+    {head, :lists.reverse(acc, tail)}
   end
 
-  defp do_delete_at([h|t], index) do
-    [h | do_delete_at(t, index-1)]
+  defp do_pop_at([head | tail], index, default, acc) do
+    do_pop_at(tail, index - 1, default, [head | acc])
   end
 
   # zip
 
   defp do_zip(list, acc) do
     converter = fn x, acc -> do_zip_each(to_list(x), acc) end
-    {mlist, heads} = :lists.mapfoldl converter, [], list
-
-    case heads do
-      nil -> :lists.reverse acc
-      _   -> do_zip mlist, [:erlang.list_to_tuple(:lists.reverse(heads))|acc]
+    case :lists.mapfoldl(converter, [], list) do
+      {_, nil} -> :lists.reverse(acc)
+      {mlist, heads} ->
+        do_zip(mlist, [to_tuple(:lists.reverse(heads)) | acc])
     end
   end
 
@@ -650,8 +952,8 @@ defmodule List do
     {nil, nil}
   end
 
-  defp do_zip_each([h|t], acc) do
-    {t, [h|acc]}
+  defp do_zip_each([head | tail], acc) do
+    {tail, [head | acc]}
   end
 
   defp do_zip_each([], _) do

@@ -3,24 +3,32 @@ Code.require_file "test_helper.exs", __DIR__
 defmodule ProtocolTest do
   use ExUnit.Case, async: true
 
-  defprotocol Sample do
-    @type t :: any
-    @doc "Ok"
-    @spec ok(t) :: boolean
-    def ok(thing)
-  end
+  doctest Protocol
 
-  defprotocol WithAny do
-    @fallback_to_any true
-    @doc "Ok"
-    def ok(thing)
-  end
+  {_, _, sample_binary, _} =
+    defprotocol Sample do
+      @type t :: any
+      @doc "Ok"
+      @spec ok(t) :: boolean
+      def ok(term)
+    end
+
+  @sample_binary sample_binary
+
+  {_, _, with_any_binary, _} =
+    defprotocol WithAny do
+      @fallback_to_any true
+      @doc "Ok"
+      def ok(term)
+    end
+
+  @with_any_binary with_any_binary
 
   defprotocol Derivable do
     def ok(a)
   end
 
-  defimpl Derivable, for: Map do
+  defimpl Derivable, for: Any do
     defmacro __deriving__(module, struct, options) do
       quote do
         defimpl Derivable, for: unquote(module) do
@@ -75,9 +83,9 @@ defmodule ProtocolTest do
     assert is_nil Sample.impl_for("foo")
     assert is_nil Sample.impl_for(<<1>>)
     assert is_nil Sample.impl_for(%{})
-    assert is_nil Sample.impl_for(self)
+    assert is_nil Sample.impl_for(self())
     assert is_nil Sample.impl_for(hd(:erlang.ports))
-    assert is_nil Sample.impl_for(make_ref)
+    assert is_nil Sample.impl_for(make_ref())
 
     assert Sample.impl_for(%ImplStruct{}) ==
            Sample.ProtocolTest.ImplStruct
@@ -86,15 +94,16 @@ defmodule ProtocolTest do
   end
 
   test "protocol implementation with any and structs fallback" do
-    assert WithAny.impl_for(%NoImplStruct{})      == WithAny.Any
-    assert WithAny.impl_for(%ImplStruct{})        == WithAny.Map # Derived
+    assert WithAny.impl_for(%NoImplStruct{}) == WithAny.Any
+    assert WithAny.impl_for(%ImplStruct{}) == WithAny.Any # Derived
     assert WithAny.impl_for(%{__struct__: "foo"}) == WithAny.Map
-    assert WithAny.impl_for(%{})                  == WithAny.Map
-    assert WithAny.impl_for(self)                 == WithAny.Any
+    assert WithAny.impl_for(%{}) == WithAny.Map
+    assert WithAny.impl_for(self()) == WithAny.Any
   end
 
   test "protocol not implemented" do
-    assert_raise Protocol.UndefinedError, "protocol ProtocolTest.Sample not implemented for :foo", fn ->
+    assert_raise Protocol.UndefinedError,
+                 "protocol ProtocolTest.Sample not implemented for :foo", fn ->
       Sample.ok(:foo)
     end
   end
@@ -106,11 +115,11 @@ defmodule ProtocolTest do
       @type t :: any
       @doc "Ok"
       @spec ok(t) :: boolean
-      def ok(thing)
+      def ok(term)
     end)
 
     docs = Code.get_docs(SampleDocsProto, :docs)
-    assert {{:ok, 1}, _, :def, [{:thing, _, nil}], "Ok"} =
+    assert {{:ok, 1}, _, :def, [{:term, _, nil}], "Ok"} =
            List.keyfind(docs, {:ok, 1}, 0)
   end
 
@@ -121,34 +130,52 @@ defmodule ProtocolTest do
   end
 
   test "protocol defines callbacks" do
-    assert get_callbacks(Sample, :ok, 1) ==
-      [{:type, 9, :fun, [{:type, 9, :product, [{:type, 9, :t, []}]}, {:type, 9, :boolean, []}]}]
+    assert get_callbacks(@sample_binary, :ok, 1) ==
+      [{:type, 12, :fun, [{:type, 12, :product, [{:user_type, 12, :t, []}]}, {:type, 12, :boolean, []}]}]
 
-    assert get_callbacks(WithAny, :ok, 1) ==
-      [{:type, 16, :fun, [{:type, 16, :product, [{:type, 16, :t, []}]}, {:type, 16, :term, []}]}]
+    assert get_callbacks(@with_any_binary, :ok, 1) ==
+      [{:type, 22, :fun, [{:type, 22, :product, [{:user_type, 22, :t, []}]}, {:type, 22, :term, []}]}]
   end
 
-  test "protocol defines attributes" do
-    assert Sample.__info__(:attributes)[:protocol] == [fallback_to_any: false, consolidated: false]
-    assert WithAny.__info__(:attributes)[:protocol] == [fallback_to_any: true, consolidated: false]
+  test "protocol defines functions and attributes" do
+    assert Sample.__protocol__(:module) == Sample
+    assert Sample.__protocol__(:functions) == [ok: 1]
+    refute Sample.__protocol__(:consolidated?)
+    assert Sample.__protocol__(:impls) == :not_consolidated
+    assert Sample.__info__(:attributes)[:protocol] == [fallback_to_any: false]
+
+    assert WithAny.__protocol__(:module) == WithAny
+    assert WithAny.__protocol__(:functions) == [ok: 1]
+    refute WithAny.__protocol__(:consolidated?)
+    assert WithAny.__protocol__(:impls) == :not_consolidated
+    assert WithAny.__info__(:attributes)[:protocol] == [fallback_to_any: true]
   end
 
   test "defimpl" do
-    defprotocol Attribute do
-      def test(thing)
-    end
+    module = Module.concat(Sample, ImplStruct)
+    assert module.__impl__(:for) == ImplStruct
+    assert module.__impl__(:target) == module
+    assert module.__impl__(:protocol) == Sample
+    assert module.__info__(:attributes)[:protocol_impl] ==
+           [protocol: Sample, for: ImplStruct]
+  end
 
-    defimpl Attribute, for: ImplStruct do
-      def test(_) do
-        {@protocol, @for}
-      end
-    end
+  test "defimpl with implicit derive" do
+    module = Module.concat(WithAny, ImplStruct)
+    assert module.__impl__(:for) == ImplStruct
+    assert module.__impl__(:target) == WithAny.Any
+    assert module.__impl__(:protocol) == WithAny
+    assert module.__info__(:attributes)[:protocol_impl] ==
+           [protocol: WithAny, for: ImplStruct]
+  end
 
-    assert Attribute.test(%ImplStruct{}) == {Attribute, ImplStruct}
-    assert Attribute.ProtocolTest.ImplStruct.__impl__(:protocol) == Attribute
-    assert Attribute.ProtocolTest.ImplStruct.__impl__(:for) == ImplStruct
-    assert Attribute.ProtocolTest.ImplStruct.__info__(:attributes)[:impl] ==
-           [protocol: Attribute, for: ImplStruct]
+  test "defimpl with explicit derive" do
+    module = Module.concat(Derivable, ImplStruct)
+    assert module.__impl__(:for) == ImplStruct
+    assert module.__impl__(:target) == module
+    assert module.__impl__(:protocol) == Derivable
+    assert module.__info__(:attributes)[:protocol_impl] ==
+           [protocol: Derivable, for: ImplStruct]
   end
 
   test "defimpl with multiple for" do
@@ -164,25 +191,20 @@ defmodule ProtocolTest do
     assert Multi.test(:a) == :a
   end
 
-  defp get_callbacks(module, name, arity) do
-    callbacks = for {:callback, info} <- module.__info__(:attributes), do: hd(info)
+  defp get_callbacks(beam, name, arity) do
+    callbacks = Kernel.Typespec.beam_callbacks(beam)
     List.keyfind(callbacks, {name, arity}, 0) |> elem(1)
   end
 
-  test "derives protocol" do
+  test "derives protocol implicitly" do
     struct = %ImplStruct{a: 1, b: 1}
+    assert WithAny.ok(struct) == {:ok, struct}
+
+    struct = %NoImplStruct{a: 1, b: 1}
     assert WithAny.ok(struct) == {:ok, struct}
   end
 
-  test "derived protocol keeps local file/line info" do
-    assert ProtocolTest.WithAny.ProtocolTest.ImplStruct.__info__(:compile)[:source] ==
-           String.to_char_list(__ENV__.file)
-  end
-
-  test "custom derive implementation" do
-    struct = %ImplStruct{a: 1, b: 1}
-    assert Derivable.ok(struct) == {:ok, struct, %ImplStruct{}, []}
-
+  test "derives protocol explicitly" do
     struct = %ImplStruct{a: 1, b: 1}
     assert Derivable.ok(struct) == {:ok, struct, %ImplStruct{}, []}
 
@@ -192,7 +214,7 @@ defmodule ProtocolTest do
     end
   end
 
-  test "custom derive implementation with options" do
+  test "derives protocol explicitly with options" do
     defmodule AnotherStruct do
       @derive [{Derivable, :ok}]
       @derive [WithAny]
@@ -204,7 +226,7 @@ defmodule ProtocolTest do
            {:ok, struct, struct(AnotherStruct), :ok}
   end
 
-  test "custom derive implementation via API" do
+  test "derive protocol explicitly via API" do
     defmodule InlineStruct do
       defstruct a: 0, b: 0
     end
@@ -217,9 +239,14 @@ defmodule ProtocolTest do
            {:ok, struct, struct(InlineStruct), :oops}
   end
 
-  test "cannot derive without a map implementation" do
+  test "derived implementation keeps local file/line info" do
+    assert ProtocolTest.WithAny.ProtocolTest.ImplStruct.__info__(:compile)[:source] ==
+           String.to_charlist(__ENV__.file)
+  end
+
+  test "cannot derive without any implementation" do
     assert_raise ArgumentError,
-        ~r"#{inspect Sample.Map} is not available, cannot derive #{inspect Sample}", fn ->
+        ~r"#{inspect Sample.Any} is not available, cannot derive #{inspect Sample}", fn ->
       defmodule NotCompiled do
         @derive [Sample]
         defstruct hello: :world
@@ -243,7 +270,7 @@ defmodule Protocol.ConsolidationTest do
       @type t :: any
       @doc "Ok"
       @spec ok(t) :: boolean
-      def ok(thing)
+      def ok(term)
     end
   )
 
@@ -251,7 +278,7 @@ defmodule Protocol.ConsolidationTest do
     defprotocol WithAny do
       @fallback_to_any true
       @doc "Ok"
-      def ok(thing)
+      def ok(term)
     end
   )
 
@@ -290,6 +317,8 @@ defmodule Protocol.ConsolidationTest do
   {:ok, binary} = Protocol.consolidate(Sample, [Any, ImplStruct])
   :code.load_binary(Sample, 'protocol_test.exs', binary)
 
+  @sample_binary binary
+
   # Any should be moved to the end
   :code.purge(WithAny)
   :code.delete(WithAny)
@@ -299,6 +328,17 @@ defmodule Protocol.ConsolidationTest do
   test "consolidated?/1" do
     assert Protocol.consolidated?(WithAny)
     refute Protocol.consolidated?(Enumerable)
+  end
+
+  test "consolidation prevents new implementations" do
+    assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+      defimpl WithAny, for: Integer do
+        def ok(_any), do: :ok
+      end
+    end) =~ ~r"the .+WithAny protocol has already been consolidated"
+  after
+    :code.purge(WithAny.Atom)
+    :code.delete(WithAny.Atom)
   end
 
   test "consolidated implementations without any" do
@@ -312,10 +352,10 @@ defmodule Protocol.ConsolidationTest do
     assert is_nil Sample.impl_for({1, 2, 3})
     assert is_nil Sample.impl_for("foo")
     assert is_nil Sample.impl_for(<<1>>)
-    assert is_nil Sample.impl_for(self)
+    assert is_nil Sample.impl_for(self())
     assert is_nil Sample.impl_for(%{})
     assert is_nil Sample.impl_for(hd(:erlang.ports))
-    assert is_nil Sample.impl_for(make_ref)
+    assert is_nil Sample.impl_for(make_ref())
 
     assert Sample.impl_for(%ImplStruct{}) ==
            Sample.Protocol.ConsolidationTest.ImplStruct
@@ -324,33 +364,39 @@ defmodule Protocol.ConsolidationTest do
   end
 
   test "consolidated implementations with any and tuple fallback" do
-    assert WithAny.impl_for(%NoImplStruct{})      == WithAny.Any
-    assert WithAny.impl_for(%ImplStruct{})        == WithAny.Map # Derived
+    assert WithAny.impl_for(%NoImplStruct{}) == WithAny.Any
+    assert WithAny.impl_for(%ImplStruct{}) == WithAny.Any # Derived
     assert WithAny.impl_for(%{__struct__: "foo"}) == WithAny.Map
-    assert WithAny.impl_for(%{})                  == WithAny.Map
-    assert WithAny.impl_for(self)                 == WithAny.Any
+    assert WithAny.impl_for(%{}) == WithAny.Map
+    assert WithAny.impl_for(self()) == WithAny.Any
   end
 
   test "consolidation keeps docs" do
     docs = Code.get_docs(Sample, :docs)
-    assert {{:ok, 1}, _, :def, [{:thing, _, nil}], "Ok"} =
+    assert {{:ok, 1}, _, :def, [{:term, _, nil}], "Ok"} =
            List.keyfind(docs, {:ok, 1}, 0)
   end
 
+  test "consolidation keeps source" do
+    assert Sample.__info__(:compile)[:source]
+  end
+
   test "consolidated keeps callbacks" do
-    callbacks = for {:callback, info} <- Sample.__info__(:attributes), do: hd(info)
+    callbacks = Kernel.Typespec.beam_callbacks(@sample_binary)
     assert callbacks != []
   end
 
-  test "consolidation errors on missing beams" do
+  test "consolidation errors on missing BEAM files" do
     defprotocol NoBeam, do: nil
     assert Protocol.consolidate(String, [])  == {:error, :not_a_protocol}
     assert Protocol.consolidate(NoBeam, [])  == {:error, :no_beam_info}
   end
 
   test "consolidation updates attributes" do
-    assert Sample.__info__(:attributes)[:protocol] == [fallback_to_any: false, consolidated: true]
-    assert WithAny.__info__(:attributes)[:protocol] == [fallback_to_any: true, consolidated: true]
+    assert Sample.__protocol__(:consolidated?)
+    assert Sample.__protocol__(:impls) == {:consolidated, [ImplStruct]}
+    assert WithAny.__protocol__(:consolidated?)
+    assert WithAny.__protocol__(:impls) == {:consolidated, [Any, Map, ImplStruct]}
   end
 
   test "consolidation extracts protocols" do
@@ -363,5 +409,13 @@ defmodule Protocol.ConsolidationTest do
     protos = Protocol.extract_impls(Enumerable, [:code.lib_dir(:elixir, :ebin)])
     assert List in protos
     assert Function in protos
+  end
+
+  test "protocol not implemented" do
+    assert_raise Protocol.UndefinedError,
+                 "protocol Protocol.ConsolidationTest.Sample not implemented for :foo. " <>
+                 "This protocol is implemented for: Protocol.ConsolidationTest.ImplStruct", fn ->
+      Sample.ok(:foo)
+    end
   end
 end

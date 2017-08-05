@@ -4,6 +4,7 @@ defmodule Agent.Server do
   use GenServer
 
   def init(fun) do
+    _ = initial_call(fun)
     {:ok, run(fun, [])}
   end
 
@@ -12,16 +13,14 @@ defmodule Agent.Server do
   end
 
   def handle_call({:get_and_update, fun}, _from, state) do
-    {reply, state} = run(fun, [state])
-    {:reply, reply, state}
+    case run(fun, [state]) do
+      {reply, state} -> {:reply, reply, state}
+      other          -> {:stop, {:bad_return_value, other}, state}
+    end
   end
 
   def handle_call({:update, fun}, _from, state) do
     {:reply, :ok, run(fun, [state])}
-  end
-
-  def handle_call(:stop, _from, state) do
-    {:stop, :normal, :ok, state}
   end
 
   def handle_call(msg, from, state) do
@@ -40,15 +39,19 @@ defmodule Agent.Server do
     {:ok, run(fun, [state])}
   end
 
-  def terminate(_reason, _state) do
-    # There is a race condition if the agent is
-    # restarted too fast and it is registered.
-    try do
-      self |> :erlang.process_info(:registered_name) |> elem(1) |> Process.unregister
-    rescue
-      _ -> :ok
-    end
+  defp initial_call(mfa) do
+    _ = Process.put(:"$initial_call", get_initial_call(mfa))
     :ok
+  end
+
+  defp get_initial_call(fun) when is_function(fun, 0) do
+    {:module, module} = :erlang.fun_info(fun, :module)
+    {:name, name} = :erlang.fun_info(fun, :name)
+    {module, name, 0}
+  end
+
+  defp get_initial_call({mod, fun, args}) do
+    {mod, fun, length(args)}
   end
 
   defp run({m, f, a}, extra), do: apply(m, f, extra ++ a)

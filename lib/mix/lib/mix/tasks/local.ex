@@ -1,16 +1,16 @@
 defmodule Mix.Tasks.Local do
   use Mix.Task
 
-  @shortdoc "List local tasks"
+  @shortdoc "Lists local tasks"
 
   @moduledoc """
-  List local tasks.
+  Lists local tasks.
   """
 
   @spec run([]) :: :ok
   def run([]) do
     shell   = Mix.shell
-    modules = Mix.Local.all_tasks
+    modules = Mix.Local.archives_tasks
 
     docs = for module <- modules do
       {Mix.Task.task_name(module), Mix.Task.shortdoc(module)}

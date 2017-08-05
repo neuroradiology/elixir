@@ -3,45 +3,6 @@ defmodule Logger.Watcher do
 
   require Logger
   use GenServer
-  @name Logger.Watcher
-
-  @doc """
-  Starts the watcher supervisor.
-  """
-  def start_link(m, f, a) do
-    import Supervisor.Spec
-    child = worker(__MODULE__, [],
-      [function: :watcher, restart: :transient])
-    options  = [strategy: :simple_one_for_one, name: @name]
-    case Supervisor.start_link([child], options) do
-      {:ok, _} = ok ->
-        _ = for {mod, handler, args} <- apply(m, f, a) do
-          {:ok, _} = watch(mod, handler, args)
-        end
-        ok
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  @doc """
-  Removes the given handler.
-  """
-  def unwatch(mod, handler) do
-    GenEvent.remove_handler(mod, handler, :ok)
-  end
-
-  @doc """
-  Watches the given handler as part of the watcher supervision tree.
-  """
-  def watch(mod, handler, args) do
-    case Supervisor.start_child(@name, [mod, handler, args]) do
-      {:ok, _pid} = result ->
-        result
-      {:error, _reason} = error ->
-        error
-    end
-  end
 
   @doc """
   Starts a watcher server.
@@ -49,53 +10,46 @@ defmodule Logger.Watcher do
   This is useful when there is a need to start a handler
   outside of the handler supervision tree.
   """
-  def watcher(mod, handler, args, style \\ :monitor) do
-    GenServer.start_link(__MODULE__, {mod, handler, args, style})
+  def start_link(triplet) do
+    GenServer.start_link(__MODULE__, triplet)
   end
 
   ## Callbacks
 
   @doc false
-  def init({mod, handler, args, :monitor}) do
-    ref = Process.monitor(mod)
-    res = GenEvent.add_mon_handler(mod, handler, args)
-    do_init(res, mod, handler, ref)
+  def init({mod, handler, args}) do
+    case :gen_event.delete_handler(mod, handler, :ok) do
+      {:error, :module_not_found} ->
+        res = :gen_event.add_sup_handler(mod, handler, args)
+        do_init(res, mod, handler)
+      _ ->
+        init({mod, handler, args})
+    end
   end
 
-  def init({mod, handler, args, :link}) do
-    res = :gen_event.add_sup_handler(mod, handler, args)
-    do_init(res, mod, handler, nil)
-  end
-
-  defp do_init(res, mod, handler, ref) do
+  defp do_init(res, mod, handler) do
     case res do
       :ok ->
-        {:ok, {mod, handler, ref}}
+        {:ok, {mod, handler}}
       {:error, :ignore} ->
-        # Can't return :ignore as a transient child under a simple_one_for_one.
+        # Can't return :ignore as a transient child under a one_for_one.
         # Instead return ok and then immediately exit normally - using a fake
         # message.
         send(self(), {:gen_event_EXIT, handler, :normal})
-        {:ok, {mod, handler, ref}}
+        {:ok, {mod, handler}}
       {:error, reason}  ->
         {:stop, reason}
     end
   end
 
   @doc false
-  def handle_info({:gen_event_EXIT, handler, reason}, {_, handler, _} = state)
+  def handle_info({:gen_event_EXIT, handler, reason}, {_, handler} = state)
       when reason in [:normal, :shutdown] do
     {:stop, reason, state}
   end
 
-  def handle_info({:gen_event_EXIT, handler, reason}, {mod, handler, _} = state) do
-    _ = Logger.error "GenEvent handler #{inspect handler} installed at #{inspect mod}\n" <>
-                 "** (exit) #{format_exit(reason)}"
-    {:stop, reason, state}
-  end
-
-  def handle_info({:DOWN, ref, _, _, reason}, {mod, handler, ref} = state) do
-    _ = Logger.error "GenEvent handler #{inspect handler} installed at #{inspect mod}\n" <>
+  def handle_info({:gen_event_EXIT, handler, reason}, {mod, handler} = state) do
+    _ = Logger.error ":gen_event handler #{inspect handler} installed at #{inspect mod}\n" <>
                  "** (exit) #{format_exit(reason)}"
     {:stop, reason, state}
   end

@@ -1,22 +1,20 @@
 defmodule Mix.SCM do
-  use Behaviour
-
-  @type opts :: Keyword.t
-
   @moduledoc """
   This module provides helper functions and defines the
-  behaviour required by any SCM used by mix.
+  behaviour required by any source code manager (SCM) used by Mix.
   """
+
+  @type opts :: keyword
 
   @doc """
   Returns a boolean if the dependency can be fetched
   or it is meant to be previously available in the
   filesystem.
 
-  Local dependencies (i.e. non fetchable ones) are automatically
+  Local dependencies (i.e. non-fetchable ones) are automatically
   recompiled every time the parent project is compiled.
   """
-  defcallback fetchable? :: boolean
+  @callback fetchable? :: boolean
 
   @doc """
   Returns a string representing the SCM. This is used
@@ -24,7 +22,7 @@ defmodule Mix.SCM do
   so the amount of information should be concise and
   easy to spot.
   """
-  defcallback format(opts) :: String.t
+  @callback format(opts) :: String.t
 
   @doc """
   Returns a string representing the SCM. This is used
@@ -34,7 +32,7 @@ defmodule Mix.SCM do
 
   If nil is returned, it means no lock information is available.
   """
-  defcallback format_lock(opts) :: String.t | nil
+  @callback format_lock(opts) :: String.t | nil
 
   @doc """
   This behaviour function receives a keyword list of `opts`
@@ -47,15 +45,15 @@ defmodule Mix.SCM do
   Each registered SCM will be asked if they consume this dependency,
   receiving `[github: "foo/bar"]` as argument. Since this option makes
   sense for the Git SCM, it will return an update list of options
-  while other SCMs would simply return nil.
+  while other SCMs would simply return `nil`.
   """
-  defcallback accepts_options(app :: atom, opts) :: opts | nil
+  @callback accepts_options(app :: atom, opts) :: opts | nil
 
   @doc """
   This behaviour function returns a boolean if the
   dependency is available.
   """
-  defcallback checked_out?(opts) :: boolean
+  @callback checked_out?(opts) :: boolean
 
   @doc """
   This behaviour function checks out dependencies.
@@ -67,7 +65,7 @@ defmodule Mix.SCM do
 
   It must return the current lock.
   """
-  defcallback checkout(opts) :: any
+  @callback checkout(opts) :: any
 
   @doc """
   This behaviour function updates dependencies. It may be
@@ -79,12 +77,14 @@ defmodule Mix.SCM do
 
   It must return the current lock.
   """
-  defcallback update(opts) :: any
+  @callback update(opts) :: any
 
   @doc """
   This behaviour function checks the status of the lock. In
   particular, it checks if the revision stored in the lock
-  is the same as the repository it is currently in. It may return:
+  is the same as the repository it is currently in.
+
+  It may return:
 
     * `:mismatch` - if the lock doesn't match and we need to
       simply move to the latest lock
@@ -102,37 +102,42 @@ defmodule Mix.SCM do
   structural check is required. A structural mismatch should always
   return `:outdated`.
   """
-  defcallback lock_status(opts) :: :mismatch | :outdated | :ok
+  @callback lock_status(opts) :: :mismatch | :outdated | :nolock | :ok
 
   @doc """
-  Receives two options and must return true if they refer to the
+  Receives two options and must return `true` if they refer to the
   same repository. The options are guaranteed to belong to the
   same SCM.
   """
-  defcallback equal?(opts1 :: opts, opts2 :: opts) :: boolean
+  @callback equal?(opts1 :: opts, opts2 :: opts) :: boolean
+
+  @doc """
+  Returns the usable managers for the dependency. This can be used
+  if the SCM has extra knowledge of the dependency, otherwise it
+  should return an empty list.
+  """
+  @callback managers(opts) :: [atom]
 
   @doc """
   Returns all available SCMs. Each SCM is tried in order
   until a matching one is found.
   """
   def available do
-    {:ok, scm} = Application.fetch_env(:mix, :scm)
+    {:ok, scm} = Mix.State.fetch(:scm)
     scm
   end
 
   @doc """
-  Prepend the given SCM module to the list of available SCMs.
+  Prepends the given SCM module to the list of available SCMs.
   """
   def prepend(mod) when is_atom(mod) do
-    available = Enum.reject(available(), &(&1 == mod))
-    Application.put_env(:mix, :scm, [mod|available])
+    Mix.State.prepend(:scm, mod)
   end
 
   @doc """
-  Append the given SCM module to the list of available SCMs.
+  Appends the given SCM module to the list of available SCMs.
   """
   def append(mod) when is_atom(mod) do
-    available = Enum.reject(available(), &(&1 == mod))
-    Application.put_env(:mix, :scm, available ++ [mod])
+    Mix.State.append(:scm, mod)
   end
 end

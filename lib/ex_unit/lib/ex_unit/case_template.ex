@@ -1,7 +1,7 @@
 defmodule ExUnit.CaseTemplate do
   @moduledoc """
   This module allows a developer to define a test case
-  template to be used throughout his tests. This is useful
+  template to be used throughout their tests. This is useful
   when there are a set of functions that should be shared
   between tests or a set of setup callbacks.
 
@@ -62,9 +62,18 @@ defmodule ExUnit.CaseTemplate do
   @doc """
   Allows a developer to customize the using block
   when the case template is used.
+
+  ## Example
+
+      using do
+        quote do
+          alias MyApp.FunModule
+        end
+      end
+
   """
   defmacro using(var \\ quote(do: _), do: block) do
-    quote location: :keep do
+    quote do
       defmacro __using__(unquote(var) = opts) do
         parent = unquote(__MODULE__).__proxy__(__MODULE__, opts)
         result = unquote(block)

@@ -1,14 +1,5 @@
 defmodule GenEvent.Stream do
-  @moduledoc """
-  Defines a `GenEvent` stream.
-
-  This is a struct returned by `stream/2`. The struct is public and
-  contains the following fields:
-
-    * `:manager`  - the manager reference given to `GenEvent.stream/2`
-    * `:timeout`  - the timeout in between events, defaults to `:infinity`
-
-  """
+  @moduledoc false
   defstruct manager: nil, timeout: :infinity
 
   @type t :: %__MODULE__{
@@ -22,12 +13,21 @@ defmodule GenEvent.Stream do
 
   @doc false
   def handle_event(event, _state) do
-    exit({:bad_event, event})
+    # We do this to trick Dialyzer to not complain about non-local returns.
+    case :erlang.phash2(1, 1) do
+      0 -> exit({:bad_event, event})
+      1 -> :remove_handler
+    end
   end
 
   @doc false
   def handle_call(msg, _state) do
-    exit({:bad_call, msg})
+    # We do this to trick Dialyzer to not complain about non-local returns.
+    reason = {:bad_call, msg}
+    case :erlang.phash2(1, 1) do
+      0 -> exit(reason)
+      1 -> {:remove_handler, reason}
+    end
   end
 
   @doc false
@@ -80,7 +80,8 @@ defimpl Enumerable, for: GenEvent.Stream do
 
   defp start(%{manager: manager} = stream) do
     try do
-      {:ok, {pid, ref}} = :gen.call(manager, self(), {:add_process_handler, self(), self()}, :infinity)
+      {:ok, {pid, ref}} = :gen.call(manager, self(),
+                                    {:add_process_handler, self(), self()}, :infinity)
       mon_ref = Process.monitor(pid)
       {pid, ref, mon_ref}
     catch
@@ -92,19 +93,6 @@ defimpl Enumerable, for: GenEvent.Stream do
     self = self()
 
     receive do
-      # The handler was removed. Stop iteration, resolve the
-      # event later. We need to demonitor now, otherwise DOWN
-      # appears with higher priority in the shutdown process.
-      {:gen_event_EXIT, ^self, _reason} = event ->
-        Process.demonitor(mon_ref, [:flush])
-        send(self, event)
-        {:halt, {:removed, acc}}
-
-      # The manager died. Stop iteration, resolve the event later.
-      {:DOWN, ^mon_ref, _, _, _} = event ->
-        send(self, event)
-        {:halt, {:removed, acc}}
-
       # Got an async event.
       {_from, {^pid, ^ref}, {:notify, event}} ->
         {[{:async, pid, ref, event}], acc}
@@ -116,6 +104,19 @@ defimpl Enumerable, for: GenEvent.Stream do
       # Got an ack event.
       {_from, {^pid, ^ref}, {:ack_notify, event}} ->
         {[{:ack, pid, ref, event}], acc}
+
+      # The handler was removed. Stop iteration, resolve the
+      # event later. We need to demonitor now, otherwise DOWN
+      # appears with higher priority in the shutdown process.
+      {:gen_event_EXIT, {^pid, ^ref}, _reason} = event ->
+        Process.demonitor(mon_ref, [:flush])
+        send(self, event)
+        {:halt, {:removed, acc}}
+
+      # The manager died. Stop iteration, resolve the event later.
+      {:DOWN, ^mon_ref, _, _, _} = event ->
+        send(self, event)
+        {:halt, {:removed, acc}}
     after
       timeout ->
         exit({:timeout, {__MODULE__, :next, [stream, acc]}})
@@ -135,28 +136,16 @@ defimpl Enumerable, for: GenEvent.Stream do
 
   # If we reach this branch, the handler was not removed yet,
   # so we trigger a request for doing so.
-  defp stop(stream, {pid, _, _} = acc) do
-    parent = self()
-    _ = Task.start(fn -> GenEvent.remove_handler(pid, parent, :shutdown) end)
+  defp stop(stream, {pid, ref, _} = acc) do
+    _ = :gen_event.delete_handler(pid, {pid, ref}, :shutdown)
     stop(stream, {:removed, acc})
   end
 
   defp wait_for_handler_removal(pid, ref, mon_ref) do
-    self = self()
-
     receive do
-      {_from, {^pid, ^ref}, {notify, _event}} when notify in [:ack_notify, :sync_notify] ->
-        send pid, {ref, :done}
-        wait_for_handler_removal(pid, ref, mon_ref)
-      {:gen_event_EXIT, ^self, reason}
-          when reason == :normal
-          when reason == :shutdown
-          when tuple_size(reason) == 3 and elem(reason, 0) == :swapped  ->
+      {:gen_event_EXIT, {^pid, ^ref}, _reason} ->
         Process.demonitor(mon_ref, [:flush])
         :ok
-      {:gen_event_EXIT, ^self, reason} ->
-        Process.demonitor(mon_ref, [:flush])
-        {:error, reason}
       {:DOWN, ^mon_ref, _, _, reason} ->
         {:error, reason}
     end
@@ -164,7 +153,7 @@ defimpl Enumerable, for: GenEvent.Stream do
 
   defp flush_events(ref) do
     receive do
-      {_from, {_pid, ^ref}, {:notify, _event}} ->
+      {_from, {_pid, ^ref}, {notify, _event}} when notify in [:notify, :ack_notify, :sync_notify] ->
         flush_events(ref)
     after
       0 -> :ok

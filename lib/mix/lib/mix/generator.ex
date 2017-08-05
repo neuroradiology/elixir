@@ -2,8 +2,8 @@ defmodule Mix.Generator do
   @moduledoc """
   Conveniences for working with paths and generating content.
 
-  All of those functions are verbose, in the sense they log
-  the action to be performed via `Mix.shell`.
+  All of these functions are verbose, in the sense they log
+  the action to be performed via `Mix.shell/0`.
   """
 
   @doc """
@@ -13,11 +13,19 @@ defmodule Mix.Generator do
   ## Options
 
     * `:force` - forces installation without a shell prompt.
+
+  ## Examples
+
+      iex> Mix.Generator.create_file ".gitignore", "_build\ndeps\n"
+      * creating .gitignore
+      :ok
+
   """
+  @spec create_file(Path.t, iodata, keyword) :: any
   def create_file(path, contents, opts \\ []) when is_binary(path) do
     Mix.shell.info [:green, "* creating ", :reset, Path.relative_to_cwd(path)]
 
-    if opts[:force] || overwriting?(path) do
+    if opts[:force] || Mix.Utils.can_write?(path) do
       File.mkdir_p!(Path.dirname(path))
       File.write!(path, contents)
     end
@@ -25,30 +33,25 @@ defmodule Mix.Generator do
 
   @doc """
   Creates a directory if one does not exist yet.
+
+  This function does nothing if the given directory already exists; in this
+  case, it still logs the directory creation.
+
+  ## Examples
+
+      iex> Mix.Generator.create_directory "path/to/dir"
+      * creating path/to/dir
+      :ok
+
   """
+  @spec create_directory(Path.t) :: any
   def create_directory(path) when is_binary(path) do
     Mix.shell.info [:green, "* creating ", :reset, Path.relative_to_cwd(path)]
     File.mkdir_p! path
   end
 
-  defp overwriting?(path) do
-    if File.exists?(path) do
-      full = Path.expand(path)
-      Mix.shell.yes?(Path.relative_to_cwd(full) <> " already exists, overwrite?")
-    else
-      true
-    end
-  end
-
-  @doc false
-  defmacro from_file(path) do
-    quote do
-      File.read! Path.expand(unquote(path), __ENV__.file)
-    end
-  end
-
   @doc """
-  Embed a template given by `contents` into the current module.
+  Embeds a template given by `contents` into the current module.
 
   It will define a private function with the `name` followed by
   `_template` that expects assigns as arguments.
@@ -58,16 +61,24 @@ defmodule Mix.Generator do
   template using the `@` macro.
 
   For more information, check `EEx.SmartEngine`.
+
+  ## Examples
+
+      defmodule Mix.Tasks.MyTask do
+        require Mix.Generator
+        Mix.Generator.embed_template(:log, "Log: <%= @log %>")
+      end
+
   """
   defmacro embed_template(name, contents) do
-    quote bind_quoted: binding do
+    quote bind_quoted: binding() do
       contents =
         case contents do
           [from_file: file] ->
             @file file
             File.read!(file)
           c when is_binary(c) ->
-            @file {__ENV__.file, __ENV__.line+1}
+            @file {__ENV__.file, __ENV__.line + 1}
             c
           _ ->
             raise ArgumentError, "expected string or from_file: file"
@@ -82,10 +93,18 @@ defmodule Mix.Generator do
   Embeds a text given by `contents` into the current module.
 
   It will define a private function with the `name` followed by
-  `_text` that expects no argument.
+  `_text` that expects no arguments.
+
+  ## Examples
+
+      defmodule Mix.Tasks.MyTask do
+        require Mix.Generator
+        Mix.Generator.embed_text(:error, "There was an error!")
+      end
+
   """
   defmacro embed_text(name, contents) do
-    quote bind_quoted: binding do
+    quote bind_quoted: binding() do
       contents =
         case contents do
           [from_file: f] -> File.read!(f)

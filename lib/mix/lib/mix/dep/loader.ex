@@ -4,78 +4,91 @@
 defmodule Mix.Dep.Loader do
   @moduledoc false
 
+  import Mix.Dep, only: [ok?: 1, mix?: 1, rebar?: 1, make?: 1]
+
   @doc """
   Gets all direct children of the current `Mix.Project`
   as a `Mix.Dep` struct. Umbrella project dependencies
   are included as children.
 
   By default, it will filter all dependencies that does not match
-  current environment, behaviour can be overriden via options.
-
-  ## Options
-
-    * `:env` - filter dependencies on given environments
+  current environment, behaviour can be overridden via options.
   """
-  def children(opts) do
-    mix_children(opts) ++ Mix.Dep.Umbrella.unloaded
+  def children() do
+    mix_children([]) ++ Mix.Dep.Umbrella.unloaded
+  end
+
+  @doc """
+  Partitions loaded dependencies by environment.
+  """
+  def partition_by_env(deps, nil), do: {deps, []}
+  def partition_by_env(deps, env), do: Enum.split_with(deps, &not skip?(&1, env))
+
+  @doc """
+  Checks if a dependency must be skipped according to the environment.
+  """
+  def skip?(_dep, nil), do: false
+  def skip?(%Mix.Dep{status: {:divergedonly, _}}, _), do: false
+  def skip?(%Mix.Dep{opts: opts}, env) do
+    only = opts[:only]
+    validate_only!(only)
+    only != nil and env not in List.wrap(only)
   end
 
   @doc """
   Loads the given dependency information, including its
   latest status and children.
   """
-  def load(dep, children) do
-    %Mix.Dep{manager: manager, scm: scm, opts: opts} = dep
-    dep  = %{dep | status: scm_status(scm, opts)}
-    dest = opts[:dest]
+  def load(%Mix.Dep{manager: manager, scm: scm, opts: opts} = dep, children) do
+    manager = scm_manager(scm, opts) ||
+              manager ||
+              infer_manager(opts[:dest])
+
+    dep = %{dep | manager: manager, status: scm_status(scm, opts)}
 
     {dep, children} =
       cond do
-        not ok?(dep.status) ->
+        not ok?(dep) ->
           {dep, []}
 
-        manager == :rebar ->
-          rebar_dep(dep, children)
-
-        mix?(dest) ->
+        mix?(dep) ->
           mix_dep(dep, children)
 
-        rebar?(dest) ->
-          rebar_dep(dep, children)
+        # If not an explicit Rebar or Mix dependency
+        # but came from Rebar, assume to be a Rebar dep.
+        rebar?(dep) ->
+          rebar_dep(dep, children, manager)
 
-        make?(dest) ->
+        make?(dep) ->
           make_dep(dep)
 
         true ->
           {dep, []}
       end
 
-    %{validate_path(validate_app(dep)) | deps: children}
+    %{validate_app(dep) | deps: attach_only(children, opts)}
   end
 
   @doc """
   Checks if a requirement from a dependency matches
   the given version.
   """
-  def vsn_match?(nil, _actual, _app),
-    do: true
-  def vsn_match?(req, actual, app) do
+  def vsn_match(nil, _actual, _app),
+    do: {:ok, true}
+  def vsn_match(req, actual, app) do
     if Regex.regex?(req) do
-      actual =~ req
+      {:ok, actual =~ req}
     else
       case Version.parse(actual) do
         {:ok, version} ->
           case Version.parse_requirement(req) do
             {:ok, req} ->
-              Version.match?(version, req)
+              {:ok, Version.match?(version, req)}
             :error ->
               Mix.raise "Invalid requirement #{req} for app #{app}"
           end
-
         :error ->
-          Mix.raise "The application #{app} specified a non Semantic Version #{actual}. " <>
-            "Mix can only match the requirement #{req} against Semantic Versions, to match against any " <>
-            "version, please use a regex as requirement"
+          {:error, :nosemver}
       end
     end
   end
@@ -83,24 +96,37 @@ defmodule Mix.Dep.Loader do
   ## Helpers
 
   def to_dep(tuple, from, manager \\ nil) do
-    %{with_scm_and_app(tuple) | from: from, manager: manager}
+    %{opts: opts} = dep = with_scm_and_app(tuple)
+    %{dep | from: from, manager: opts[:manager] || manager}
   end
 
-  defp with_scm_and_app({app, opts}) when is_list(opts) do
-    with_scm_and_app({app, nil, opts})
+  defp with_scm_and_app({app, opts} = original) when is_atom(app) and is_list(opts) do
+    with_scm_and_app(app, nil, opts, original)
   end
 
-  defp with_scm_and_app({app, req}) do
-    with_scm_and_app({app, req, []})
-  end
-
-  defp with_scm_and_app({app, req, opts} = other) when is_atom(app) and is_list(opts) do
-    unless is_binary(req) or Regex.regex?(req) or is_nil(req) do
-      invalid_dep_format(other)
+  defp with_scm_and_app({app, req} = original) when is_atom(app) do
+    if is_binary(req) or Regex.regex?(req) do
+      with_scm_and_app(app, req, [], original)
+    else
+      invalid_dep_format(original)
     end
+  end
 
+  defp with_scm_and_app({app, req, opts} = original) when is_atom(app) and is_list(opts)  do
+    if is_binary(req) or Regex.regex?(req) do
+      with_scm_and_app(app, req, opts, original)
+    else
+      invalid_dep_format(original)
+    end
+  end
+
+  defp with_scm_and_app(original) do
+    invalid_dep_format(original)
+  end
+
+  defp with_scm_and_app(app, req, opts, original) do
     unless Keyword.keyword?(opts) do
-      invalid_dep_format(other)
+      invalid_dep_format(original)
     end
 
     bin_app = Atom.to_string(app)
@@ -113,13 +139,16 @@ defmodule Mix.Dep.Loader do
 
     {scm, opts} = get_scm(app, opts)
 
-    if !scm && Mix.Tasks.Local.Hex.ensure_installed?(app) do
-      _ = Mix.Tasks.Local.Hex.start()
-      {scm, opts} = get_scm(app, opts)
-    end
+    {scm, opts} =
+      if !scm && Mix.Hex.ensure_installed?(app) do
+        _ = Mix.Hex.start()
+        get_scm(app, opts)
+      else
+        {scm, opts}
+      end
 
     unless scm do
-      Mix.raise "Could not find a SCM for dependency #{inspect app} from #{inspect Mix.Project.get}"
+      Mix.raise "Could not find an SCM for dependency #{inspect app} from #{inspect Mix.Project.get}"
     end
 
     %Mix.Dep{
@@ -127,17 +156,22 @@ defmodule Mix.Dep.Loader do
       app: app,
       requirement: req,
       status: scm_status(scm, opts),
-      opts: opts}
-  end
-
-  defp with_scm_and_app(other) do
-    invalid_dep_format(other)
+      opts: Keyword.put_new(opts, :env, :prod)}
   end
 
   defp get_scm(app, opts) do
-    Enum.find_value Mix.SCM.available, {nil, opts}, fn(scm) ->
+    Enum.find_value Mix.SCM.available, {nil, opts}, fn scm ->
       (new = scm.accepts_options(app, opts)) && {scm, new}
     end
+  end
+
+  # Notice we ignore Make dependencies because the
+  # file based heuristic will always figure it out.
+  @scm_managers ~w(mix rebar rebar3)a
+
+  defp scm_manager(scm, opts) do
+    managers = scm.managers(opts)
+    Enum.find(@scm_managers, &(&1 in managers))
   end
 
   defp scm_status(scm, opts) do
@@ -148,19 +182,17 @@ defmodule Mix.Dep.Loader do
     end
   end
 
-  defp ok?({:ok, _}), do: true
-  defp ok?(_), do: false
-
-  defp mix?(dest) do
-    any_of?(dest, ["mix.exs"])
-  end
-
-  defp rebar?(dest) do
-    any_of?(dest, ["rebar", "rebar.config", "rebar.config.script"])
-  end
-
-  defp make?(dest) do
-    any_of?(dest, ["Makefile", "Makefile.win"])
+  defp infer_manager(dest) do
+    cond do
+      any_of?(dest, ["mix.exs"]) ->
+        :mix
+      any_of?(dest, ["rebar", "rebar.config", "rebar.config.script", "rebar.lock"]) ->
+        :rebar3
+      any_of?(dest, ["Makefile", "Makefile.win"]) ->
+        :make
+      true ->
+        nil
+    end
   end
 
   defp any_of?(dest, files) do
@@ -181,90 +213,115 @@ defmodule Mix.Dep.Loader do
 
         app :: atom
         requirement :: String.t | Regex.t
-        opts :: Keyword.t
+        opts :: keyword
 
+    If you want to skip the requirement (not recommended), use ">= 0.0.0".
     """
   end
 
   ## Fetching
 
-  defp mix_dep(%Mix.Dep{opts: opts} = dep, nil) do
-    Mix.Dep.in_dependency(dep, fn _ ->
-      umbrella? = Mix.Project.umbrella?
-
-      if umbrella? do
-        opts = Keyword.put_new(opts, :app, false)
-      end
-
-      deps = mix_children(env: opts[:env] || :prod) ++ Mix.Dep.Umbrella.unloaded
-      {%{dep | manager: :mix, opts: opts, extra: [umbrella: umbrella?]}, deps}
-    end)
-  end
-
-  # If we have a Mix dependency that came from a remote converger,
-  # we just use the dependencies given by the remote converger, we
-  # don't need to load the mixfile at all. We can only do this for
-  # now because umbrella projects are not supported.
-  defp mix_dep(%Mix.Dep{opts: opts} = dep, children) do
-    from = Path.join(opts[:dest], "mix.exs")
-    deps = Enum.map(children, &to_dep(&1, from))
-    {%{dep | manager: :mix, extra: [umbrella: false]}, deps}
-  end
-
-  defp rebar_dep(%Mix.Dep{} = dep, children) do
-    Mix.Dep.in_dependency(dep, fn _ ->
-      rebar = Mix.Rebar.load_config(".")
-      extra = Dict.take(rebar, [:sub_dirs])
-      deps  = if children do
-        from = Path.absname("rebar.config")
-        Enum.map(children, &to_dep(&1, from, :rebar))
-      else
-        rebar_children(rebar)
-      end
-      {%{dep | manager: :rebar, extra: extra}, deps}
-    end)
-  end
-
-  defp make_dep(dep) do
-    {%{dep | manager: :make}, []}
-  end
-
-  defp mix_children(opts) do
-    from = Path.absname("mix.exs")
-    deps = Enum.map(Mix.Project.config[:deps] || [], &to_dep(&1, from))
-
-    # Filter deps not matching mix environment
-    if env = opts[:env] do
-      Enum.filter(deps, fn %Mix.Dep{opts: opts} ->
-        only = opts[:only]
-        if only, do: env in List.wrap(only), else: true
+  # We need to override the dependencies so they mirror
+  # the :only requirement in the parent.
+  defp attach_only(deps, opts) do
+    if only = opts[:only] do
+      Enum.map(deps, fn %{opts: opts} = dep ->
+        %{dep | opts: Keyword.put_new(opts, :only, only)}
       end)
     else
       deps
     end
   end
 
-  defp rebar_children(root_config) do
-    from = Path.absname("rebar.config")
+  defp mix_dep(%Mix.Dep{opts: opts} = dep, nil) do
+    Mix.Dep.in_dependency(dep, fn _ ->
+      opts =
+        if Mix.Project.umbrella? do
+          Keyword.put_new(opts, :app, false)
+        else
+          opts
+        end
+
+      child_opts =
+        if opts[:from_umbrella] do
+          []
+        else
+          [env: Keyword.fetch!(opts, :env)]
+        end
+
+      deps = mix_children(child_opts) ++ Mix.Dep.Umbrella.unloaded
+      {%{dep | opts: opts}, deps}
+    end)
+  end
+
+  # If we have a Mix dependency that came from a remote converger,
+  # we just use the dependencies given by the remote converger,
+  # we don't need to load the mixfile at all. We can only do this
+  # because umbrella projects are not supported in remotes.
+  defp mix_dep(%Mix.Dep{opts: opts} = dep, children) do
+    from = Path.join(opts[:dest], "mix.exs")
+    deps = Enum.map(children, &to_dep(&1, from))
+    {dep, deps}
+  end
+
+  defp rebar_dep(%Mix.Dep{app: app, opts: opts, extra: overrides} = dep, children, manager) do
+    config =
+      File.cd!(opts[:dest], fn -> Mix.Rebar.load_config(".") end)
+
+    config =
+      Mix.Rebar.apply_overrides(app, config, overrides)
+
+    deps =
+      if children do
+        from = Path.join(opts[:dest], "rebar.config")
+        # Pass the manager because deps of a Rebar project need
+        # to default to Rebar if we cannot chose a manager from
+        # files in the dependency
+        Enum.map(children, &to_dep(&1, from, manager))
+      else
+        rebar_children(config, manager, opts[:dest])
+      end
+
+    {%{dep | extra: config}, deps}
+  end
+
+  defp make_dep(dep) do
+    {dep, []}
+  end
+
+  defp validate_only!(only) do
+    for entry <- List.wrap(only), not is_atom(entry) do
+      Mix.raise "Expected :only in dependency to be an atom or a list of atoms, got: #{inspect only}"
+    end
+    only
+  end
+
+  defp mix_children(opts) do
+    from = Path.absname("mix.exs")
+    (Mix.Project.config[:deps] || [])
+    |> Enum.map(&to_dep(&1, from))
+    |> partition_by_env(opts[:env])
+    |> elem(0)
+  end
+
+  defp rebar_children(root_config, manager, dest) do
+    from = Path.absname(Path.join(dest, "rebar.config"))
     Mix.Rebar.recur(root_config, fn config ->
-      Mix.Rebar.deps(config) |> Enum.map(&to_dep(&1, from, :rebar))
+      overrides = overrides(manager, config)
+      config
+      |> Mix.Rebar.deps()
+      |> Enum.map(fn dep -> %{to_dep(dep, from, manager) | extra: overrides} end)
     end) |> Enum.concat
   end
 
-  defp validate_path(%Mix.Dep{scm: scm, manager: manager} = dep) do
-    if scm == Mix.SCM.Path and not manager in [:mix, nil] do
-      Mix.raise ":path option can only be used with mix projects, " <>
-                                "invalid path dependency for #{inspect dep.app}"
-    else
-      dep
-    end
-  end
+  defp overrides(:rebar3, config), do: config[:overrides] || []
+  defp overrides(_, _config), do: []
 
-  defp validate_app(%Mix.Dep{opts: opts, requirement: req, app: app, status: status} = dep) do
+  defp validate_app(%Mix.Dep{opts: opts, requirement: req, app: app} = dep) do
     opts_app = opts[:app]
 
     cond do
-      not ok?(status) ->
+      not ok?(dep) ->
         dep
       recently_fetched?(dep) ->
         %{dep | status: :compile}
@@ -289,10 +346,10 @@ defmodule Mix.Dep.Loader do
         case List.keyfind(config, :vsn, 0) do
           {:vsn, actual} when is_list(actual) ->
             actual = IO.iodata_to_binary(actual)
-            if vsn_match?(req, actual, app) do
-              {:ok, actual}
-            else
-              {:nomatchvsn, actual}
+            case vsn_match(req, actual, app) do
+              {:ok, true} -> {:ok, actual}
+              {:ok, false} -> {:nomatchvsn, actual}
+              {:error, error} -> {error, actual}
             end
           {:vsn, actual} ->
             {:invalidvsn, actual}

@@ -1,50 +1,159 @@
 defmodule System do
   @moduledoc """
-  The System module provides access to variables used or
-  maintained by the VM and to functions that interact directly
+  The `System` module provides functions that interact directly
   with the VM or the host system.
+
+  ## Time
+
+  The `System` module also provides functions that work with time,
+  returning different times kept by the system with support for
+  different time units.
+
+  One of the complexities in relying on system times is that they
+  may be adjusted. For example, when you enter and leave daylight
+  saving time, the system clock will be adjusted, often adding
+  or removing one hour. We call such changes "time warps". In
+  order to understand how such changes may be harmful, imagine
+  the following code:
+
+      ## DO NOT DO THIS
+      prev = System.os_time()
+      # ... execute some code ...
+      next = System.os_time()
+      diff = next - prev
+
+  If, while the code is executing, the system clock changes,
+  some code that executed in 1 second may be reported as taking
+  over 1 hour! To address such concerns, the VM provides a
+  monotonic time via `System.monotonic_time/0` which never
+  decreases and does not leap:
+
+      ## DO THIS
+      prev = System.monotonic_time()
+      # ... execute some code ...
+      next = System.monotonic_time()
+      diff = next - prev
+
+  Generally speaking, the VM provides three time measurements:
+
+    * `os_time/0` - the time reported by the OS. This time may be
+      adjusted forwards or backwards in time with no limitation;
+
+    * `system_time/0` - the VM view of the `os_time/0`. The system time and OS
+      time may not match in case of time warps although the VM works towards
+      aligning them. This time is not monotonic (i.e., it may decrease)
+      as its behaviour is configured [by the VM time warp
+      mode](http://www.erlang.org/doc/apps/erts/time_correction.html#Time_Warp_Modes);
+
+    * `monotonic_time/0` - a monotonically increasing time provided
+      by the Erlang VM.
+
+  The time functions in this module work in the `:native` unit
+  (unless specified otherwise), which is OS dependent. Most of
+  the time, all calculations are done in the `:native` unit, to
+  avoid loss of precision, with `convert_time_unit/3` being
+  invoked at the end to convert to a specific time unit like
+  `:millisecond` or `:microsecond`. See the `t:time_unit/0` type for
+  more information.
+
+  For a more complete rundown on the VM support for different
+  times, see the [chapter on time and time
+  correction](http://www.erlang.org/doc/apps/erts/time_correction.html)
+  in the Erlang docs.
   """
 
-  defp strip_re(iodata, pattern) do
-    :re.replace(iodata, pattern, "", [return: :binary])
+  @typedoc """
+  The time unit to be passed to functions like `monotonic_time/1` and others.
+
+  The `:second`, `:millisecond`, `:microsecond` and `:nanosecond` time
+  units controls the return value of the functions that accept a time unit.
+
+  A time unit can also be a strictly positive integer. In this case, it
+  represents the "parts per second": the time will be returned in `1 /
+  parts_per_second` seconds. For example, using the `:millisecond` time unit
+  is equivalent to using `1000` as the time unit (as the time will be returned
+  in 1/1000 seconds - milliseconds).
+
+  Keep in mind the Erlang API prior to version 19.1 will use `:milli_seconds`,
+  `:micro_seconds` and `:nano_seconds` as time units although Elixir normalizes
+  their spelling to match the SI convention.
+  """
+  @type time_unit ::
+    :second
+    | :millisecond
+    | :microsecond
+    | :nanosecond
+    | pos_integer
+    # TODO: Warn all old mappings once Elixir requires Erlang/OTP 19.1+
+    | :seconds
+    | :milliseconds
+    | :microseconds
+    | :nanoseconds
+
+  @base_dir     :filename.join(__DIR__, "../../..")
+  @version_file :filename.join(@base_dir, "VERSION")
+
+  defp strip(iodata) do
+    :re.replace(iodata, "^[\s\r\n\t]+|[\s\r\n\t]+$", "", [:global, return: :binary])
   end
 
   defp read_stripped(path) do
     case :file.read_file(path) do
       {:ok, binary} ->
-        strip_re(binary, "^\s+|\s+$")
-      _ -> ""
+        strip(binary)
+      _ ->
+        ""
     end
   end
 
-  # Read and strip the version from the `VERSION` file.
+  # Read and strip the version from the VERSION file.
   defmacrop get_version do
-    case read_stripped(:filename.join(__DIR__, "../../../VERSION")) do
+    case read_stripped(@version_file) do
       ""   -> raise RuntimeError, message: "could not read the version number from VERSION"
       data -> data
     end
   end
 
-  # Tries to run `git describe --always --tags`. In the case of success returns
-  # the most recent tag. If that is not available, tries to read the commit hash
-  # from .git/HEAD. If that fails, returns an empty string.
-  defmacrop get_describe do
-    dirpath = :filename.join(__DIR__, "../../../.git")
-    case :file.read_file_info(dirpath) do
-      {:ok, _} ->
-        if :os.find_executable('git') do
-          data = :os.cmd('git describe --always --tags')
-          strip_re(data, "\n")
-        else
-          read_stripped(:filename.join(".git", "HEAD"))
-        end
-      _ -> ""
-    end
+  # Returns OTP version that Elixir was compiled with.
+  defmacrop get_otp_release do
+    :erlang.list_to_binary(:erlang.system_info(:otp_release))
   end
+
+  # Tries to run "git rev-parse --short HEAD". In the case of success returns
+  # the short revision hash. If that fails, returns an empty string.
+  defmacrop get_revision do
+    null =
+      case :os.type do
+        {:win32, _} -> 'NUL'
+        _ -> '/dev/null'
+      end
+
+    'git rev-parse --short HEAD 2> '
+    |> Kernel.++(null)
+    |> :os.cmd()
+    |> strip
+  end
+
+  defp revision, do: get_revision()
 
   # Get the date at compilation time.
   defmacrop get_date do
     IO.iodata_to_binary :httpd_util.rfc1123_date
+  end
+
+  @doc """
+  Returns the endianness.
+  """
+  def endianness do
+    :erlang.system_info(:endian)
+  end
+
+  @doc """
+  Returns the endianness the system was compiled with.
+  """
+  @endianness :erlang.system_info(:endian)
+  def compiled_endianness do
+    @endianness
   end
 
   @doc """
@@ -53,37 +162,53 @@ defmodule System do
   Returns Elixir's version as binary.
   """
   @spec version() :: String.t
-  def version, do: get_version
+  def version, do: get_version()
 
   @doc """
   Elixir build information.
 
-  Returns a keyword list with Elixir version, git tag info and compilation date.
+  Returns a keyword list with Elixir version, Git short revision hash and compilation date.
   """
   @spec build_info() :: map
   def build_info do
-    %{version: version, tag: get_describe, date: get_date}
+    %{
+      build: build(),
+      date: get_date(),
+      revision: revision(),
+      version: version(),
+      otp_release: get_otp_release()
+    }
+  end
+
+  # Returns a string of the build info
+  defp build do
+    {:ok, v} = Version.parse(version())
+
+    revision_string = if v.pre != [] and revision() != "", do: " (#{revision()})", else: ""
+    otp_version_string = " (compiled with OTP #{get_otp_release()})"
+
+    version() <> revision_string <> otp_version_string
   end
 
   @doc """
-  List command line arguments.
+  Lists command line arguments.
 
   Returns the list of command line arguments passed to the program.
   """
   @spec argv() :: [String.t]
   def argv do
-    :elixir_code_server.call :argv
+    :elixir_config.get(:argv)
   end
 
   @doc """
-  Modify command line arguments.
+  Modifies command line arguments.
 
   Changes the list of command line arguments. Use it with caution,
   as it destroys any previous argv information.
   """
   @spec argv([String.t]) :: :ok
   def argv(args) do
-    :elixir_code_server.cast({:argv, args})
+    :elixir_config.put(:argv, args)
   end
 
   @doc """
@@ -101,7 +226,7 @@ defmodule System do
 
   defp fix_drive_letter([l, ?:, ?/ | rest] = original) when l in ?A..?Z do
     case :os.type() do
-      {:win32, _} -> [l+?a-?A, ?:, ?/ | rest]
+      {:win32, _} -> [l + ?a - ?A, ?:, ?/ | rest]
       _ -> original
     end
   end
@@ -114,7 +239,7 @@ defmodule System do
   Returns the current working directory or raises `RuntimeError`.
   """
   def cwd! do
-    cwd ||
+    cwd() ||
       raise RuntimeError, message: "could not get a current working directory, the current location is not accessible"
   end
 
@@ -122,13 +247,9 @@ defmodule System do
   User home directory.
 
   Returns the user home directory (platform independent).
-  Returns `nil` if no user home is set.
   """
   def user_home do
-    case :os.type() do
-      {:win32, _} -> get_windows_home
-      _             -> get_unix_home
-    end
+    :elixir_config.get(:home)
   end
 
   @doc """
@@ -138,22 +259,8 @@ defmodule System do
   instead of returning `nil` if no user home is set.
   """
   def user_home! do
-    user_home ||
+    user_home() ||
       raise RuntimeError, message: "could not find the user home, please set the HOME environment variable"
-  end
-
-  defp get_unix_home do
-    get_env("HOME")
-  end
-
-  defp get_windows_home do
-    :filename.absname(
-      get_env("USERPROFILE") || (
-        hd = get_env("HOMEDRIVE")
-        hp = get_env("HOMEPATH")
-        hd && hp && hd <> hp
-      )
-    )
   end
 
   @doc ~S"""
@@ -185,7 +292,7 @@ defmodule System do
   instead of returning `nil` if no temp dir is set.
   """
   def tmp_dir! do
-    tmp_dir ||
+    tmp_dir() ||
       raise RuntimeError, message: "could not get a writable temporary directory, " <>
                                    "please set the TMPDIR environment variable"
   end
@@ -224,7 +331,7 @@ defmodule System do
   The function must receive the exit status code as an argument.
   """
   def at_exit(fun) when is_function(fun, 1) do
-    :elixir_code_server.cast {:at_exit, fun}
+    :elixir_config.update :at_exit, &[fun | &1]
   end
 
   @doc """
@@ -238,19 +345,21 @@ defmodule System do
   """
   @spec find_executable(binary) :: binary | nil
   def find_executable(program) when is_binary(program) do
-    case :os.find_executable(String.to_char_list(program)) do
+    assert_no_null_byte!(program, "System.find_executable/1")
+
+    case :os.find_executable(String.to_charlist(program)) do
       false -> nil
       other -> List.to_string(other)
     end
   end
 
   @doc """
-  System environment variables.
+  Returns all system environment variables.
 
-  Returns a list of all environment variables. Each variable is given as a
-  `{name, value}` tuple where both `name` and `value` are strings.
+  The returned value is a map containing name-value pairs.
+  Variable names and their values are strings.
   """
-  @spec get_env() :: %{String.t => String.t}
+  @spec get_env() :: %{optional(String.t) => String.t}
   def get_env do
     Enum.into(:os.getenv, %{}, fn var ->
       var = IO.chardata_to_string var
@@ -260,15 +369,15 @@ defmodule System do
   end
 
   @doc """
-  Environment variable value.
+  Returns the value of the given environment variable.
 
-  Returns the value of the environment variable
-  `varname` as a binary, or `nil` if the environment
+  The returned value of the environment variable
+  `varname` is a string, or `nil` if the environment
   variable is undefined.
   """
-  @spec get_env(binary) :: binary | nil
+  @spec get_env(String.t) :: String.t | nil
   def get_env(varname) when is_binary(varname) do
-    case :os.getenv(String.to_char_list(varname)) do
+    case :os.getenv(String.to_charlist(varname)) do
       false -> nil
       other -> List.to_string(other)
     end
@@ -280,31 +389,36 @@ defmodule System do
   Returns the process identifier of the current Erlang emulator
   in the format most commonly used by the operating system environment.
 
-  See http://www.erlang.org/doc/man/os.html#getpid-0 for more info.
+  For more information, see `:os.getpid/0`.
   """
   @spec get_pid() :: binary
   def get_pid, do: IO.iodata_to_binary(:os.getpid)
 
   @doc """
-  Set an environment variable value.
+  Sets an environment variable value.
 
   Sets a new `value` for the environment variable `varname`.
   """
   @spec put_env(binary, binary) :: :ok
   def put_env(varname, value) when is_binary(varname) and is_binary(value) do
-   :os.putenv String.to_char_list(varname), String.to_char_list(value)
-   :ok
+    case :binary.match(varname, "=") do
+      {_, _} ->
+        raise ArgumentError, "cannot execute System.put_env/2 for key with \"=\", got: #{inspect varname}"
+      :nomatch ->
+        :os.putenv String.to_charlist(varname), String.to_charlist(value)
+        :ok
+    end
   end
 
   @doc """
-  Set multiple environment variables.
+  Sets multiple environment variables.
 
   Sets a new value for each environment variable corresponding
   to each key in `dict`.
   """
-  @spec put_env(Dict.t) :: :ok
-  def put_env(dict) do
-    Enum.each dict, fn {key, val} -> put_env key, val end
+  @spec put_env(Enumerable.t) :: :ok
+  def put_env(enum) do
+    Enum.each enum, fn {key, val} -> put_env key, val end
   end
 
   @doc """
@@ -314,7 +428,7 @@ defmodule System do
   """
   @spec delete_env(String.t) :: :ok
   def delete_env(varname) do
-    :os.unsetenv(String.to_char_list(varname))
+    :os.unsetenv(String.to_charlist(varname))
     :ok
   end
 
@@ -332,10 +446,13 @@ defmodule System do
   end
 
   @doc """
-  Halt the Erlang runtime system.
+  Immediately halts the Erlang runtime system.
 
-  Halts the Erlang runtime system where the argument `status` must be a
-  non-negative integer, the atom `:abort` or a binary.
+  Terminates the Erlang runtime system without properly shutting down
+  applications and ports. Please see `stop/1` for a careful shutdown of the
+  system.
+
+  `status` must be a non-negative integer, the atom `:abort` or a binary.
 
     * If an integer, the runtime system exits with the integer value which
       is returned to the operating system.
@@ -343,13 +460,13 @@ defmodule System do
     * If `:abort`, the runtime system aborts producing a core dump, if that is
       enabled in the operating system.
 
-    * If a string, an erlang crash dump is produced with status as slogan,
+    * If a string, an Erlang crash dump is produced with status as slogan,
       and then the runtime system exits with status code 1.
 
   Note that on many platforms, only the status codes 0-255 are supported
   by the operating system.
 
-  For more information, check: http://www.erlang.org/doc/man/erlang.html#halt-1
+  For more information, see `:erlang.halt/1`.
 
   ## Examples
 
@@ -358,7 +475,6 @@ defmodule System do
       System.halt(:abort)
 
   """
-  @spec halt() :: no_return
   @spec halt(non_neg_integer | binary | :abort) :: no_return
   def halt(status \\ 0)
 
@@ -367,31 +483,85 @@ defmodule System do
   end
 
   def halt(status) when is_binary(status) do
-    :erlang.halt(String.to_char_list(status))
+    :erlang.halt(String.to_charlist(status))
   end
 
   @doc """
+  Carefully stops the Erlang runtime system.
+
+  All applications are taken down smoothly, all code is unloaded, and all ports
+  are closed before the system terminates by calling `halt/1`.
+
+  `status` must be a non-negative integer value which is returned by the
+  runtime system to the operating system.
+
+  Note that on many platforms, only the status codes 0-255 are supported
+  by the operating system.
+
+  For more information, see `:init.stop/1`.
+
+  ## Examples
+
+      System.stop(0)
+      System.stop(1)
+
+  """
+  @spec stop(non_neg_integer | binary) :: no_return
+  def stop(status \\ 0)
+
+  def stop(status) when is_integer(status) do
+    :init.stop(status)
+  end
+
+  def stop(status) when is_binary(status) do
+    :init.stop(String.to_charlist(status))
+  end
+
+  @doc ~S"""
   Executes the given `command` with `args`.
 
   `command` is expected to be an executable available in PATH
   unless an absolute path is given.
 
-  `args` must be a list of strings which are not expanded
-  in any way. For example, this means wildcard expansion will
-  not happen unless `Path.wildcard/2` is used. On Windows though,
-  wildcard expansion is up to the program.
+  `args` must be a list of binaries which the executable will receive
+  as its arguments as is. This means that:
 
-  A set of options are also supported and described below.
+    * environment variables will not be interpolated
+    * wildcard expansion will not happen (unless `Path.wildcard/2` is used
+      explicitly)
+    * arguments do not need to be escaped or quoted for shell safety
+
+  This function returns a tuple containing the collected result
+  and the command exit status.
+
+  Internally, this function uses a `Port` for interacting with the
+  outside world. However, if you plan to run a long-running program,
+  ports guarantee stdin/stdout devices will be closed but it does not
+  automatically terminate the program. The documentation for the
+  `Port` module describes this problem and possible solutions under
+  the "Zombie processes" section.
+
+  ## Examples
+
+      iex> System.cmd "echo", ["hello"]
+      {"hello\n", 0}
+
+      iex> System.cmd "echo", ["hello"], env: [{"MIX_ENV", "test"}]
+      {"hello\n", 0}
+
+      iex> System.cmd "echo", ["hello"], into: IO.stream(:stdio, :line)
+      hello
+      {%IO.Stream{}, 0}
 
   ## Options
 
     * `:into` - injects the result into the given collectable, defaults to `""`
     * `:cd` - the directory to run the command in
     * `:env` - an enumerable of tuples containing environment key-value as binary
-    * `:arg0` - set the command arg0
-    * `:stderr_to_stdout` - redirects stderr to stdout when true
-    * `:parallelism` - when true, the VM will schedule port tasks to improve
-      parallelism in the system. If set to false, the VM will try to perform
+    * `:arg0` - sets the command arg0
+    * `:stderr_to_stdout` - redirects stderr to stdout when `true`
+    * `:parallelism` - when `true`, the VM will schedule port tasks to improve
+      parallelism in the system. If set to `false`, the VM will try to perform
       commands immediately, improving latency at the expense of parallelism.
       The default can be set on system startup by passing the "+spp" argument
       to `--erl`.
@@ -425,24 +595,36 @@ defmodule System do
   ## Shell commands
 
   If you desire to execute a trusted command inside a shell, with pipes,
-  redirecting and so on, please check
-  [Erlang's :os.cmd/1 function](http://www.erlang.org/doc/man/os.html#cmd-1).
+  redirecting and so on, please check `:os.cmd/1`.
   """
-  @spec cmd(binary, [binary], Keyword.t) ::
+  @spec cmd(binary, [binary], keyword) ::
         {Collectable.t, exit_status :: non_neg_integer}
   def cmd(command, args, opts \\ []) when is_binary(command) and is_list(args) do
-    command = String.to_char_list(command)
+    assert_no_null_byte!(command, "System.cmd/3")
+    unless Enum.all?(args, &is_binary/1) do
+      raise ArgumentError, "all arguments for System.cmd/3 must be binaries"
+    end
+    cmd = String.to_charlist(command)
 
-    command =
-      if Path.type(command) == :absolute do
-        command
+    cmd =
+      if Path.type(cmd) == :absolute do
+        cmd
       else
-        :os.find_executable(command) || command
+        :os.find_executable(cmd) || :erlang.error(:enoent, [command, args, opts])
       end
 
     {into, opts} = cmd_opts(opts, [:use_stdio, :exit_status, :binary, :hide, args: args], "")
     {initial, fun} = Collectable.into(into)
-    do_cmd Port.open({:spawn_executable, command}, opts), initial, fun
+    try do
+      do_cmd Port.open({:spawn_executable, cmd}, opts), initial, fun
+    catch
+      kind, reason ->
+        stacktrace = System.stacktrace
+        fun.(initial, :halt)
+        :erlang.raise(kind, reason, stacktrace)
+    else
+      {acc, status} -> {fun.(acc, :done), status}
+    end
   end
 
   defp do_cmd(port, acc, fun) do
@@ -450,29 +632,32 @@ defmodule System do
       {^port, {:data, data}} ->
         do_cmd(port, fun.(acc, {:cont, data}), fun)
       {^port, {:exit_status, status}} ->
-        {fun.(acc, :done), status}
+        {acc, status}
     end
   end
 
-  defp cmd_opts([{:into, any}|t], opts, _into),
+  defp cmd_opts([{:into, any} | t], opts, _into),
     do: cmd_opts(t, opts, any)
 
-  defp cmd_opts([{:cd, bin}|t], opts, into) when is_binary(bin),
-    do: cmd_opts(t, [{:cd, bin}|opts], into)
+  defp cmd_opts([{:cd, bin} | t], opts, into) when is_binary(bin),
+    do: cmd_opts(t, [{:cd, bin} | opts], into)
 
-  defp cmd_opts([{:arg0, bin}|t], opts, into) when is_binary(bin),
-    do: cmd_opts(t, [{:arg0, bin}|opts], into)
+  defp cmd_opts([{:arg0, bin} | t], opts, into) when is_binary(bin),
+    do: cmd_opts(t, [{:arg0, bin} | opts], into)
 
-  defp cmd_opts([{:stderr_to_stdout, bool}|t], opts, into) when is_boolean(bool),
-    do: cmd_opts(t, [:stderr_to_stdout|opts], into)
+  defp cmd_opts([{:stderr_to_stdout, true} | t], opts, into),
+    do: cmd_opts(t, [:stderr_to_stdout | opts], into)
 
-  defp cmd_opts([{:parallelism, bool}|t], opts, into) when is_boolean(bool),
-    do: cmd_opts(t, [{:parallelism, bool}|opts], into)
+  defp cmd_opts([{:stderr_to_stdout, false} | t], opts, into),
+    do: cmd_opts(t, opts, into)
 
-  defp cmd_opts([{:env, enum}|t], opts, into),
-    do: cmd_opts(t, [{:env, validate_env(enum)}|opts], into)
+  defp cmd_opts([{:parallelism, bool} | t], opts, into) when is_boolean(bool),
+    do: cmd_opts(t, [{:parallelism, bool} | opts], into)
 
-  defp cmd_opts([{key, val}|_], _opts, _into),
+  defp cmd_opts([{:env, enum} | t], opts, into),
+    do: cmd_opts(t, [{:env, validate_env(enum)} | opts], into)
+
+  defp cmd_opts([{key, val} | _], _opts, _into),
     do: raise(ArgumentError, "invalid option #{inspect key} with value #{inspect val}")
 
   defp cmd_opts([], opts, into),
@@ -480,10 +665,232 @@ defmodule System do
 
   defp validate_env(enum) do
     Enum.map enum, fn
+      {k, nil} ->
+        {String.to_charlist(k), false}
       {k, v} ->
-        {String.to_char_list(k), String.to_char_list(v)}
+        {String.to_charlist(k), String.to_charlist(v)}
       other ->
         raise ArgumentError, "invalid environment key-value #{inspect other}"
     end
+  end
+
+  @doc """
+  Returns the current monotonic time in the `:native` time unit.
+
+  This time is monotonically increasing and starts in an unspecified
+  point in time.
+
+  Inlined by the compiler into `:erlang.monotonic_time/0`.
+  """
+  @spec monotonic_time() :: integer
+  def monotonic_time do
+    :erlang.monotonic_time()
+  end
+
+  @doc """
+  Returns the current monotonic time in the given time unit.
+
+  This time is monotonically increasing and starts in an unspecified
+  point in time.
+  """
+  @spec monotonic_time(time_unit) :: integer
+  def monotonic_time(unit) do
+    :erlang.monotonic_time(normalize_time_unit(unit))
+  end
+
+  @doc """
+  Returns the current system time in the `:native` time unit.
+
+  It is the VM view of the `os_time/0`. They may not match in
+  case of time warps although the VM works towards aligning
+  them. This time is not monotonic.
+
+  Inlined by the compiler into `:erlang.system_time/0`.
+  """
+  @spec system_time() :: integer
+  def system_time do
+    :erlang.system_time()
+  end
+
+  @doc """
+  Returns the current system time in the given time unit.
+
+  It is the VM view of the `os_time/0`. They may not match in
+  case of time warps although the VM works towards aligning
+  them. This time is not monotonic.
+  """
+  @spec system_time(time_unit) :: integer
+  def system_time(unit) do
+    :erlang.system_time(normalize_time_unit(unit))
+  end
+
+  @doc """
+  Converts `time` from time unit `from_unit` to time unit `to_unit`.
+
+  The result is rounded via the floor function.
+
+  `convert_time_unit/3` accepts an additional time unit (other than the
+  ones in the `t:time_unit/0` type) called `:native`. `:native` is the time
+  unit used by the Erlang runtime system. It's determined when the runtime
+  starts and stays the same until the runtime is stopped. To determine what
+  the `:native` unit amounts to in a system, you can call this function to
+  convert 1 second to the `:native` time unit (i.e.,
+  `System.convert_time_unit(1, :second, :native)`).
+  """
+  @spec convert_time_unit(integer, time_unit | :native, time_unit | :native) :: integer
+  def convert_time_unit(time, from_unit, to_unit) do
+    :erlang.convert_time_unit(time, normalize_time_unit(from_unit), normalize_time_unit(to_unit))
+  end
+
+  @doc """
+  Returns the current time offset between the Erlang VM monotonic
+  time and the Erlang VM system time.
+
+  The result is returned in the `:native` time unit.
+
+  See `time_offset/1` for more information.
+
+  Inlined by the compiler into `:erlang.time_offset/0`.
+  """
+  @spec time_offset() :: integer
+  def time_offset do
+    :erlang.time_offset()
+  end
+
+  @doc """
+  Returns the current time offset between the Erlang VM monotonic
+  time and the Erlang VM system time.
+
+  The result is returned in the given time unit `unit`. The returned
+  offset, added to an Erlang monotonic time (e.g., obtained with
+  `monotonic_time/1`), gives the Erlang system time that corresponds
+  to that monotonic time.
+  """
+  @spec time_offset(time_unit) :: integer
+  def time_offset(unit) do
+    :erlang.time_offset(normalize_time_unit(unit))
+  end
+
+  @doc """
+  Returns the current OS time.
+
+  The result is returned in the `:native` time unit.
+
+  This time may be adjusted forwards or backwards in time
+  with no limitation and is not monotonic.
+
+  Inlined by the compiler into `:os.system_time/0`.
+  """
+  @spec os_time() :: integer
+  def os_time do
+    :os.system_time()
+  end
+
+  @doc """
+  Returns the current OS time in the given time `unit`.
+
+  This time may be adjusted forwards or backwards in time
+  with no limitation and is not monotonic.
+  """
+  @spec os_time(time_unit) :: integer
+  def os_time(unit) do
+    :os.system_time(normalize_time_unit(unit))
+  end
+
+  @doc """
+  Returns the OTP release number.
+  """
+  @spec otp_release :: String.t
+  def otp_release do
+    :erlang.list_to_binary(:erlang.system_info(:otp_release))
+  end
+
+  @doc """
+  Returns the number of schedulers in the VM.
+  """
+  @spec schedulers :: pos_integer
+  def schedulers do
+    :erlang.system_info(:schedulers)
+  end
+
+  @doc """
+  Returns the number of schedulers online in the VM.
+  """
+  @spec schedulers_online :: pos_integer
+  def schedulers_online do
+    :erlang.system_info(:schedulers_online)
+  end
+
+  @doc """
+  Generates and returns an integer that is unique in the current runtime
+  instance.
+
+  "Unique" means that this function, called with the same list of `modifiers`,
+  will never return the same integer more than once on the current runtime
+  instance.
+
+  If `modifiers` is `[]`, then a unique integer (that can be positive or negative) is returned.
+  Other modifiers can be passed to change the properties of the returned integer:
+
+    * `:positive` - the returned integer is guaranteed to be positive.
+    * `:monotonic` - the returned integer is monotonically increasing. This
+      means that, on the same runtime instance (but even on different
+      processes), integers returned using the `:monotonic` modifier will always
+      be strictly less than integers returned by successive calls with the
+      `:monotonic` modifier.
+
+  All modifiers listed above can be combined; repeated modifiers in `modifiers`
+  will be ignored.
+
+  Inlined by the compiler into `:erlang.unique_integer/1`.
+  """
+  @spec unique_integer([:positive | :monotonic]) :: integer
+  def unique_integer(modifiers \\ []) do
+    :erlang.unique_integer(modifiers)
+  end
+
+  defp assert_no_null_byte!(binary, operation) do
+    case :binary.match(binary, "\0") do
+      {_, _} ->
+        raise ArgumentError, "cannot execute #{operation} for program with null byte, got: #{inspect binary}"
+      :nomatch ->
+        binary
+    end
+  end
+
+  defp normalize_time_unit(:native),
+    do: :native
+
+  defp normalize_time_unit(:second),
+    do: :seconds
+  defp normalize_time_unit(:millisecond),
+    do: :milli_seconds
+  defp normalize_time_unit(:microsecond),
+    do: :micro_seconds
+  defp normalize_time_unit(:nanosecond),
+    do: :nano_seconds
+
+  defp normalize_time_unit(:seconds),
+    do: :seconds
+  defp normalize_time_unit(:milliseconds),
+    do: :milli_seconds
+  defp normalize_time_unit(:microseconds),
+    do: :micro_seconds
+  defp normalize_time_unit(:nanoseconds),
+    do: :nano_seconds
+
+  defp normalize_time_unit(unit) when is_integer(unit) and unit > 0,
+    do: unit
+
+  defp normalize_time_unit(erlang_unit)
+      when erlang_unit in [:milli_seconds, :micro_seconds, :nano_seconds] do
+    erlang_unit
+  end
+
+  defp normalize_time_unit(other) do
+    raise ArgumentError,
+      "unsupported time unit. Expected :second, :millisecond, " <>
+      ":microsecond, :nanosecond, or a positive integer, " <>
+      "got #{inspect other}"
   end
 end

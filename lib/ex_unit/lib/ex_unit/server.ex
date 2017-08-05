@@ -1,93 +1,88 @@
 defmodule ExUnit.Server do
   @moduledoc false
+  @name __MODULE__
 
-  @timeout 30_000
   use GenServer
 
-  def start_link() do
-    GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
-  end
-
-  ## Before run API
-
-  def start_load() do
-    GenServer.cast(__MODULE__, :start_load)
+  def start_link(_opts) do
+    GenServer.start_link(__MODULE__, :ok, name: @name)
   end
 
   def add_async_case(name) do
-    GenServer.cast(__MODULE__, {:add_async_case, name})
+    GenServer.cast(@name, {:add_async_case, name})
   end
 
   def add_sync_case(name) do
-    GenServer.cast(__MODULE__, {:add_sync_case, name})
+    GenServer.cast(@name, {:add_sync_case, name})
   end
 
-  ## After run API
-
-  def start_run() do
-    GenServer.call(__MODULE__, :start_run, @timeout)
+  def cases_loaded do
+    GenServer.call(@name, :cases_loaded)
   end
 
-  ## Capture Device API
-
-  def add_device(device) do
-    GenServer.call(__MODULE__, {:add_device, device})
+  def take_async_cases(count) do
+    timeout = Application.fetch_env!(:ex_unit, :case_load_timeout)
+    GenServer.call(@name, {:take_async_cases, count}, timeout)
   end
 
-  def remove_device(device) do
-    GenServer.call(__MODULE__, {:remove_device, device})
+  def take_sync_cases() do
+    timeout = Application.fetch_env!(:ex_unit, :case_load_timeout)
+    GenServer.call(@name, :take_sync_cases, timeout)
   end
 
   ## Callbacks
 
   def init(:ok) do
-    config = %{async_cases: HashSet.new, sync_cases: HashSet.new,
-               start_load: :os.timestamp, captured_devices: HashSet.new}
-    {:ok, config}
+    {:ok, %{
+      loaded: System.monotonic_time,
+      waiting: nil,
+      async_cases: [],
+      sync_cases: [],
+    }}
   end
 
-  def handle_call(:start_run, _from, config) do
-    load_us =
-      if start_load = config.start_load do
-        :timer.now_diff(:os.timestamp, start_load)
-      end
-
-    {:reply,
-      {config.async_cases, config.sync_cases, load_us},
-      %{config | async_cases: HashSet.new, sync_cases: HashSet.new, start_load: nil}}
+  # Called on demand until we are signaled all cases are loaded.
+  def handle_call({:take_async_cases, count}, from, %{waiting: nil} = state) do
+    {:noreply, take_cases(%{state | waiting: {from, count}})}
   end
 
-  def handle_call({:add_device, device}, _from, config) do
-    {:reply,
-      not(device in config.captured_devices),
-      %{config | captured_devices: Set.put(config.captured_devices, device)}}
+  # Called once after all async cases have been sent and reverts the state.
+  def handle_call(:take_sync_cases, _from, %{waiting: nil, loaded: :done, async_cases: []} = state) do
+    {:reply, state.sync_cases,
+     %{state | sync_cases: [], loaded: System.monotonic_time}}
   end
 
-  def handle_call({:remove_device, device}, _from, config) do
-    {:reply, :ok,
-      %{config | captured_devices: Set.delete(config.captured_devices, device)}}
+  def handle_call(:cases_loaded, _from, %{loaded: loaded} = state) when is_integer(loaded) do
+    diff = System.convert_time_unit(System.monotonic_time - loaded, :native, :microsecond)
+    {:reply, diff, take_cases(%{state | loaded: :done})}
   end
 
-  def handle_call(request, from, config) do
-    super(request, from, config)
+  def handle_cast({:add_async_case, name}, %{async_cases: cases, loaded: loaded} = state)
+      when is_integer(loaded) do
+    {:noreply, take_cases(%{state | async_cases: [name | cases]})}
   end
 
-  def handle_cast(:start_load, config) do
-    {:noreply,
-      %{config | start_load: :os.timestamp}}
+  def handle_cast({:add_sync_case, name}, %{sync_cases: cases, loaded: loaded} = state)
+      when is_integer(loaded) do
+    {:noreply, %{state | sync_cases: [name | cases]}}
   end
 
-  def handle_cast({:add_async_case, name}, config) do
-    {:noreply,
-      %{config | async_cases: Set.put(config.async_cases, name)}}
+  defp take_cases(%{waiting: nil} = state) do
+    state
   end
 
-  def handle_cast({:add_sync_case, name}, config) do
-    {:noreply,
-      %{config | sync_cases: Set.put(config.sync_cases, name)}}
+  defp take_cases(%{waiting: {from, _count}, async_cases: [], loaded: :done} = state) do
+    GenServer.reply(from, nil)
+    %{state | waiting: nil}
   end
 
-  def handle_cast(request, config) do
-    super(request, config)
+  defp take_cases(%{async_cases: []} = state) do
+    state
+  end
+
+  defp take_cases(%{waiting: {from, count}, async_cases: cases} = state) do
+    {reply, cases} = Enum.split(cases, count)
+    GenServer.reply(from, reply)
+    %{state | async_cases: cases, waiting: nil}
   end
 end

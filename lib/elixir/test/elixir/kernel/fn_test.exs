@@ -2,13 +2,36 @@ Code.require_file "../test_helper.exs", __DIR__
 
 defmodule Kernel.FnTest do
   use ExUnit.Case, async: true
-  import CompileAssertion
 
   test "arithmetic constants on match" do
-    assert (fn 1 + 2 -> :ok end).(3)  == :ok
-    assert (fn 1 - 2 -> :ok end).(-1) == :ok
-    assert (fn -1 -> :ok end).(-1) == :ok
-    assert (fn +1 -> :ok end).(1)  == :ok
+    assert (fn -1 -> true end).(-1)
+    assert (fn +1 -> true end).(1)
+  end
+
+  test "pin operator on match" do
+    x = 1
+    refute (fn ^x -> true; _ -> false end).(0)
+    assert (fn ^x -> true; _ -> false end).(1)
+    refute (fn ^x -> true; _ -> false end).(1.0)
+  end
+
+  test "guards with no args" do
+    fun = fn() when node() == :nonode@nohost -> true end
+    assert is_function(fun, 0)
+  end
+
+  test "case function hoisting does not affect anonymous fns" do
+    result =
+      if atom?(0) do
+        user = :defined
+        user
+      else
+        (fn() ->
+           user = :undefined
+           user
+         end).()
+      end
+    assert result == :undefined
   end
 
   test "capture with access" do
@@ -17,7 +40,7 @@ defmodule Kernel.FnTest do
 
   test "capture remote" do
     assert (&:erlang.atom_to_list/1).(:a) == 'a'
-    assert (&Atom.to_char_list/1).(:a) == 'a'
+    assert (&Atom.to_charlist/1).(:a) == 'a'
 
     assert (&List.flatten/1).([[0]]) == [0]
     assert (&(List.flatten/1)).([[0]]) == [0]
@@ -32,9 +55,9 @@ defmodule Kernel.FnTest do
   end
 
   test "capture local with question mark" do
-    assert (&is_a?/2).(:atom, :a)
-    assert (&(is_a?/2)).(:atom, :a)
-    assert (&is_a?(&1, &2)).(:atom, :a)
+    assert (&atom?/1).(:a)
+    assert (&(atom?/1)).(:a)
+    assert (&atom?(&1)).(:a)
   end
 
   test "capture imported" do
@@ -55,6 +78,7 @@ defmodule Kernel.FnTest do
     assert is_function &+/2
     assert is_function &(&&/2)
     assert is_function & &1 + &2, 2
+    assert is_function &and/2
   end
 
   test "capture with variable module" do
@@ -94,7 +118,7 @@ defmodule Kernel.FnTest do
     assert (&[ 1, &1 ]).(2) == [ 1, 2 ]
     assert (&[ 1, &1, &2 ]).(2, 3) == [ 1, 2, 3 ]
 
-    assert (&[&1|&2]).(1, 2) == [1|2]
+    assert (&[&1 | &2]).(1, 2) == [1 | 2]
   end
 
   test "capture and partially apply on call" do
@@ -112,38 +136,8 @@ defmodule Kernel.FnTest do
     assert (&fun.(&1, 2)).(1) == 3
   end
 
-  test "failure on non-continuous" do
-    assert_compile_fail CompileError, "nofile:1: capture &2 cannot be defined without &1", "&(&2)"
-  end
-
-  test "failure on integers" do
-    assert_compile_fail CompileError, "nofile:1: unhandled &1 outside of a capture", "&1"
-    assert_compile_fail CompileError, "nofile:1: capture &0 is not allowed", "&foo(&0)"
-  end
-
-  test "failure on block" do
-    assert_compile_fail CompileError,
-      "nofile:1: invalid args for &, block expressions " <>
-      "are not allowed, got: (\n  1\n  2\n)",
-      "&(1;2)"
-  end
-
-  test "failure on other types" do
-    assert_compile_fail CompileError,
-      "nofile:1: invalid args for &, expected an expression in the format of &Mod.fun/arity, " <>
-      "&local/arity or a capture containing at least one argument as &1, got: :foo",
-      "&:foo"
-  end
-
-  test "failure when no captures" do
-    assert_compile_fail CompileError,
-      "nofile:1: invalid args for &, expected an expression in the format of &Mod.fun/arity, " <>
-      "&local/arity or a capture containing at least one argument as &1, got: foo()",
-      "&foo()"
-  end
-
-  defp is_a?(:atom, atom) when is_atom(atom), do: true
-  defp is_a?(_, _), do: false
+  defp atom?(atom) when is_atom(atom), do: true
+  defp atom?(_), do: false
 
   defp atl(arg) do
     :erlang.atom_to_list(arg)

@@ -1,6 +1,4 @@
 defmodule Mix.Task do
-  use Behaviour
-
   @moduledoc """
   A simple module that provides conveniences for creating,
   loading and manipulating tasks.
@@ -9,26 +7,33 @@ defmodule Mix.Task do
   in a module starting with `Mix.Tasks.` and defining
   the `run/1` function:
 
-      defmodule Mix.Tasks.Hello do
+      defmodule Mix.Tasks.Echo do
         use Mix.Task
 
-        def run(_) do
-          Mix.shell.info "hello"
+        def run(args) do
+          Mix.shell.info Enum.join(args, " ")
         end
       end
 
-  The `run/1` function will receive all arguments passed
+  The `run/1` function will receive a list of all arguments passed
   to the command line.
 
   ## Attributes
 
-  There are a couple attributes available in Mix tasks to
+  There are a few attributes available in Mix tasks to
   configure them in Mix:
 
-    * `@shortdoc`  - makes the task public with a short description that appears
-                     on `mix help`
-    * `@recursive` - run the task recursively in umbrella projects
+    * `@shortdoc`  - makes the task public with a short description that appears on `mix help`
+    * `@recursive` - runs the task recursively in umbrella projects
+    * `@preferred_cli_env` - recommends environment to run task. It is used in absence of
+      a Mix project recommendation, or explicit `MIX_ENV`, and it only works for tasks
+      in the current project. `@preferred_cli_env` is not loaded from dependencies as
+      we need to know the environment before dependencies are loaded.
 
+  ## Documentation
+
+  Users can read the documentation for public Mix tasks by running `mix help my_task`.
+  The documentation that will be shown is the `@moduledoc` of the task's module.
   """
 
   @type task_name :: String.t | atom
@@ -38,15 +43,20 @@ defmodule Mix.Task do
   A task needs to implement `run` which receives
   a list of command line args.
   """
-  defcallback run([binary]) :: any
+  @callback run(command_line_args :: [binary]) :: any
 
   @doc false
   defmacro __using__(_opts) do
     quote do
-      Enum.each [:shortdoc, :recursive],
+      Enum.each Mix.Task.supported_attributes(),
         &Module.register_attribute(__MODULE__, &1, persist: true)
       @behaviour Mix.Task
     end
+  end
+
+  @doc false
+  def supported_attributes do
+    [:shortdoc, :recursive, :preferred_cli_env]
   end
 
   @doc """
@@ -64,11 +74,17 @@ defmodule Mix.Task do
     # entire load path so make sure we only return unique modules.
 
     for(dir <- dirs,
-        {:ok, files} = :erl_prim_loader.list_dir(to_char_list(dir)),
-        file <- files,
+        file <- safe_list_dir(to_charlist(dir)),
         mod = task_from_path(file),
         do: mod)
     |> Enum.uniq
+  end
+
+  defp safe_list_dir(path) do
+    case File.ls(path) do
+      {:ok, paths} -> paths
+      {:error, _} -> []
+    end
   end
 
   @prefix_size byte_size("Elixir.Mix.Tasks.")
@@ -79,7 +95,7 @@ defmodule Mix.Task do
     part = byte_size(base) - @prefix_size - @suffix_size
 
     case base do
-      <<"Elixir.Mix.Tasks.", rest :: binary-size(part), ".beam">> ->
+      <<"Elixir.Mix.Tasks.", rest::binary-size(part), ".beam">> ->
         mod = :"Elixir.Mix.Tasks.#{rest}"
         ensure_task?(mod) && mod
       _ ->
@@ -141,6 +157,23 @@ defmodule Mix.Task do
   end
 
   @doc """
+  Gets preferred CLI environment for the task.
+
+  Returns environment (for example, `:test`, or `:prod`), or `nil`.
+  """
+  @spec preferred_cli_env(task_name) :: atom | nil
+  def preferred_cli_env(task) when is_atom(task) or is_binary(task) do
+    case get(task) do
+      nil -> nil
+      module ->
+        case List.keyfind module.__info__(:attributes), :preferred_cli_env, 0 do
+          {:preferred_cli_env, [setting]} -> setting
+          _ -> nil
+        end
+    end
+  end
+
+  @doc """
   Returns the task name for the given `module`.
   """
   @spec task_name(task_module) :: task_name
@@ -149,7 +182,10 @@ defmodule Mix.Task do
   end
 
   @doc """
-  Checks if exists an alias with the given task name.
+  Checks if an alias called `task` exists.
+
+  For more information about task aliasing, take a look at the "Aliasing"
+  section in the docs for `Mix`.
   """
   @spec alias?(task_name) :: boolean
   def alias?(task) when is_binary(task) do
@@ -157,14 +193,14 @@ defmodule Mix.Task do
   end
 
   def alias?(task) when is_atom(task) do
-    Mix.Project.config[:aliases][task]
+    Keyword.has_key?(Mix.Project.config()[:aliases], task)
   end
 
   @doc """
-  Receives a task name and returns `{:ok, module}` if a task is found.
+  Receives a task name and returns the task module if found.
 
-  Otherwise returns `{:error, :invalid}` in case the module
-  exists but it isn't a task or `{:error, :not_found}`.
+  Otherwise returns `nil` in case the module
+  exists, but it isn't a task or cannot be found.
   """
   @spec get(task_name) :: task_module | nil
   def get(task) do
@@ -181,7 +217,6 @@ defmodule Mix.Task do
 
     * `Mix.NoTaskError`      - raised if the task could not be found
     * `Mix.InvalidTaskError` - raised if the task is not a valid `Mix.Task`
-
   """
   @spec get!(task_name) :: task_module | no_return
   def get!(task) do
@@ -189,9 +224,9 @@ defmodule Mix.Task do
       {:ok, module} ->
         module
       {:error, :invalid} ->
-        Mix.raise Mix.InvalidTaskError, task: task
+        raise Mix.InvalidTaskError, task: task
       {:error, :not_found} ->
-        Mix.raise Mix.NoTaskError, task: task
+        raise Mix.NoTaskError, task: task
     end
   end
 
@@ -211,12 +246,12 @@ defmodule Mix.Task do
   returns the result.
 
   If there is an alias with the same name, the alias
-  will be invoked instead of a task.
+  will be invoked instead of the original task.
 
   If the task or alias were already invoked, it does not
   run them again and simply aborts with `:noop`.
 
-  It may raise an exception if the an alias or a task can't
+  It may raise an exception if an alias or a task can't
   be found or the task is invalid. Check `get!/1` for more
   information.
   """
@@ -244,31 +279,67 @@ defmodule Mix.Task do
   end
 
   defp run_task(proj, task, args) do
-    module = get(task)
+    if Mix.debug?, do: output_task_debug_info(task, args, proj)
 
-    # If the task is not available, let's try to compile the project
-    unless module do
-      if proj, do: Mix.Task.run("compile")
-      module = get!(task)
-    end
+    # 1. If the task is available, we run it.
+    # 2. Otherwise we look for it in dependencies.
+    # 3. Finally, we compile the current project in hope it is available.
+    module =
+      get_task_or_run(proj, task, fn -> Mix.Task.run("deps.loadpaths") end) ||
+      get_task_or_run(proj, task, fn -> Mix.Project.compile([]) end) ||
+      get!(task)
 
-    if recursive(module) and Mix.Project.umbrella? and Mix.ProjectStack.enable_recursion do
-      res = recur(fn _ -> run(task, args) end)
-      Mix.ProjectStack.disable_recursion
-      res
-    else
-      Mix.TasksServer.put({:task, task, proj})
-      module.run(args)
+    recursive = recursive(module)
+
+    cond do
+      recursive && Mix.Project.umbrella? ->
+        Mix.ProjectStack.recur fn ->
+          recur(fn _ -> run(task, args) end)
+        end
+
+      not recursive && Mix.ProjectStack.recursing() ->
+        Mix.ProjectStack.root(fn -> run(task, args) end)
+
+      true ->
+        Mix.TasksServer.put({:task, task, proj})
+        try do
+          module.run(args)
+        rescue
+          e in OptionParser.ParseError ->
+            Mix.raise "Could not invoke task #{inspect task}: " <> Exception.message(e)
+        end
     end
   end
 
-  defp run_alias([h|t], alias_args, _res) when is_binary(h) do
-    [task|args] = OptionParser.split(h)
+  defp output_task_debug_info(task, args, proj) do
+    Mix.shell.info("** Running mix " <> task_to_string(task, args) <> project_to_string(proj))
+  end
+
+  defp project_to_string(nil), do: ""
+  defp project_to_string(proj), do: " (inside #{inspect proj})"
+
+  defp task_to_string(task, []), do: task
+  defp task_to_string(task, args), do: task <> " " <> Enum.join(args, " ")
+
+  defp get_task_or_run(proj, task, fun) do
+    cond do
+      module = get(task) ->
+        module
+      proj ->
+        fun.()
+        nil
+      true ->
+        nil
+    end
+  end
+
+  defp run_alias([h | t], alias_args, _res) when is_binary(h) do
+    [task | args] = OptionParser.split(h)
     res = Mix.Task.run task, join_args(args, alias_args, t)
     run_alias(t, alias_args, res)
   end
 
-  defp run_alias([h|t], alias_args, _res) when is_function(h, 1) do
+  defp run_alias([h | t], alias_args, _res) when is_function(h, 1) do
     res = h.(join_args([], alias_args, t))
     run_alias(t, alias_args, res)
   end
@@ -297,21 +368,30 @@ defmodule Mix.Task do
   is called.
 
   If an umbrella project reenables a task, it is reenabled for all
-  children projects.
+  child projects.
   """
   @spec reenable(task_name) :: :ok
   def reenable(task) when is_binary(task) or is_atom(task) do
     task = to_string(task)
     proj = Mix.Project.get
+    recursive = (module = get(task)) && recursive(module)
 
     Mix.TasksServer.delete_many([{:task, task, proj},
                                  {:alias, task, proj}])
 
-   _ = if (module = get(task)) && recursive(module) && Mix.Project.umbrella? do
-      recur fn proj ->
+    cond do
+      recursive && Mix.Project.umbrella? ->
+        recur fn proj ->
+          Mix.TasksServer.delete_many([{:task, task, proj},
+                                       {:alias, task, proj}])
+        end
+
+      proj = !recursive && Mix.ProjectStack.recursing() ->
         Mix.TasksServer.delete_many([{:task, task, proj},
                                      {:alias, task, proj}])
-      end
+
+      true ->
+        :ok
     end
 
     :ok
@@ -322,17 +402,29 @@ defmodule Mix.Task do
     # as we leave the control of the deps path still to the
     # umbrella child.
     config = Mix.Project.deps_config |> Keyword.delete(:deps_path)
-    for %Mix.Dep{app: app, opts: opts} <- Mix.Dep.Umbrella.loaded do
+    for %Mix.Dep{app: app, opts: opts} <- Mix.Dep.Umbrella.cached do
       Mix.Project.in_project(app, opts[:path], config, fun)
     end
   end
 
   @doc """
+  Reruns `task` with the given arguments.
+
+  This function reruns the given task; to do that, it first re-enables the task
+  and then runs it as normal.
+  """
+  @spec rerun(task_name, [any]) :: any
+  def rerun(task, args \\ []) do
+    reenable(task)
+    run(task, args)
+  end
+
+  @doc """
   Returns `true` if given module is a task.
   """
-  @spec task?(task_module) :: boolean()
+  @spec task?(task_module) :: boolean
   def task?(module) when is_atom(module) do
-    match?('Elixir.Mix.Tasks.' ++ _, Atom.to_char_list(module)) and ensure_task?(module)
+    match?('Elixir.Mix.Tasks.' ++ _, Atom.to_charlist(module)) and ensure_task?(module)
   end
 
   defp ensure_task?(module) do

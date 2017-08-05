@@ -14,29 +14,53 @@ defmodule Mix.Tasks.CompileTest do
     :ok
   end
 
-  test "mix compile --list with mixfile" do
+  test "compile --list with mixfile" do
     Mix.Tasks.Compile.run ["--list"]
-    assert_received {:mix_shell, :info, ["\nEnabled compilers: yecc, leex, erlang, elixir, app"]}
+    assert_received {:mix_shell, :info, ["\nEnabled compilers: yecc, leex, erlang, elixir, xref, app, protocols"]}
     assert_received {:mix_shell, :info, ["mix compile.elixir    # " <> _]}
   end
 
-  test "mix compile --list with custom mixfile" do
+  test "compile --list with custom mixfile" do
     Mix.Project.push CustomCompilers
     Mix.Tasks.Compile.run ["--list"]
-    assert_received {:mix_shell, :info, ["\nEnabled compilers: elixir, app, custom"]}
+    assert_received {:mix_shell, :info, ["\nEnabled compilers: elixir, app, custom, protocols"]}
+  end
+
+  test "compile does not require all compilers available on manifest" do
+    Mix.Project.push CustomCompilers
+    assert Mix.Tasks.Compile.manifests |> Enum.map(&Path.basename/1) ==
+           [".compile.elixir"]
   end
 
   test "compile a project with mixfile" do
     in_fixture "no_mixfile", fn ->
-      Mix.Tasks.Compile.run []
+      assert Mix.Tasks.Compile.run(["--verbose"]) == :ok
       assert File.regular?("_build/dev/lib/sample/ebin/Elixir.A.beam")
       assert File.regular?("_build/dev/lib/sample/ebin/sample.app")
       assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
-      assert_received {:mix_shell, :info, ["Generated sample.app"]}
+      assert_received {:mix_shell, :info, ["Generated sample app"]}
+      assert File.regular? "_build/dev/lib/sample/consolidated/Elixir.Enumerable.beam"
+
+      # Noop
+      Mix.Task.clear
+      assert Mix.Tasks.Compile.run(["--verbose"]) == :noop
+      refute_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+
+      # Noop consolidates protocols if folder is missing
+      File.rm_rf("_build/dev/lib/sample/consolidated")
+      Mix.Task.clear
+      assert Mix.Tasks.Compile.run(["--verbose"]) == :ok
+      refute_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      assert File.regular? "_build/dev/lib/sample/consolidated/Elixir.Enumerable.beam"
+
+      # Purge so consolidated is picked up
+      purge [Enumerable]
+      assert Mix.Tasks.App.Start.run(["--verbose"]) == :ok
+      assert Protocol.consolidated?(Enumerable)
     end
   end
 
-  test "compile a project with multiple compilers and a syntax error in an erlang file" do
+  test "compile a project with multiple compilers and a syntax error in an Erlang file" do
     in_fixture "no_mixfile", fn ->
       import ExUnit.CaptureIO
 
@@ -53,25 +77,25 @@ defmodule Mix.Tasks.CompileTest do
 
       refute File.regular?("ebin/Elixir.A.beam")
       refute File.regular?("ebin/Elixir.B.beam")
-      refute File.regular?("ebin/Elixir.C.beam")
     end
   end
 
-  test "recompiles project if elixir version changed" do
+  test "add Logger application metadata" do
+    import ExUnit.CaptureLog
     in_fixture "no_mixfile", fn ->
-      Mix.Tasks.Compile.run []
-      purge [A, B, C]
+      File.write!("lib/a.ex", """
+      defmodule A do
+      require Logger
+      def info, do: Logger.info("hello")
+      end
+      """)
 
-      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
-      assert System.version == Mix.Dep.Lock.elixir_vsn
-
-      Mix.Task.clear
-      File.write!("_build/dev/lib/sample/.compile.lock", "the_past")
-      File.touch!("_build/dev/lib/sample/.compile.lock", {{2010, 1, 1}, {0, 0, 0}})
-
-      Mix.Tasks.Compile.run []
-      assert System.version == Mix.Dep.Lock.elixir_vsn
-      assert File.stat!("_build/dev/lib/sample/.compile.lock").mtime > {{2010, 1, 1}, {0, 0, 0}}
+      assert Mix.Tasks.Compile.run([]) == :ok
+      try do
+        assert capture_log([metadata: [:application]], &A.info/0) =~ "application=sample"
+      after
+        purge [A]
+      end
     end
   end
 end

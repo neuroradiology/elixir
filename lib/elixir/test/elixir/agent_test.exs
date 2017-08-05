@@ -3,15 +3,54 @@ Code.require_file "test_helper.exs", __DIR__
 defmodule AgentTest do
   use ExUnit.Case, async: true
 
+  doctest Agent
+
   def identity(state) do
     state
   end
 
-  test "start_link/2 workflow with unregistered name and anonymous functions" do
-    {:ok, pid} = Agent.start_link(fn -> %{} end)
+  test "can be supervised directly" do
+    assert {:ok, _} =
+           Supervisor.start_link([{Agent, fn -> :ok end}], strategy: :one_for_one)
+  end
 
-    {:links, links} = Process.info(self, :links)
+  test "generates child_spec/1" do
+    defmodule MyAgent do
+      use Agent
+    end
+
+    assert MyAgent.child_spec([:hello]) == %{
+      id: MyAgent,
+      restart: :permanent,
+      shutdown: 5000,
+      start: {MyAgent, :start_link, [[:hello]]},
+      type: :worker
+    }
+
+    defmodule CustomAgent do
+      use Agent,
+        id: :id,
+        restart: :temporary,
+        shutdown: :infinity,
+        start: {:foo, :bar, []}
+    end
+
+    assert CustomAgent.child_spec([:hello]) == %{
+      id: :id,
+      restart: :temporary,
+      shutdown: :infinity,
+      start: {:foo, :bar, []},
+      type: :worker
+    }
+  end
+
+  test "start_link/2 workflow with unregistered name and anonymous functions" do
+    {:ok, pid} = Agent.start_link(&Map.new/0)
+
+    {:links, links} = Process.info(self(), :links)
     assert pid in links
+
+    assert :proc_lib.translate_initial_call(pid) == {Map, :new, 0}
 
     assert Agent.update(pid, &Map.put(&1, :hello, :world)) == :ok
     assert Agent.get(pid, &Map.get(&1, :hello), 3000) == :world
@@ -24,6 +63,7 @@ defmodule AgentTest do
   test "start/2 workflow with registered name and module functions" do
     {:ok, pid} = Agent.start(Map, :new, [], name: :agent)
     assert Process.info(pid, :registered_name) == {:registered_name, :agent}
+    assert :proc_lib.translate_initial_call(pid) == {Map, :new, 0}
     assert Agent.cast(:agent, Map, :put, [:hello, :world]) == :ok
     assert Agent.get(:agent, Map, :get, [:hello]) == :world
     assert Agent.get_and_update(:agent, Map, :pop, [:hello]) == :world

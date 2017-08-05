@@ -1,32 +1,85 @@
 import Kernel, except: [to_string: 1]
 
 defmodule Macro do
-  @moduledoc """
+  @moduledoc ~S"""
   Conveniences for working with macros.
+
+  ## Custom Sigils
+
+  To create a custom sigil, define a function with the name
+  `sigil_{identifier}` that takes two arguments. The first argument will be
+  the string, the second will be a charlist containing any modifiers. If the
+  sigil is lower case (such as `sigil_x`) then the string argument will allow
+  interpolation. If the sigil is upper case (such as `sigil_X`) then the string
+  will not be interpolated.
+
+  Valid modifiers include only lower and upper case letters. Other characters
+  will cause a syntax error.
+
+  The module containing the custom sigil must be imported before the sigil
+  syntax can be used.
+
+  ### Examples
+
+      defmodule MySigils do
+        defmacro sigil_x(term, [?r]) do
+          quote do
+            unquote(term) |> String.reverse()
+          end
+        end
+        defmacro sigil_x(term, _modifiers) do
+          term
+        end
+        defmacro sigil_X(term, [?r]) do
+          quote do
+            unquote(term) |> String.reverse()
+          end
+        end
+        defmacro sigil_X(term, _modifiers) do
+          term
+        end
+      end
+
+      import MySigils
+
+      ~x(with #{"inter" <> "polation"})
+      #=>"with interpolation"
+
+      ~x(with #{"inter" <> "polation"})r
+      #=>"noitalopretni htiw"
+
+      ~X(without #{"interpolation"})
+      #=>"without \#{"interpolation"}"
+
+      ~X(without #{"interpolation"})r
+      #=>"}\"noitalopretni\"{# tuohtiw"
   """
 
   @typedoc "Abstract Syntax Tree (AST)"
-  @type t :: expr | {t, t} | atom | number | binary | pid | fun | [t]
+  @type t :: expr | literal
 
-  @typedoc "Expr node (remaining ones are literals)"
-  @type expr :: {expr | atom, Keyword.t, atom | [t]}
+  @typedoc "Represents expressions in the AST"
+  @type expr :: {expr | atom, keyword, atom | [t]}
 
-  @binary_ops [:===, :!==,
-    :==, :!=, :<=, :>=,
-    :&&, :||, :<>, :++, :--, :\\, :::, :<-, :.., :|>, :=~,
-    :<, :>, :->,
-    :+, :-, :*, :/, :=, :|, :.,
-    :and, :or, :when, :in,
-    :~>>, :<<~, :~>, :<~, :<~>, :<|>,
-    :<<<, :>>>, :|||, :&&&, :^^^, :~~~]
+  @typedoc "Represents literals in the AST"
+  @type literal :: atom | number | binary | fun | {t, t} | [t]
 
-  @doc false
-  defmacro binary_ops, do: @binary_ops
-
-  @unary_ops [:!, :@, :^, :not, :+, :-, :~~~, :&]
+  binary_ops =
+    [:===, :!==, :==, :!=, :<=, :>=,
+     :&&, :||, :<>, :++, :--, :\\, :::, :<-, :.., :|>, :=~,
+     :<, :>, :->,
+     :+, :-, :*, :/, :=, :|, :.,
+     :and, :or, :when, :in,
+     :~>>, :<<~, :~>, :<~, :<~>, :<|>,
+     :<<<, :>>>, :|||, :&&&, :^^^, :~~~]
 
   @doc false
-  defmacro unary_ops, do: @unary_ops
+  defmacro binary_ops, do: unquote(binary_ops)
+
+  unary_ops = [:!, :@, :^, :not, :+, :-, :~~~, :&]
+
+  @doc false
+  defmacro unary_ops, do: unquote(unary_ops)
 
   @spec binary_op_props(atom) :: {:left | :right, precedence :: integer}
   defp binary_op_props(o) do
@@ -41,20 +94,105 @@ defmodule Macro do
       o when o in [:==, :!=, :=~, :===, :!==] -> {:left, 150}
       o when o in [:<, :<=, :>=, :>]          -> {:left, 160}
       o when o in [:|>, :<<<, :>>>, :<~, :~>,
-                   :<<~, :~>>, :<~>, :<|>]    -> {:left, 170}
+                :<<~, :~>>, :<~>, :<|>, :^^^] -> {:left, 170}
       :in                                     -> {:left, 180}
       o when o in [:++, :--, :.., :<>]        -> {:right, 200}
       o when o in [:+, :-]                    -> {:left, 210}
       o when o in [:*, :/]                    -> {:left, 220}
-      :^^^                                    -> {:left, 250}
       :.                                      -> {:left, 310}
     end
+  end
+
+  # Classifies the given atom into one of the following categories:
+  #
+  #   * :alias - a valid Elixir alias, like Foo, Foo.Bar and so on
+  #
+  #   * :callable - an atom that can be used as a function call after the
+  #     . operator (for example, :<> is callable because Foo.<>(1, 2, 3) is valid
+  #     syntax); this category includes identifiers like :foo
+  #
+  #   * :not_callable - an atom that cannot be used as a function call after the
+  #     . operator (for example, :<<>> is not callable because Foo.<<>> is a
+  #     syntax error); this category includes atoms like :Foo, since they are
+  #     valid identifiers but they need quotes to be used in function calls
+  #     (Foo."Bar")
+  #
+  #   * :other - any other atom (these are usually escaped when inspected, like
+  #     :"foo and bar")
+  @doc false
+  def classify_identifier(atom) when is_atom(atom) do
+    charlist = Atom.to_charlist(atom)
+
+    cond do
+      atom in [:"%", :"%{}", :"{}", :"<<>>", :"...", :"..", :"."] ->
+        :not_callable
+      atom in unquote(unary_ops) or atom in unquote(binary_ops) ->
+        :callable
+      valid_alias?(charlist) ->
+        :alias
+      true ->
+        case :elixir_config.safe_get(:identifier_tokenizer, String.Tokenizer).tokenize(charlist) do
+          {kind, _acc, [], _, _, special} ->
+            if kind == :identifier and not :lists.member(?@, special) do
+              :callable
+            else
+              :not_callable
+            end
+          _ ->
+            :other
+        end
+    end
+  end
+
+  defp valid_alias?('Elixir' ++ rest), do: valid_alias_piece?(rest)
+  defp valid_alias?(_other), do: false
+
+  defp valid_alias_piece?([?., char | rest]) when char >= ?A and char <= ?Z,
+    do: valid_alias_piece?(trim_leading_while_valid_identifier(rest))
+  defp valid_alias_piece?([]),
+    do: true
+  defp valid_alias_piece?(_other),
+    do: false
+
+  defp trim_leading_while_valid_identifier([char | rest])
+       when char >= ?a and char <= ?z
+       when char >= ?A and char <= ?Z
+       when char >= ?0 and char <= ?9
+       when char == ?_ do
+    trim_leading_while_valid_identifier(rest)
+  end
+
+  defp trim_leading_while_valid_identifier(other) do
+    other
   end
 
   @doc """
   Breaks a pipeline expression into a list.
 
-  Raises if the pipeline is ill-formed.
+  The AST for a pipeline (a sequence of applications of `|>`) is similar to the
+  AST of a sequence of binary operators or function applications: the top-level
+  expression is the right-most `:|>` (which is the last one to be executed), and
+  its left-hand and right-hand sides are its arguments:
+
+      quote do: 100 |> div(5) |> div(2)
+      #=> {:|>, _, [arg1, arg2]}
+
+  In the example above, the `|>` pipe is the right-most pipe; `arg1` is the AST
+  for `100 |> div(5)`, and `arg2` is the AST for `div(2)`.
+
+  It's often useful to have the AST for such a pipeline as a list of function
+  applications. This function does exactly that:
+
+      Macro.unpipe(quote do: 100 |> div(5) |> div(2))
+      #=> [{100, 0}, {{:div, [], [5]}, 0}, {{:div, [], [2]}, 0}]
+
+  We get a list that follows the pipeline directly: first the `100`, then the
+  `div(5)` (more precisely, its AST), then `div(2)`. The `0` as the second
+  element of the tuples is the position of the previous element in the pipeline
+  inside the current function application: `{{:div, [], [5]}, 0}` means that the
+  previous element (`100`) will be inserted as the 0th (first) argument to the
+  `div/2` function, so that the AST for that function will become `{:div, [],
+  [100, 5]}` (`div(100, 5)`).
   """
   @spec unpipe(Macro.t) :: [Macro.t]
   def unpipe(expr) do
@@ -66,7 +204,7 @@ defmodule Macro do
   end
 
   defp unpipe(other, acc) do
-    [{other, 0}|acc]
+    [{other, 0} | acc]
   end
 
   @doc """
@@ -76,7 +214,32 @@ defmodule Macro do
   def pipe(expr, call_args, position)
 
   def pipe(expr, {:&, _, _} = call_args, _integer) do
-    bad_pipe(expr, call_args)
+    raise ArgumentError, bad_pipe(expr, call_args)
+  end
+
+  def pipe(expr, {tuple_or_map, _, _} = call_args, _integer) when tuple_or_map in [:{}, :%{}] do
+    raise ArgumentError, bad_pipe(expr, call_args)
+  end
+
+  # Without this, `Macro |> Env == Macro.Env`.
+  def pipe(expr, {:__aliases__, _, _} = call_args, _integer) do
+    raise ArgumentError, bad_pipe(expr, call_args)
+  end
+
+  def pipe(expr, {call, _, [_, _]} = call_args, _integer)
+      when call in unquote(binary_ops) do
+    raise ArgumentError, "cannot pipe #{to_string expr} into #{to_string call_args}, " <>
+                         "the #{to_string call} operator can only take two arguments"
+  end
+
+  # {:fn, _, _} is what we get when we pipe into an anonymous function without
+  # calling it, e.g., `:foo |> (fn x -> x end)`.
+  def pipe(expr, {:fn, _, _}, _integer) do
+    expr_str = to_string(expr)
+    raise ArgumentError,
+      "cannot pipe #{expr_str} into an anonymous function without" <>
+      " calling the function; use something like (fn ... end).() or" <>
+      " define the anonymous function as a regular private function"
   end
 
   def pipe(expr, {call, line, atom}, integer) when is_atom(atom) do
@@ -88,18 +251,24 @@ defmodule Macro do
   end
 
   def pipe(expr, call_args, _integer) do
-    bad_pipe(expr, call_args)
+    raise ArgumentError, bad_pipe(expr, call_args)
   end
 
   defp bad_pipe(expr, call_args) do
-    raise ArgumentError, "cannot pipe #{to_string expr} into #{to_string call_args}, " <>
-      "can only pipe into local calls foo(), remote calls Foo.bar() or anonymous functions calls foo.()"
+    "cannot pipe #{to_string expr} into #{to_string call_args}, " <>
+    "can only pipe into local calls foo(), remote calls Foo.bar() or anonymous functions calls foo.()"
   end
+
+  @doc false
+  def pipe_warning({call, _, _}) when call in unquote(unary_ops) do
+    "piping into a unary operator is deprecated. You could use e.g. Kernel.+(5) instead of +5"
+  end
+  def pipe_warning(_), do: nil
 
   @doc """
   Applies the given function to the node metadata if it contains one.
 
-  This is often useful when used with `Macro.prewalk/1` to remove
+  This is often useful when used with `Macro.prewalk/2` to remove
   information like lines and hygienic counters from the expression
   for either storage or comparison.
 
@@ -111,7 +280,7 @@ defmodule Macro do
       {:sample, [], []}
 
   """
-  @spec update_meta(t, (Keyword.t -> Keyword.t)) :: t
+  @spec update_meta(t, (keyword -> keyword)) :: t
   def update_meta(quoted, fun)
 
   def update_meta({left, meta, right}, fun) when is_list(meta) do
@@ -123,14 +292,29 @@ defmodule Macro do
   end
 
   @doc """
-  Genrates a AST node representing the variable given
+  Generates AST nodes for a given number of required argument variables using
+  `Macro.var/2`.
+
+  ## Examples
+
+      iex> Macro.generate_arguments(2, __MODULE__)
+      [{:var1, [], __MODULE__}, {:var2, [], __MODULE__}]
+
+  """
+  def generate_arguments(0, _), do: []
+  def generate_arguments(amount, context) when is_integer(amount) and amount > 0 and is_atom(context) do
+    for id <- 1..amount, do: Macro.var(String.to_atom("var" <> Integer.to_string(id)), context)
+  end
+
+  @doc """
+  Generates an AST node representing the variable given
   by the atoms `var` and `context`.
 
   ## Examples
 
   In order to build a variable, a context is expected.
   Most of the times, in order to preserve hygiene, the
-  context must be `__MODULE__`:
+  context must be `__MODULE__/0`:
 
       iex> Macro.var(:foo, __MODULE__)
       {:foo, [], __MODULE__}
@@ -148,6 +332,56 @@ defmodule Macro do
   end
 
   @doc """
+  Performs a depth-first traversal of quoted expressions
+  using an accumulator.
+  """
+  @spec traverse(t, any, (t, any -> {t, any}), (t, any -> {t, any})) :: {t, any}
+  def traverse(ast, acc, pre, post) when is_function(pre, 2) and is_function(post, 2) do
+    {ast, acc} = pre.(ast, acc)
+    do_traverse(ast, acc, pre, post)
+  end
+
+  defp do_traverse({form, meta, args}, acc, pre, post) when is_atom(form) do
+    {args, acc} = do_traverse_args(args, acc, pre, post)
+    post.({form, meta, args}, acc)
+  end
+
+  defp do_traverse({form, meta, args}, acc, pre, post) do
+    {form, acc} = pre.(form, acc)
+    {form, acc} = do_traverse(form, acc, pre, post)
+    {args, acc} = do_traverse_args(args, acc, pre, post)
+    post.({form, meta, args}, acc)
+  end
+
+  defp do_traverse({left, right}, acc, pre, post) do
+    {left, acc} = pre.(left, acc)
+    {left, acc} = do_traverse(left, acc, pre, post)
+    {right, acc} = pre.(right, acc)
+    {right, acc} = do_traverse(right, acc, pre, post)
+    post.({left, right}, acc)
+  end
+
+  defp do_traverse(list, acc, pre, post) when is_list(list) do
+    {list, acc} = do_traverse_args(list, acc, pre, post)
+    post.(list, acc)
+  end
+
+  defp do_traverse(x, acc, _pre, post) do
+    post.(x, acc)
+  end
+
+  defp do_traverse_args(args, acc, _pre, _post) when is_atom(args) do
+    {args, acc}
+  end
+
+  defp do_traverse_args(args, acc, pre, post) when is_list(args) do
+    Enum.map_reduce(args, acc, fn x, acc ->
+      {x, acc} = pre.(x, acc)
+      do_traverse(x, acc, pre, post)
+    end)
+  end
+
+  @doc """
   Performs a depth-first, pre-order traversal of quoted expressions.
   """
   @spec prewalk(t, (t -> t)) :: t
@@ -161,43 +395,7 @@ defmodule Macro do
   """
   @spec prewalk(t, any, (t, any -> {t, any})) :: {t, any}
   def prewalk(ast, acc, fun) when is_function(fun, 2) do
-    {ast, acc} = fun.(ast, acc)
-    do_prewalk(ast, acc, fun)
-  end
-
-  defp do_prewalk({form, meta, args}, acc, fun) do
-    unless is_atom(form) do
-      {form, acc} = fun.(form, acc)
-      {form, acc} = do_prewalk(form, acc, fun)
-    end
-
-    unless is_atom(args) do
-      {args, acc} = Enum.map_reduce(args, acc, fn x, acc ->
-        {x, acc} = fun.(x, acc)
-        do_prewalk(x, acc, fun)
-      end)
-    end
-
-    {{form, meta, args}, acc}
-  end
-
-  defp do_prewalk({left, right}, acc, fun) do
-    {left, acc} = fun.(left, acc)
-    {left, acc} = do_prewalk(left, acc, fun)
-    {right, acc} = fun.(right, acc)
-    {right, acc} = do_prewalk(right, acc, fun)
-    {{left, right}, acc}
-  end
-
-  defp do_prewalk(list, acc, fun) when is_list(list) do
-    Enum.map_reduce(list, acc, fn x, acc ->
-      {x, acc} = fun.(x, acc)
-      do_prewalk(x, acc, fun)
-    end)
-  end
-
-  defp do_prewalk(x, acc, _fun) do
-    {x, acc}
+    traverse(ast, acc, fun, fn x, a -> {x, a} end)
   end
 
   @doc """
@@ -214,34 +412,7 @@ defmodule Macro do
   """
   @spec postwalk(t, any, (t, any -> {t, any})) :: {t, any}
   def postwalk(ast, acc, fun) when is_function(fun, 2) do
-    do_postwalk(ast, acc, fun)
-  end
-
-  defp do_postwalk({form, meta, args}, acc, fun) do
-    unless is_atom(form) do
-      {form, acc} = do_postwalk(form, acc, fun)
-    end
-
-    unless is_atom(args) do
-      {args, acc} = Enum.map_reduce(args, acc, &do_postwalk(&1, &2, fun))
-    end
-
-    fun.({form, meta, args}, acc)
-  end
-
-  defp do_postwalk({left, right}, acc, fun) do
-    {left, acc} = do_postwalk(left, acc, fun)
-    {right, acc} = do_postwalk(right, acc, fun)
-    fun.({left, right}, acc)
-  end
-
-  defp do_postwalk(list, acc, fun) when is_list(list) do
-    {list, acc} = Enum.map_reduce(list, acc, &do_postwalk(&1, &2, fun))
-    fun.(list, acc)
-  end
-
-  defp do_postwalk(x, acc, fun) do
-    fun.(x, acc)
+    traverse(ast, acc, fn x, a -> {x, a} end, fun)
   end
 
   @doc """
@@ -252,23 +423,25 @@ defmodule Macro do
 
   ## Examples
 
-      iex> Macro.decompose_call(quote do: foo)
+      iex> Macro.decompose_call(quote(do: foo))
       {:foo, []}
 
-      iex> Macro.decompose_call(quote do: foo())
+      iex> Macro.decompose_call(quote(do: foo()))
       {:foo, []}
 
-      iex> Macro.decompose_call(quote do: foo(1, 2, 3))
+      iex> Macro.decompose_call(quote(do: foo(1, 2, 3)))
       {:foo, [1, 2, 3]}
 
-      iex> Macro.decompose_call(quote do: Elixir.M.foo(1, 2, 3))
+      iex> Macro.decompose_call(quote(do: Elixir.M.foo(1, 2, 3)))
       {{:__aliases__, [], [:Elixir, :M]}, :foo, [1, 2, 3]}
 
-      iex> Macro.decompose_call(quote do: 42)
+      iex> Macro.decompose_call(quote(do: 42))
       :error
 
   """
   @spec decompose_call(Macro.t) :: {atom, [Macro.t]} | {Macro.t, atom, [Macro.t]} | :error
+  def decompose_call(ast)
+
   def decompose_call({{:., _, [remote, function]}, _, args}) when is_tuple(remote) or is_atom(remote),
     do: {remote, function, args}
 
@@ -286,7 +459,7 @@ defmodule Macro do
   into a syntax tree.
 
   One may pass `unquote: true` to `escape/2`
-  which leaves `unquote` statements unescaped, effectively
+  which leaves `unquote/1` statements unescaped, effectively
   unquoting the contents on escape.
 
   ## Examples
@@ -301,8 +474,7 @@ defmodule Macro do
       1
 
   """
-  @spec escape(term) :: Macro.t
-  @spec escape(term, Keyword.t) :: Macro.t
+  @spec escape(term, keyword) :: Macro.t
   def escape(expr, opts \\ []) do
     elem(:elixir_quote.escape(expr, Keyword.get(opts, :unquote, false)), 0)
   end
@@ -310,8 +482,24 @@ defmodule Macro do
   @doc """
   Validates the given expressions are valid quoted expressions.
 
-  Check the `type:Macro.t` for the specification of a valid
+  Checks the `t:Macro.t/0` for the specification of a valid
   quoted expression.
+
+  It returns `:ok` if the expression is valid. Otherwise it returns a tuple in the form of
+  `{:error, remainder}` where `remainder` is the invalid part of the quoted expression.
+
+  ## Examples
+
+      iex> Macro.validate({:two_element, :tuple})
+      :ok
+      iex> Macro.validate({:three, :element, :tuple})
+      {:error, {:three, :element, :tuple}}
+
+      iex> Macro.validate([1, 2, 3])
+      :ok
+      iex> Macro.validate([1, 2, 3, {4}])
+      {:error, {4}}
+
   """
   @spec validate(term) :: :ok | {:error, term}
   def validate(expr) do
@@ -342,15 +530,16 @@ defmodule Macro do
   defp find_invalid(other), do: {:error, other}
 
   @doc ~S"""
-  Unescape the given chars.
+  Unescapes the given chars.
 
   This is the unescaping behaviour used by default in Elixir
   single- and double-quoted strings. Check `unescape_string/2`
   for information on how to customize the escaping map.
 
   In this setup, Elixir will escape the following: `\0`, `\a`, `\b`,
-  `\d`, `\e`, `\f`, `\n`, `\r`, `\s`, `\t` and `\v`. Hexadecimals
-  are also supported via `\xNN` and `\x{NN...}` syntax.
+  `\d`, `\e`, `\f`, `\n`, `\r`, `\s`, `\t` and `\v`. Bytes can be
+  given as hexadecimals via `\xNN` and Unicode Codepoints as
+  `\uNNNN` escapes.
 
   This function is commonly used on sigil implementations
   (like `~r`, `~s` and others) which receive a raw, unescaped
@@ -370,7 +559,7 @@ defmodule Macro do
   end
 
   @doc ~S"""
-  Unescape the given chars according to the map given.
+  Unescapes the given chars according to the map given.
 
   Check `unescape_string/1` if you want to use the same map
   as Elixir single- and double-quoted strings.
@@ -393,17 +582,19 @@ defmodule Macro do
       def unescape_map(?t), do: ?\t
       def unescape_map(?v), do: ?\v
       def unescape_map(?x), do: true
+      def unescape_map(?u), do: true
       def unescape_map(e),  do: e
 
-  If the `unescape_map` function returns `false`. The char is
-  not escaped and `\` is kept in the char list.
+  If the `unescape_map/1` function returns `false`, the char is
+  not escaped and the backslash is kept in the string.
 
-  Hexadecimals will be escaped if the map function returns `true`
-  for `?x`.
+  Hexadecimals and Unicode codepoints will be escaped if the map
+  function returns `true` for `?x`. Unicode codepoints if the map
+  function returns `true` for `?u`.
 
   ## Examples
 
-  Using the `unescape_map` function defined above is easy:
+  Using the `unescape_map/1` function defined above is easy:
 
       Macro.unescape_string "example\\n", &unescape_map(&1)
 
@@ -414,7 +605,7 @@ defmodule Macro do
   end
 
   @doc """
-  Unescape the given tokens according to the default map.
+  Unescapes the given tokens according to the default map.
 
   Check `unescape_string/1` and `unescape_string/2` for more
   information about unescaping.
@@ -430,7 +621,7 @@ defmodule Macro do
   end
 
   @doc """
-  Unescape the given tokens according to the given map.
+  Unescapes the given tokens according to the given map.
 
   Check `unescape_tokens/1` and `unescape_string/2` for more information.
   """
@@ -442,13 +633,24 @@ defmodule Macro do
   @doc """
   Converts the given expression to a binary.
 
+  The given `fun` is called for every node in the AST with two arguments: the
+  AST of the node being printed and the string representation of that same
+  node. The return value of this function is used as the final string
+  representation for that AST node.
+
   ## Examples
 
-      iex> Macro.to_string(quote do: foo.bar(1, 2, 3))
+      iex> Macro.to_string(quote(do: foo.bar(1, 2, 3)))
       "foo.bar(1, 2, 3)"
 
+      iex> Macro.to_string(quote(do: 1 + 2), fn
+      ...>   1, _string -> "one"
+      ...>   2, _string -> "two"
+      ...>   _ast, string -> string
+      ...> end)
+      "one + two"
+
   """
-  @spec to_string(Macro.t) :: String.t
   @spec to_string(Macro.t, (Macro.t, String.t -> String.t)) :: String.t
   def to_string(tree, fun \\ fn(_ast, string) -> string end)
 
@@ -473,11 +675,20 @@ defmodule Macro do
   end
 
   # Bits containers
-  def to_string({:<<>>, _, args} = ast, fun) do
-    fun.(ast, case Enum.map_join(args, ", ", &to_string(&1, fun)) do
-      "<" <> rest -> "<< <" <> rest  <> " >>"
-      rest -> "<<" <> rest <> ">>"
-    end)
+  def to_string({:<<>>, _, parts} = ast, fun) do
+    if interpolated?(ast) do
+      fun.(ast, interpolate(ast, fun))
+    else
+      result = Enum.map_join(parts, ", ", fn(part) ->
+        str = bitpart_to_string(part, fun)
+        if :binary.first(str) == ?< or :binary.last(str) == ?> do
+          "(" <> str <> ")"
+        else
+          str
+        end
+      end)
+      fun.(ast, "<<" <> result <> ">>")
+    end
   end
 
   # Tuple containers
@@ -513,24 +724,31 @@ defmodule Macro do
     fun.(ast, "fn\n  " <> block <> "\nend")
   end
 
+  # Ranges
+  def to_string({:.., _, args} = ast, fun) do
+    range = Enum.map_join(args, "..", &to_string(&1, fun))
+    fun.(ast, range)
+  end
+
   # left -> right
-  def to_string([{:->, _, _}|_] = ast, fun) do
+  def to_string([{:->, _, _} | _] = ast, fun) do
     fun.(ast, "(" <> arrow_to_string(ast, fun, true) <> ")")
   end
 
   # left when right
   def to_string({:when, _, [left, right]} = ast, fun) do
-    if right != [] and Keyword.keyword?(right) do
-      right = kw_list_to_string(right, fun)
-    else
-      right = fun.(ast, op_to_string(right, fun, :when, :right))
-    end
+    right =
+      if right != [] and Keyword.keyword?(right) do
+        kw_list_to_string(right, fun)
+      else
+        fun.(ast, op_to_string(right, fun, :when, :right))
+      end
 
     fun.(ast, op_to_string(left, fun, :when, :left) <> " when " <> right)
   end
 
   # Binary ops
-  def to_string({op, _, [left, right]} = ast, fun) when op in unquote(@binary_ops) do
+  def to_string({op, _, [left, right]} = ast, fun) when op in unquote(binary_ops) do
     fun.(ast, op_to_string(left, fun, op, :left) <> " #{op} " <> op_to_string(right, fun, op, :right))
   end
 
@@ -540,9 +758,29 @@ defmodule Macro do
     fun.(ast, "(" <> Enum.map_join(left, ", ", &to_string(&1, fun)) <> ") when " <> to_string(right, fun))
   end
 
+  # Capture
+  def to_string({:&, _, [{:/, _, [{name, _, ctx}, arity]}]} = ast, fun)
+      when is_atom(name) and is_atom(ctx) and is_integer(arity) do
+    fun.(ast, "&" <> Atom.to_string(name) <> "/" <> to_string(arity, fun))
+  end
+
+  def to_string({:&, _, [{:/, _, [{{:., _, [mod, name]}, _, []}, arity]}]} = ast, fun)
+      when is_atom(name) and is_integer(arity) do
+    fun.(ast, "&" <> to_string(mod, fun) <> "." <> Atom.to_string(name) <> "/" <> to_string(arity, fun))
+  end
+
+  def to_string({:&, _, [arg]} = ast, fun) when not is_integer(arg) do
+    fun.(ast, "&(" <> to_string(arg, fun) <> ")")
+  end
+
+  # left not in right
+  def to_string({:not, _, [{:in, _, [left, right]}]} = ast, fun)  do
+    fun.(ast, to_string(left, fun) <> " not in " <> to_string(right, fun))
+  end
+
   # Unary ops
   def to_string({unary, _, [{binary, _, [_, _]} = arg]} = ast, fun)
-      when unary in unquote(@unary_ops) and binary in unquote(@binary_ops) do
+      when unary in unquote(unary_ops) and binary in unquote(binary_ops) do
     fun.(ast, Atom.to_string(unary) <> "(" <> to_string(arg, fun) <> ")")
   end
 
@@ -550,13 +788,23 @@ defmodule Macro do
     fun.(ast, "not " <> to_string(arg, fun))
   end
 
-  def to_string({op, _, [arg]} = ast, fun) when op in unquote(@unary_ops) do
+  def to_string({op, _, [arg]} = ast, fun) when op in unquote(unary_ops) do
     fun.(ast, Atom.to_string(op) <> to_string(arg, fun))
   end
 
   # Access
+  def to_string({{:., _, [Access, :get]}, _, [{op, _, _} = left, right]} = ast, fun)
+      when op in unquote(binary_ops) do
+    fun.(ast, "(" <> to_string(left, fun) <> ")" <> to_string([right], fun))
+  end
+
   def to_string({{:., _, [Access, :get]}, _, [left, right]} = ast, fun) do
     fun.(ast, to_string(left, fun) <> to_string([right], fun))
+  end
+
+  # foo.{bar, baz}
+  def to_string({{:., _, [left, :{}]}, _, args} = ast, fun) do
+    fun.(ast, to_string(left, fun) <> ".{" <> args_to_string(args, fun) <> "}")
   end
 
   # All other calls
@@ -572,7 +820,7 @@ defmodule Macro do
     end
   end
 
-  # Two-item tuples
+  # Two-element tuples
   def to_string({left, right}, fun) do
     to_string({:{}, [], [left, right]}, fun)
   end
@@ -583,8 +831,9 @@ defmodule Macro do
       list == [] ->
         "[]"
       :io_lib.printable_list(list) ->
-        "'" <> Inspect.BitString.escape(IO.chardata_to_string(list), ?') <> "'"
-      Keyword.keyword?(list) ->
+        {escaped, _} = Inspect.BitString.escape(IO.chardata_to_string(list), ?')
+        IO.iodata_to_binary [?', escaped, ?']
+      Inspect.List.keyword?(list) ->
         "[" <> kw_list_to_string(list, fun) <> "]"
       true ->
         "[" <> Enum.map_join(list, ", ", &to_string(&1, fun)) <> "]"
@@ -594,23 +843,73 @@ defmodule Macro do
   # All other structures
   def to_string(other, fun), do: fun.(other, inspect(other, []))
 
-  # Block keywords
-  @kw_keywords [:do, :catch, :rescue, :after, :else]
+  defp bitpart_to_string({:::, _, [left, right]} = ast, fun) do
+    result =
+      op_to_string(left, fun, :::, :left) <>
+      "::" <>
+      bitmods_to_string(right, fun, :::, :right)
+    fun.(ast, result)
+  end
 
-  defp kw_blocks?([_|_] = kw) do
-    Enum.all?(kw, &match?({x, _} when x in unquote(@kw_keywords), &1))
+  defp bitpart_to_string(ast, fun) do
+    to_string(ast, fun)
+  end
+
+  defp bitmods_to_string({op, _, [left, right]} = ast, fun, _, _) when op in [:*, :-] do
+    result =
+      bitmods_to_string(left, fun, op, :left) <>
+      Atom.to_string(op) <>
+      bitmods_to_string(right, fun, op, :right)
+    fun.(ast, result)
+  end
+
+  defp bitmods_to_string(other, fun, parent_op, side) do
+    op_to_string(other, fun, parent_op, side)
+  end
+
+  # Block keywords
+  kw_keywords = [:do, :catch, :rescue, :after, :else]
+
+  defp kw_blocks?([{:do, _} | _] = kw) do
+    Enum.all?(kw, &match?({x, _} when x in unquote(kw_keywords), &1))
   end
   defp kw_blocks?(_), do: false
+
+  # Check if we have an interpolated string.
+  defp interpolated?({:<<>>, _, [_ | _] = parts}) do
+    Enum.all?(parts, fn
+      {:::, _, [{{:., _, [Kernel, :to_string]}, _, [_]},
+                {:binary, _, _}]} -> true
+      binary when is_binary(binary) -> true
+      _ -> false
+    end)
+  end
+
+  defp interpolated?(_) do
+    false
+  end
+
+  defp interpolate({:<<>>, _, parts}, fun) do
+    parts = Enum.map_join(parts, "", fn
+      {:::, _, [{{:., _, [Kernel, :to_string]}, _, [arg]}, {:binary, _, _}]} ->
+        "\#{" <> to_string(arg, fun) <> "}"
+      binary when is_binary(binary) ->
+        binary = inspect(binary, [])
+        :binary.part(binary, 1, byte_size(binary) - 2)
+    end)
+
+    <<?", parts::binary, ?">>
+  end
 
   defp module_to_string(atom, _fun) when is_atom(atom), do: inspect(atom, [])
   defp module_to_string(other, fun), do: call_to_string(other, fun)
 
-  defp sigil_call({func, _, [{:<<>>, _, [string]}, args]} = ast, fun) when is_list(args) do
+  defp sigil_call({func, _, [{:<<>>, _, _} = bin, args]} = ast, fun) when is_atom(func) and is_list(args) do
     sigil =
       case Atom.to_string(func) do
         <<"sigil_", name>> ->
           "~" <> <<name>> <>
-          fun.(string, inspect(string, [])) <>
+          interpolate(bin, fun) <>
           sigil_args(args, fun)
         _ ->
           nil
@@ -625,10 +924,20 @@ defmodule Macro do
   defp sigil_args([], _fun),   do: ""
   defp sigil_args(args, fun), do: fun.(args, List.to_string(args))
 
-  defp call_to_string(atom, _fun) when is_atom(atom), do: Atom.to_string(atom)
-  defp call_to_string({:., _, [arg]}, fun),           do: module_to_string(arg, fun) <> "."
-  defp call_to_string({:., _, [left, right]}, fun),   do: module_to_string(left, fun) <> "." <> call_to_string(right, fun)
-  defp call_to_string(other, fun),                    do: to_string(other, fun)
+  defp call_to_string(atom, _fun) when is_atom(atom),
+    do: Atom.to_string(atom)
+  defp call_to_string({:., _, [{:&, _, [val]} = arg]}, fun) when not is_integer(val),
+    do: "(" <> module_to_string(arg, fun) <> ")."
+  defp call_to_string({:., _, [{:fn, _, _} = arg]}, fun),
+    do: "(" <> module_to_string(arg, fun) <> ")."
+  defp call_to_string({:., _, [arg]}, fun),
+    do: module_to_string(arg, fun) <> "."
+  defp call_to_string({:., _, [left, right]}, fun) when is_atom(right),
+    do: module_to_string(left, fun) <> "." <> call_to_string_for_atom(right)
+  defp call_to_string({:., _, [left, right]}, fun),
+    do: module_to_string(left, fun) <> "." <> call_to_string(right, fun)
+  defp call_to_string(other, fun),
+    do: to_string(other, fun)
 
   defp call_to_string_with_args(target, args, fun) do
     target = call_to_string(target, fun)
@@ -636,20 +945,27 @@ defmodule Macro do
     target <> "(" <> args <> ")"
   end
 
+  defp call_to_string_for_atom(atom) do
+    Inspect.Function.escape_name(atom)
+  end
+
   defp args_to_string(args, fun) do
     {list, last} = :elixir_utils.split_last(args)
 
-    if last != [] and Keyword.keyword?(last) do
-      args = Enum.map_join(list, ", ", &to_string(&1, fun))
-      if list != [], do: args = args <> ", "
-      args <> kw_list_to_string(last, fun)
+    if last != [] and Inspect.List.keyword?(last) do
+      prefix =
+        case list do
+          [] -> ""
+          _  -> Enum.map_join(list, ", ", &to_string(&1, fun)) <> ", "
+        end
+      prefix <> kw_list_to_string(last, fun)
     else
       Enum.map_join(args, ", ", &to_string(&1, fun))
     end
   end
 
   defp kw_blocks_to_string(kw, fun) do
-    Enum.reduce(@kw_keywords, " ", fn(x, acc) ->
+    Enum.reduce(unquote(kw_keywords), " ", fn(x, acc) ->
       case Keyword.has_key?(kw, x) do
         true  -> acc <> kw_block_to_string(x, Keyword.get(kw, x), fun)
         false -> acc
@@ -662,7 +978,7 @@ defmodule Macro do
     Atom.to_string(key) <> "\n  " <> block <> "\n"
   end
 
-  defp block_to_string([{:->, _, _}|_] = block, fun) do
+  defp block_to_string([{:->, _, _} | _] = block, fun) do
     Enum.map_join(block, "\n", fn({:->, _, [left, right]}) ->
       left = comma_join_or_empty_paren(left, fun, false)
       left <> "->\n  " <> adjust_new_lines block_to_string(right, fun), "\n  "
@@ -681,7 +997,7 @@ defmodule Macro do
 
   defp map_to_string(list, fun) do
     cond do
-      Keyword.keyword?(list) -> kw_list_to_string(list, fun)
+      Inspect.List.keyword?(list) -> kw_list_to_string(list, fun)
       true -> map_list_to_string(list, fun)
     end
   end
@@ -702,22 +1018,22 @@ defmodule Macro do
     end)
   end
 
-  defp parenthise(expr, fun) do
+  defp wrap_in_parenthesis(expr, fun) do
     "(" <> to_string(expr, fun) <> ")"
   end
 
-  defp op_to_string({op, _, [_, _]} = expr, fun, parent_op, side) when op in unquote(@binary_ops) do
+  defp op_to_string({op, _, [_, _]} = expr, fun, parent_op, side) when op in unquote(binary_ops) do
     {parent_assoc, parent_prec} = binary_op_props(parent_op)
     {_, prec}                   = binary_op_props(op)
     cond do
       parent_prec < prec -> to_string(expr, fun)
-      parent_prec > prec -> parenthise(expr, fun)
+      parent_prec > prec -> wrap_in_parenthesis(expr, fun)
       true ->
         # parent_prec == prec, so look at associativity.
         if parent_assoc == side do
           to_string(expr, fun)
         else
-          parenthise(expr, fun)
+          wrap_in_parenthesis(expr, fun)
         end
     end
   end
@@ -754,7 +1070,7 @@ defmodule Macro do
 
     * Macros (local or remote)
     * Aliases are expanded (if possible) and return atoms
-    * Pseudo-variables (`__ENV__`, `__MODULE__` and `__DIR__`)
+    * Compilation environment macros (`__ENV__/0`, `__MODULE__/0` and `__DIR__/0`)
     * Module attributes reader (`@foo`)
 
   If the expression cannot be expanded, it returns the expression
@@ -772,7 +1088,7 @@ defmodule Macro do
   Consider the implementation below:
 
       defmacro defmodule_with_length(name, do: block) do
-        length = length(Atom.to_char_list(name))
+        length = length(Atom.to_charlist(name))
 
         quote do
           defmodule unquote(name) do
@@ -795,7 +1111,7 @@ defmodule Macro do
 
   That said, we need to expand the aliases node above to an
   atom, so we can retrieve its length. Expanding the node is
-  not straight-forward because we also need to expand the
+  not straightforward because we also need to expand the
   caller aliases. For example:
 
       alias MyHelpers, as: My
@@ -812,7 +1128,7 @@ defmodule Macro do
 
       defmacro defmodule_with_length(name, do: block) do
         expanded = Macro.expand(name, __CALLER__)
-        length   = length(Atom.to_char_list(expanded))
+        length   = length(Atom.to_charlist(expanded))
 
         quote do
           defmodule unquote(name) do
@@ -830,15 +1146,15 @@ defmodule Macro do
   defp do_expand_once({:__aliases__, _, _} = original, env) do
     case :elixir_aliases.expand(original, env.aliases, env.macro_aliases, env.lexical_tracker) do
       receiver when is_atom(receiver) ->
-        :elixir_lexical.record_remote(receiver, env.lexical_tracker)
+        :elixir_lexical.record_remote(receiver, env.function, env.lexical_tracker)
         {receiver, true}
       aliases ->
-        aliases = for alias <- aliases, do: elem(do_expand_once(alias, env), 0)
+        aliases = :lists.map(&elem(do_expand_once(&1, env), 0), aliases)
 
         case :lists.all(&is_atom/1, aliases) do
           true ->
             receiver = :elixir_aliases.concat(aliases)
-            :elixir_lexical.record_remote(receiver, env.lexical_tracker)
+            :elixir_lexical.record_remote(receiver, env.function, env.lexical_tracker)
             {receiver, true}
           false ->
             {original, false}
@@ -846,15 +1162,7 @@ defmodule Macro do
     end
   end
 
-  # Expand @ calls
-  defp do_expand_once({:@, _, [{name, _, args}]} = original, env) when is_atom(args) or args == [] do
-    case (module = env.module) && Module.open?(module) do
-      true  -> {escape(Module.get_attribute(module, name)), true}
-      false -> {original, false}
-    end
-  end
-
-  # Expand pseudo-variables
+  # Expand compilation environment macros
   defp do_expand_once({:__MODULE__, _, atom}, env) when is_atom(atom),
     do: {env.module, true}
   defp do_expand_once({:__DIR__, _, atom}, env) when is_atom(atom),
@@ -902,7 +1210,7 @@ defmodule Macro do
 
       case expand do
         {:ok, receiver, quoted} ->
-          next = :elixir_counter.next
+          next = :erlang.unique_integer()
           {:elixir_quote.linify_with_context_counter(0, {receiver, next}, quoted), true}
         {:ok, _receiver, _name, _args} ->
           {original, false}
@@ -923,7 +1231,7 @@ defmodule Macro do
 
         case expand do
           {:ok, receiver, quoted} ->
-            next = :elixir_counter.next
+            next = :erlang.unique_integer()
             {:elixir_quote.linify_with_context_counter(0, {receiver, next}, quoted), true}
           :error ->
             {original, false}
@@ -939,7 +1247,7 @@ defmodule Macro do
   be expanded.
 
   This function uses `expand_once/2` under the hood. Check
-  `expand_once/2` for more information and examples.
+  it out for more information and examples.
   """
   def expand(tree, env) do
     expand_until({tree, true}, env)
@@ -952,4 +1260,122 @@ defmodule Macro do
   defp expand_until({tree, false}, _env) do
     tree
   end
+
+  @doc """
+  Converts the given atom or binary to underscore format.
+
+  If an atom is given, it is assumed to be an Elixir module,
+  so it is converted to a binary and then processed.
+
+  This function was designed to underscore language identifiers/tokens,
+  that's why it belongs to the `Macro` module. Do not use it as a general
+  mechanism for underscoring strings as it does not support Unicode or
+  characters that are not valid in Elixir identifiers.
+
+  ## Examples
+
+      iex> Macro.underscore "FooBar"
+      "foo_bar"
+
+      iex> Macro.underscore "Foo.Bar"
+      "foo/bar"
+
+      iex> Macro.underscore Foo.Bar
+      "foo/bar"
+
+  In general, `underscore` can be thought of as the reverse of
+  `camelize`, however, in some cases formatting may be lost:
+
+      iex> Macro.underscore "SAPExample"
+      "sap_example"
+
+      iex> Macro.camelize "sap_example"
+      "SapExample"
+
+      iex> Macro.camelize "hello_10"
+      "Hello10"
+
+  """
+  def underscore(atom) when is_atom(atom) do
+    "Elixir." <> rest = Atom.to_string(atom)
+    underscore(rest)
+  end
+  def underscore(<<h, t::binary>>) do
+    <<to_lower_char(h)>> <> do_underscore(t, h)
+  end
+  def underscore("") do
+    ""
+  end
+
+
+  defp do_underscore(<<h, t, rest::binary>>, _)
+      when (h >= ?A and h <= ?Z) and not (t >= ?A and t <= ?Z) and t != ?. and t != ?_ do
+    <<?_, to_lower_char(h), t>> <> do_underscore(rest, t)
+  end
+  defp do_underscore(<<h, t::binary>>, prev)
+      when (h >= ?A and h <= ?Z) and not (prev >= ?A and prev <= ?Z) and prev != ?_ do
+    <<?_, to_lower_char(h)>> <> do_underscore(t, h)
+  end
+  defp do_underscore(<<?., t::binary>>, _) do
+    <<?/>> <> underscore(t)
+  end
+  defp do_underscore(<<h, t::binary>>, _) do
+    <<to_lower_char(h)>> <> do_underscore(t, h)
+  end
+  defp do_underscore(<<>>, _) do
+    <<>>
+  end
+
+  @doc """
+  Converts the given string to CamelCase format.
+
+  This function was designed to camelize language identifiers/tokens,
+  that's why it belongs to the `Macro` module. Do not use it as a general
+  mechanism for camelizing strings as it does not support Unicode or
+  characters that are not valid in Elixir identifiers.
+
+  ## Examples
+
+      iex> Macro.camelize "foo_bar"
+      "FooBar"
+
+  If uppercase characters are present, they are not modified in anyway
+  as a mechanism to preserve acronyms:
+
+      iex> Macro.camelize "API.V1"
+      "API.V1"
+      iex> Macro.camelize "API_SPEC"
+      "API_SPEC"
+
+  """
+  @spec camelize(String.t) :: String.t
+  def camelize(string)
+
+  def camelize(""),
+    do: ""
+  def camelize(<<?_, t::binary>>),
+    do: camelize(t)
+  def camelize(<<h, t::binary>>),
+    do: <<to_upper_char(h)>> <> do_camelize(t)
+
+  defp do_camelize(<<?_, ?_, t::binary>>),
+    do: do_camelize(<<?_, t::binary >>)
+  defp do_camelize(<<?_, h, t::binary>>) when h >= ?a and h <= ?z,
+    do: <<to_upper_char(h)>> <> do_camelize(t)
+  defp do_camelize(<<?_, h, t::binary>>) when h >= ?0 and h <= ?9,
+    do: <<h>> <> do_camelize(t)
+  defp do_camelize(<<?_>>),
+    do: <<>>
+  defp do_camelize(<<?/, t::binary>>),
+    do: <<?.>> <> camelize(t)
+  defp do_camelize(<<h, t::binary>>),
+    do: <<h>> <> do_camelize(t)
+  defp do_camelize(<<>>),
+    do: <<>>
+
+  defp to_upper_char(char) when char >= ?a and char <= ?z, do: char - 32
+  defp to_upper_char(char), do: char
+
+  defp to_lower_char(char) when char >= ?A and char <= ?Z, do: char + 32
+  defp to_lower_char(char), do: char
 end

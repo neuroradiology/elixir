@@ -31,7 +31,7 @@ end
 defmodule ModuleTest.ToUse do
   32 = __ENV__.line # Moving the next line around can make tests fail
   var = 1
-  var # Not available in callbacks
+  _ = var # Not available in callbacks
   def callback_value(false), do: false
   use ModuleTest.ToBeUsed
 end
@@ -39,47 +39,72 @@ end
 defmodule ModuleTest do
   use ExUnit.Case, async: true
 
+  doctest Module
+
   Module.register_attribute __MODULE__, :register_example, accumulate: true, persist: true
   @register_example :it_works
   @register_example :still_works
 
-  contents = quote do: (def eval_quoted_info, do: {__MODULE__, __ENV__.file, __ENV__.line})
+  contents = quote do
+    def eval_quoted_info, do: {__MODULE__, __ENV__.file, __ENV__.line}
+  end
   Module.eval_quoted __MODULE__, contents, [], file: "sample.ex", line: 13
+
+  defp purge(module) do
+    :code.purge(module)
+    :code.delete(module)
+  end
 
   defmacrop in_module(block) do
     quote do
       defmodule Temp, unquote(block)
-      :code.purge(Temp)
-      :code.delete(Temp)
+      purge Temp
     end
   end
 
-  test :in_memory do
+  test "module attributes returns value" do
+    in_module do
+      assert (@return [:foo, :bar]) == :ok
+      _ = @return
+    end
+  end
+
+  test "in memory modules are tagged as so" do
     assert :code.which(__MODULE__) == :in_memory
   end
 
   ## Eval
 
-  test :eval_quoted do
+  test "executes eval_quoted definitions" do
     assert eval_quoted_info() == {ModuleTest, "sample.ex", 13}
   end
 
-  test :line_from_macro do
+  test "retrieves line from macros" do
     assert ModuleTest.ToUse.line == 36
   end
 
   ## Callbacks
 
-  test :compile_callback_hook do
+  test "executes custom before_compile callback" do
     assert ModuleTest.ToUse.callback_value(true) == true
     assert ModuleTest.ToUse.callback_value(false) == false
   end
 
-  test :before_compile_callback_hook do
+  test "executes default before_compile callback" do
     assert ModuleTest.ToUse.before_compile == []
   end
 
-  test :on_definition do
+  def __on_definition__(env, kind, name, args, guards, expr) do
+    Process.put(env.module, :called)
+    assert env.module == ModuleTest.OnDefinition
+    assert kind == :def
+    assert name == :hello
+    assert [{:foo, _, _}, {:bar, _, _}] = args
+    assert [] = guards
+    assert [do: {:+, _, [{:foo, _, nil}, {:bar, _, nil}]}] = expr
+  end
+
+  test "executes on definition callback" do
     defmodule OnDefinition do
       @on_definition ModuleTest
 
@@ -91,31 +116,6 @@ defmodule ModuleTest do
     assert Process.get(ModuleTest.OnDefinition) == :called
   end
 
-  def __on_definition__(env, kind, name, args, guards, expr) do
-    Process.put(env.module, :called)
-    assert env.module == ModuleTest.OnDefinition
-    assert kind == :def
-    assert name == :hello
-    assert [{:foo, _, _}, {:bar, _ , _}] = args
-    assert [] = guards
-    assert {{:., _, [:erlang, :+]}, _, [{:foo, _, nil}, {:bar, _, nil}]} = expr
-  end
-
-  test :overridable_inside_before_compile do
-    defmodule OverridableWithBeforeCompile do
-      @before_compile ModuleTest
-    end
-    assert OverridableWithBeforeCompile.constant == 1
-  end
-
-  test :alias_with_raw_atom do
-    defmodule :"Elixir.ModuleTest.RawModule" do
-      def hello, do: :world
-    end
-
-    assert RawModule.hello == :world
-  end
-
   defmacro __before_compile__(_) do
     quote do
       def constant, do: 1
@@ -123,28 +123,42 @@ defmodule ModuleTest do
     end
   end
 
+  test "may set overridable inside before_compile callback" do
+    defmodule OverridableWithBeforeCompile do
+      @before_compile ModuleTest
+    end
+    assert OverridableWithBeforeCompile.constant == 1
+  end
+
   ## Attributes
 
-  test :reserved_attributes do
-    assert List.keyfind(ExUnit.Server.__info__(:attributes), :behaviour, 0) == {:behaviour, [:gen_server]}
+  test "reserved attributes" do
+    assert List.keyfind(ExUnit.Server.__info__(:attributes), :behaviour, 0) == {:behaviour, [GenServer]}
   end
 
-  test :registered_attributes do
-    assert [{:register_example, [:it_works]}, {:register_example, [:still_works]}] ==
-      Enum.filter __MODULE__.__info__(:attributes), &match?({:register_example, _}, &1)
+  test "registered attributes" do
+    assert Enum.filter __MODULE__.__info__(:attributes), &match?({:register_example, _}, &1) ==
+           [{:register_example, [:it_works]}, {:register_example, [:still_works]}]
   end
 
-  @some_attribute  [1]
+  @some_attribute [1]
   @other_attribute [3, 2, 1]
 
-  test :inside_function_attributes do
-    assert [1] = @some_attribute
-    assert [3, 2, 1] = @other_attribute
+  test "inside function attributes" do
+    assert @some_attribute == [1]
+    assert @other_attribute == [3, 2, 1]
+  end
+
+  test "@compile autoload attribute" do
+    defmodule NoAutoload do
+      @compile {:autoload, false}
+    end
+    refute :code.is_loaded(NoAutoload)
   end
 
   ## Naming
 
-  test :concat do
+  test "concat" do
     assert Module.concat(Foo, Bar)  == Foo.Bar
     assert Module.concat(Foo, :Bar) == Foo.Bar
     assert Module.concat(Foo, "Bar") == Foo.Bar
@@ -153,39 +167,62 @@ defmodule ModuleTest do
     assert Module.concat(Bar, nil) == Elixir.Bar
   end
 
-  test :safe_concat do
+  test "safe concat" do
     assert Module.safe_concat(Foo, :Bar) == Foo.Bar
     assert_raise ArgumentError, fn ->
       Module.safe_concat SafeConcat, Doesnt.Exist
     end
   end
 
-  test :split do
+  test "split" do
     module = Very.Long.Module.Name.And.Even.Longer
     assert Module.split(module) == ["Very", "Long", "Module", "Name", "And", "Even", "Longer"]
     assert Module.split("Elixir.Very.Long") == ["Very", "Long"]
+    assert_raise ArgumentError, "expected an Elixir module, got: :just_an_atom", fn ->
+      Module.split(:just_an_atom)
+    end
+    assert_raise ArgumentError, "expected an Elixir module, got: \"Foo\"", fn ->
+      Module.split("Foo")
+    end
     assert Module.concat(Module.split(module)) == module
   end
 
-  test :__MODULE__ do
+  test "__MODULE__" do
     assert Code.eval_string("__MODULE__.Foo") |> elem(0) == Foo
+  end
+
+  test "__ENV__.file" do
+    assert Path.basename(__ENV__.file) == "module_test.exs"
+  end
+
+  @file "sample.ex"
+  test "__ENV__.file with module attribute" do
+    assert __ENV__.file == "sample.ex"
   end
 
   ## Creation
 
-  test :defmodule do
+  test "defmodule" do
     assert match?({:module, Defmodule, binary, 3} when is_binary(binary), defmodule Defmodule do
       1 + 2
     end)
   end
 
-  test :defmodule_with_atom do
+  test "defmodule with atom" do
     assert match?({:module, :root_defmodule, _, _}, defmodule :root_defmodule do
       :ok
     end)
   end
 
-  test :create do
+  test "defmodule with alias as atom" do
+    defmodule :"Elixir.ModuleTest.RawModule" do
+      def hello, do: :world
+    end
+
+    assert RawModule.hello == :world
+  end
+
+  test "create" do
     contents =
       quote do
         def world, do: true
@@ -195,7 +232,7 @@ defmodule ModuleTest do
     assert ModuleCreateSample.world
   end
 
-  test :create_with_elixir_as_a_name do
+  test "create with Elixir as a name" do
     contents =
       quote do
         def world, do: true
@@ -206,15 +243,76 @@ defmodule ModuleTest do
     end
   end
 
-  test :no_function_in_module_body do
+  test "create with aliases/var hygiene" do
+    contents =
+      quote do
+        alias List, as: L
+        def test do
+          L.flatten([1, [2], 3])
+        end
+      end
+
+    Module.create ModuleHygiene, contents, __ENV__
+    assert ModuleHygiene.test == [1, 2, 3]
+  end
+
+  test "ensure function clauses are ordered" do
+    {_, _, binary, _} =
+      defmodule Ordered do
+        def foo(:foo), do: :bar
+        def baz(:baz), do: :bat
+      end
+    atoms = :beam_lib.chunks(binary, [:atoms])
+    assert :erlang.phash2(atoms) == 53987778
+  end
+
+  test "create with generated true does not emit warnings" do
+    contents =
+      quote generated: true do
+        def world, do: true
+        def world, do: false
+      end
+    {:module, ModuleCreateGenerated, _, _} =
+      Module.create(ModuleCreateGenerated, contents, __ENV__)
+    assert ModuleCreateGenerated.world
+  end
+
+  # TODO: Remove this check once we depend only on 20
+  if :erlang.system_info(:otp_release) >= '20' do
+    test "uses the new debug_info chunk" do
+      {:module, ModuleCreateDebugInfo, binary, _} =
+        Module.create(ModuleCreateDebugInfo, :ok, __ENV__)
+      {:ok, {_, [debug_info: {:debug_info_v1, backend, data}]}} =
+        :beam_lib.chunks(binary, [:debug_info])
+      {:ok, map} = backend.debug_info(:elixir_v1, ModuleCreateDebugInfo, data, [])
+      assert map.module == ModuleCreateDebugInfo
+    end
+
+    test "uses the new debug_info chunk even if debug_info is set to false" do
+      {:module, ModuleCreateNoDebugInfo, binary, _} =
+        Module.create(ModuleCreateNoDebugInfo, quote(do: @compile {:debug_info, false}), __ENV__)
+      {:ok, {_, [debug_info: {:debug_info_v1, backend, data}]}} =
+        :beam_lib.chunks(binary, [:debug_info])
+      assert backend.debug_info(:elixir_v1, ModuleCreateNoDebugInfo, data, []) ==
+             {:error, :missing}
+    end
+  end
+
+  test "no function in module body" do
     in_module do
       assert __ENV__.function == nil
     end
   end
 
+  test "does not use ETS tables named after the module" do
+    in_module do
+      assert :ets.info(__MODULE__) == :undefined
+    end
+  end
+
   ## Definitions
 
-  test :defines? do
+  test "defines?" do
     in_module do
       refute Module.defines? __MODULE__, {:foo, 0}
       def foo(), do: bar()
@@ -231,7 +329,7 @@ defmodule ModuleTest do
     end
   end
 
-  test :definitions_in do
+  test "definitions in" do
     in_module do
       def foo(1, 2, 3), do: 4
 
@@ -239,5 +337,20 @@ defmodule ModuleTest do
       assert Module.definitions_in(__MODULE__, :def)  == [foo: 3]
       assert Module.definitions_in(__MODULE__, :defp) == []
     end
+  end
+
+  test "make_overridable/2 with invalid arguments" do
+    contents =
+      quote do
+        Module.make_overridable(__MODULE__, [{:foo, 256}])
+      end
+
+    assert_raise ArgumentError,
+      "each element in tuple list has to be a {function_name :: atom, arity :: 0..255} tuple, got: {:foo, 256}",
+      fn ->
+      Module.create(Foo, contents, __ENV__)
+    end
+  after
+    purge Foo
   end
 end

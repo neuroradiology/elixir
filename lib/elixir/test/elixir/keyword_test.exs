@@ -3,6 +3,8 @@ Code.require_file "test_helper.exs", __DIR__
 defmodule KeywordTest do
   use ExUnit.Case, async: true
 
+  doctest Keyword
+
   test "has a literal syntax" do
     assert [B: 1] == [{:B, 1}]
     assert [foo?: :bar] == [{:foo?, :bar}]
@@ -17,232 +19,130 @@ defmodule KeywordTest do
   test "supports optional comma" do
     [a: 1,
      b: 2,
-     c: 3, ]
+     c: 3,]
   end
 
-  test "keyword?/1" do
-    assert Keyword.keyword?([])
-    assert Keyword.keyword?([a: 1])
-    assert Keyword.keyword?([{Foo, 1}])
-    refute Keyword.keyword?([{}])
-    refute Keyword.keyword?(<<>>)
+  test "implements (almost) all functions in Map" do
+    assert Map.__info__(:functions) -- Keyword.__info__(:functions) ==
+           [from_struct: 1]
   end
 
-  test "new/0" do
-    assert Keyword.new == []
-  end
-
-  test "new/1" do
-    assert Keyword.new([{:second_key, 2}, {:first_key, 1}]) ==
-           [first_key: 1, second_key: 2]
-  end
-
-  test "new/2" do
-    assert Keyword.new([:a, :b], fn x -> {x, x} end) ==
-           [b: :b, a: :a]
-  end
-
-  test "get/2 and get/3" do
-    assert Keyword.get(create_keywords, :first_key) == 1
-    assert Keyword.get(create_keywords, :second_key) == 2
-    assert Keyword.get(create_keywords, :other_key) == nil
-    assert Keyword.get(create_empty_keywords, :first_key, "default") == "default"
-  end
-
-  test "fetch!/2" do
-    assert Keyword.fetch!(create_keywords, :first_key) == 1
-
-    error = assert_raise KeyError, fn ->
-      Keyword.fetch!(create_keywords, :unknown)
+  test "get_and_update/3 raises on bad return value from the argument function" do
+    assert_raise RuntimeError, "the given function must return a two-element tuple or :pop, got: 1", fn ->
+      Keyword.get_and_update([a: 1], :a, fn value -> value end)
     end
 
-    assert error.key == :unknown
-  end
-
-  test "keys/1" do
-    assert Keyword.keys(create_keywords) == [:first_key, :second_key]
-    assert Keyword.keys(create_empty_keywords) == []
-
-    assert_raise FunctionClauseError, fn ->
-      Keyword.keys([:foo])
+    assert_raise RuntimeError, "the given function must return a two-element tuple or :pop, got: nil", fn ->
+      Keyword.get_and_update([], :a, fn value -> value end)
     end
   end
 
-  test "values/1" do
-    assert Keyword.values(create_keywords) == [1, 2]
-    assert Keyword.values(create_empty_keywords) == []
-
-    assert_raise FunctionClauseError, fn ->
-      Keyword.values([:foo])
+  test "get_and_update!/3 raises on bad return value from the argument function" do
+    assert_raise RuntimeError, "the given function must return a two-element tuple or :pop, got: 1", fn ->
+      Keyword.get_and_update!([a: 1], :a, fn value -> value end)
     end
-  end
-
-  test "delete/2" do
-    assert Keyword.delete(create_keywords, :second_key) == [first_key: 1]
-    assert Keyword.delete(create_keywords, :other_key) == [first_key: 1, second_key: 2]
-    assert Keyword.delete(create_empty_keywords, :other_key) == []
-
-    assert_raise FunctionClauseError, fn ->
-      Keyword.delete([:foo], :foo)
-    end
-  end
-
-  test "delete/3" do
-    keywords = [a: 1, b: 2, c: 3, a: 2]
-    assert Keyword.delete(keywords, :a, 2) == [a: 1, b: 2, c: 3]
-    assert Keyword.delete(keywords, :a, 1) == [b: 2, c: 3, a: 2]
-
-    assert_raise FunctionClauseError, fn ->
-      Keyword.delete([:foo], :foo, 0)
-    end
-  end
-
-  test "put/3" do
-    assert Keyword.put(create_empty_keywords, :first_key, 1) == [first_key: 1]
-    assert Keyword.put(create_keywords, :first_key, 3) == [first_key: 3, second_key: 2]
-  end
-
-  test "put_new/3" do
-    assert Keyword.put_new(create_empty_keywords, :first_key, 1) == [first_key: 1]
-    assert Keyword.put_new(create_keywords, :first_key, 3) == [first_key: 1, second_key: 2]
   end
 
   test "merge/2" do
-    assert Keyword.merge(create_empty_keywords, create_keywords) == [first_key: 1, second_key: 2]
-    assert Keyword.merge(create_keywords, create_empty_keywords) == [first_key: 1, second_key: 2]
-    assert Keyword.merge(create_keywords, create_keywords) == [first_key: 1, second_key: 2]
-    assert Keyword.merge(create_empty_keywords, create_empty_keywords) == []
+    assert Keyword.merge([a: 1, b: 2], [c: 11, d: 12]) == [a: 1, b: 2, c: 11, d: 12]
+    assert Keyword.merge([], [c: 11, d: 12]) == [c: 11, d: 12]
+    assert Keyword.merge([a: 1, b: 2], []) == [a: 1, b: 2]
 
-    assert_raise FunctionClauseError, fn ->
-      Keyword.delete([:foo], [:foo])
+    assert_raise ArgumentError, "expected a keyword list as the first argument, got: [1, 2]", fn ->
+      Keyword.merge([1, 2], [c: 11, d: 12])
     end
+
+    assert_raise ArgumentError, "expected a keyword list as the first argument, got: [1 | 2]", fn ->
+      Keyword.merge([1 | 2], [c: 11, d: 12])
+    end
+
+    assert_raise ArgumentError, "expected a keyword list as the second argument, got: [11, 12, 0]", fn ->
+      Keyword.merge([a: 1, b: 2], [11, 12, 0])
+    end
+
+    assert_raise ArgumentError, "expected a keyword list as the second argument, got: [11 | 12]", fn ->
+      Keyword.merge([a: 1, b: 2], [11 | 12])
+    end
+
+    # duplicate keys in keywords1 are kept if key is not present in keywords2
+    assert Keyword.merge([a: 1, b: 2, a: 3], [c: 11, d: 12]) == [a: 1, b: 2, a: 3, c: 11, d: 12]
+    assert Keyword.merge([a: 1, b: 2, a: 3], [a: 11]) == [b: 2, a: 11]
+
+    # duplicate keys in keywords2 are always kept
+    assert Keyword.merge([a: 1, b: 2], [c: 11, c: 12, d: 13]) == [a: 1, b: 2, c: 11, c: 12, d: 13]
+
+    # any key in keywords1 is removed if key is present in keyword2
+    assert Keyword.merge([a: 1, b: 2, c: 3, c: 4], [c: 11, c: 12, d: 13]) == [a: 1, b: 2, c: 11, c: 12, d: 13]
   end
 
   test "merge/3" do
-    result = Keyword.merge [a: 1, b: 2], [a: 3, d: 4], fn _k, v1, v2 ->
-      v1 + v2
+    fun = fn _key, value1, value2 -> value1 + value2 end
+
+    assert Keyword.merge([a: 1, b: 2], [c: 11, d: 12], fun) == [a: 1, b: 2, c: 11, d: 12]
+    assert Keyword.merge([], [c: 11, d: 12], fun) == [c: 11, d: 12]
+    assert Keyword.merge([a: 1, b: 2], [], fun) == [a: 1, b: 2]
+
+    assert_raise ArgumentError, "expected a keyword list as the first argument, got: [1, 2]", fn ->
+      Keyword.merge([1, 2], [c: 11, d: 12], fun)
     end
-    assert result == [a: 4, b: 2, d: 4]
-  end
 
-  test "has_key?/2" do
-    assert Keyword.has_key?([a: 1], :a) == true
-    assert Keyword.has_key?([a: 1], :b) == false
-  end
-
-  test "update!/3" do
-    kw = [a: 1, b: 2, a: 3]
-    assert Keyword.update!(kw, :a, &(&1 * 2)) == [a: 2, b: 2]
-    assert_raise KeyError, fn ->
-      Keyword.update!([a: 1], :b, &(&1 * 2))
+    assert_raise ArgumentError, "expected a keyword list as the first argument, got: [1 | 2]", fn ->
+      Keyword.merge([1 | 2], [c: 11, d: 12], fun)
     end
-  end
 
-  test "update/4" do
-    kw = [a: 1, b: 2, a: 3]
-    assert Keyword.update(kw, :a, 13, &(&1 * 2)) == [a: 2, b: 2]
-    assert Keyword.update([a: 1], :b, 11, &(&1 * 2)) == [a: 1, b: 11]
-  end
-
-  defp create_empty_keywords, do: []
-  defp create_keywords, do: [first_key: 1, second_key: 2]
-end
-
-defmodule Keyword.DuplicatedTest do
-  use ExUnit.Case, async: true
-
-  test "get/2" do
-    assert Keyword.get(create_keywords, :first_key) == 1
-    assert Keyword.get(create_keywords, :second_key) == 2
-    assert Keyword.get(create_keywords, :other_key) == nil
-    assert Keyword.get(create_empty_keywords, :first_key, "default") == "default"
-  end
-
-  test "get_values/2" do
-    assert Keyword.get_values(create_keywords, :first_key) == [1, 2]
-    assert Keyword.get_values(create_keywords, :second_key) == [2]
-    assert Keyword.get_values(create_keywords, :other_key) == []
-
-    assert_raise FunctionClauseError, fn ->
-      Keyword.get_values([:foo], :foo)
+    assert_raise ArgumentError, "expected a keyword list as the second argument, got: [{:x, 1}, :y, :z]", fn ->
+      Keyword.merge([a: 1, b: 2], [{:x, 1}, :y, :z], fun)
     end
-  end
 
-  test "keys/1" do
-    assert Keyword.keys(create_keywords) == [:first_key, :first_key, :second_key]
-    assert Keyword.keys(create_empty_keywords) == []
-  end
-
-  test "equal?/2" do
-    assert Keyword.equal? [a: 1, b: 2], [b: 2, a: 1]
-    refute Keyword.equal? [a: 1, b: 2], [b: 2, c: 3]
-  end
-
-  test "values/1" do
-    assert Keyword.values(create_keywords) == [1, 2, 2]
-    assert Keyword.values(create_empty_keywords) == []
-  end
-
-  test "delete/2" do
-    assert Keyword.delete(create_keywords, :first_key) == [second_key: 2]
-    assert Keyword.delete(create_keywords, :other_key) == create_keywords
-    assert Keyword.delete(create_empty_keywords, :other_key) == []
-  end
-
-  test "delete_first/2" do
-    assert Keyword.delete_first(create_keywords, :first_key) == [first_key: 2, second_key: 2]
-    assert Keyword.delete_first(create_keywords, :other_key) == [first_key: 1, first_key: 2, second_key: 2]
-    assert Keyword.delete_first(create_empty_keywords, :other_key) == []
-  end
-
-  test "put/3" do
-    assert Keyword.put(create_empty_keywords, :first_key, 1) == [first_key: 1]
-    assert Keyword.put(create_keywords, :first_key, 1) == [first_key: 1, second_key: 2]
-  end
-
-  test "merge/2" do
-    assert Keyword.merge(create_empty_keywords, create_keywords) == create_keywords
-    assert Keyword.merge(create_keywords, create_empty_keywords) == create_keywords
-    assert Keyword.merge(create_keywords, create_keywords) == create_keywords
-    assert Keyword.merge(create_empty_keywords, create_empty_keywords) == []
-    assert Keyword.merge(create_keywords, [first_key: 0]) == [first_key: 0, second_key: 2]
-    assert Keyword.merge(create_keywords, [first_key: 0, first_key: 3]) == [first_key: 0, first_key: 3, second_key: 2]
-  end
-
-  test "merge/3" do
-    result = Keyword.merge [a: 1, b: 2], [a: 3, d: 4], fn _k, v1, v2 ->
-      v1 + v2
+    assert_raise ArgumentError, "expected a keyword list as the second argument, got: [:x | :y]", fn ->
+      Keyword.merge([a: 1, b: 2], [:x | :y], fun)
     end
-    assert Keyword.equal?(result, [a: 4, b: 2, d: 4])
+
+    assert_raise ArgumentError, "expected a keyword list as the second argument, got: [{:x, 1} | :y]", fn ->
+      Keyword.merge([a: 1, b: 2], [{:x, 1} | :y], fun)
+    end
+
+    # duplicate keys in keywords1 are left untouched if key is not present in keywords2
+    assert Keyword.merge([a: 1, b: 2, a: 3], [c: 11, d: 12], fun) == [a: 1, b: 2, a: 3, c: 11, d: 12]
+    assert Keyword.merge([a: 1, b: 2, a: 3], [a: 11], fun) == [b: 2, a: 12]
+
+    # duplicate keys in keywords2 are always kept
+    assert Keyword.merge([a: 1, b: 2], [c: 11, c: 12, d: 13], fun) == [a: 1, b: 2, c: 11, c: 12, d: 13]
+
+    # every key in keywords1 is replaced with fun result if key is present in keyword2
+    assert Keyword.merge([a: 1, b: 2, c: 3, c: 4], [c: 11, c: 50, d: 13], fun) == [a: 1, b: 2, c: 14, c: 54, d: 13]
   end
 
-  test "has_key?/2" do
-    assert Keyword.has_key?([a: 1], :a) == true
-    assert Keyword.has_key?([a: 1], :b) == false
-  end
+  test "merge/2 and merge/3 behave exactly the same way" do
+    fun = fn _key, _value1, value2 -> value2 end
 
-  test "take/2" do
-    assert Keyword.take([], []) == []
-    assert Keyword.take([a: 0, b: 1, a: 2], []) == []
-    assert Keyword.take([a: 0, b: 1, a: 2], [:a]) == [a: 0, a: 2]
-    assert Keyword.take([a: 0, b: 1, a: 2], [:b]) == [b: 1]
+    args = [
+      {[a: 1, b: 2], [c: 11, d: 12]},
+      {[], [c: 11, d: 12]},
+      {[a: 1, b: 2], []},
+      {[a: 1, b: 2, a: 3], [c: 11, d: 12]},
+      {[a: 1, b: 2, a: 3], [a: 11]},
+      {[a: 1, b: 2], [c: 11, c: 12, d: 13]},
+      {[a: 1, b: 2, c: 3, c: 4], [c: 11, c: 12, d: 13]},
+    ]
 
-    assert_raise FunctionClauseError, fn ->
-      Keyword.take([:foo], [:foo])
+    args_error = [
+      {[1, 2], [c: 11, d: 12]},
+      {[1 | 2], [c: 11, d: 12]},
+      {[a: 1, b: 2], [11, 12, 0]},
+      {[a: 1, b: 2], [11 | 12]},
+      {[a: 1, b: 2], [{:x, 1}, :y, :z]},
+      {[a: 1, b: 2], [:x | :y]},
+      {[a: 1, b: 2], [{:x, 1} | :y]},
+    ]
+
+    for {arg1, arg2} <- args do
+      assert Keyword.merge(arg1, arg2) == Keyword.merge(arg1, arg2, fun)
+    end
+
+    for {arg1, arg2} <- args_error do
+      error = assert_raise ArgumentError, fn -> Keyword.merge(arg1, arg2) end
+      assert_raise ArgumentError, error.message, fn -> Keyword.merge(arg1, arg2, fun) end
     end
   end
-
-  test "drop/2" do
-    assert Keyword.drop([], []) == []
-    assert Keyword.drop([a: 0, b: 1, a: 2], []) == [a: 0, b: 1, a: 2]
-    assert Keyword.drop([a: 0, b: 1, a: 2], [:a]) == [b: 1]
-    assert Keyword.drop([a: 0, b: 1, a: 2], [:b]) == [a: 0, a: 2]
-
-    assert_raise FunctionClauseError, fn ->
-      Keyword.drop([:foo], [:foo])
-    end
-  end
-
-  defp create_empty_keywords, do: []
-  defp create_keywords, do: [first_key: 1, first_key: 2, second_key: 2]
 end

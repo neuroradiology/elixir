@@ -1,34 +1,34 @@
 defmodule ExUnit.DocTest do
   @moduledoc """
   ExUnit.DocTest implements functionality similar to [Python's
-  doctest](http://docs.python.org/2/library/doctest.html).
+  doctest](https://docs.python.org/2/library/doctest.html).
 
-  In a nutshell, it allows us to generate tests from the code
-  examples existing in a module/function/macro's documentation.
-  In order to do that, one needs to invoke the `doctest/1` macro
-  from their test case and write their examples according
-  to some guidelines.
+  It allows us to generate tests from the code
+  examples in a module/function/macro's documentation.
+  To do this, invoke the `doctest/1` macro from within
+  your test case and ensure your code examples are written
+  according to the syntax and guidelines below.
 
-  The syntax for examples is as follows. Every new test starts
-  on a new line, with an `iex>` prefix. Multiline expressions
-  can be employed if the following lines start with either
-  `...>` (recommended) or `iex>` prefix.
+  ## Syntax
 
-  The expected result should start at the next line after `iex>`
+  Every new test starts on a new line, with an `iex>` prefix.
+  Multiline expressions can be used by prefixing subsequent lines with either
+  `...>` (recommended) or `iex>`.
+
+  The expected result should start at the next line after the `iex>`
   or `...>` line(s) and is terminated either by a newline, new
-  `iex>` prefix or end of the string literal.
+  `iex>` prefix or the end of the string literal.
 
   ## Examples
 
-  Currently, the only way to run doctests is to include them into
-  an ExUnit case with a `doctest` macro:
+  To run doctests include them in an ExUnit case with a `doctest` macro:
 
-      defmodule MyModule.Test do
+      defmodule MyModuleTest do
         use ExUnit.Case, async: true
         doctest MyModule
       end
 
-  The `doctest` macro is going to loop through all functions and
+  The `doctest` macro loops through all functions and
   macros defined in `MyModule`, parsing their documentation in
   search of code examples.
 
@@ -42,7 +42,7 @@ defmodule ExUnit.DocTest do
       iex> Enum.map [1, 2, 3], fn(x) ->
       ...>   x * 2
       ...> end
-      [2,4,6]
+      [2, 4, 6]
 
   Multiple results can be checked within the same test:
 
@@ -57,35 +57,70 @@ defmodule ExUnit.DocTest do
       iex> a = 1
       1
 
-      iex> a + 1  # will fail with a "function a/0 undefined" error
+      iex> a + 1  # will fail with a "undefined function a/0" error
       2
 
-  Similarly to iex you can use numbers in your "prompts":
+  If you don't want to assert for every result in a doctest, you can omit
+  the result:
 
-      iex(1)> [1+2,
+      iex> pid = spawn fn -> :ok end
+      iex> is_pid(pid)
+      true
+
+  This is useful when the result is something variable (like a PID in the
+  example above) or when the result is a complicated data structure and you
+  don't want to show it all, but just parts of it or some of its properties.
+
+  Similarly to IEx you can use numbers in your "prompts":
+
+      iex(1)> [1 + 2,
       ...(1)>  3]
-      [3,3]
+      [3, 3]
 
-  This is useful in two use cases:
+  This is useful in two cases:
 
     * being able to refer to specific numbered scenarios
-    * copy-pasting examples from an actual iex session
+    * copy-pasting examples from an actual IEx session
 
-  We also allow you to select or skip some functions when calling
-  `doctest`. See the documentation for more info.
+  You can also select or skip functions when calling
+  `doctest`. See the documentation on the `:except` and `:only` options below
+  for more info.
 
   ## Opaque types
 
-  Some types internal structure are kept hidden and instead show a
-  user-friendly structure when inspecting the value. The idiom in
-  Elixir is to print those data types as `#Name<...>`. Doctest will
-  test these values by doing a string compare.
+  Some types' internal structures are kept hidden and instead show a
+  user-friendly structure when inspected. The idiom in
+  Elixir is to print those data types in the format `#Name<...>`. Because those
+  values are treated as comments in Elixir code due to the leading
+  `#` sign, they require special care when being used in doctests.
 
-      iex> Enum.into([a: 10, b: 20], HashDict.new)
-      #HashDict<[b: 20, a: 10]>
+  Imagine you have a map that contains a MapSet and is printed as:
 
-  The above example will be tested with the following match:
-  `"#HashDict<[b: 20, a: 10]>" = inspect(Enum.into([a: 10, b: 20], HashDict.new))`.
+      %{users: #MapSet<[:foo, :bar]>}
+
+  If you try to match on such an expression, `doctest` will fail to compile.
+  There are two ways to resolve this.
+
+  The first is to rely on the fact that doctest can compare internal
+  structures as long as they are at the root. So one could write:
+
+      iex> map = %{users: Enum.into([:foo, :bar], MapSet.new)}
+      iex> map.users
+      #MapSet<[:foo, :bar]>
+
+  Whenever a doctest starts with "#Name<", `doctest` will perform a string
+  comparison. For example, the above test will perform the following match:
+
+      inspect(map.users) == "#MapSet<[:foo, :bar]>"
+
+  Alternatively, since doctest results are actually evaluated, you can have
+  the MapSet building expression as the doctest result:
+
+      iex> %{users: Enum.into([:foo, :bar], MapSet.new)}
+      %{users: Enum.into([:foo, :bar], MapSet.new)}
+
+  The downside of this approach is that the doctest result is not really
+  what users would see in the terminal.
 
   ## Exceptions
 
@@ -114,6 +149,15 @@ defmodule ExUnit.DocTest do
 
   defmodule Error do
     defexception [:message]
+
+    def exception(opts) do
+      module  = Keyword.fetch!(opts, :module)
+      message = Keyword.fetch!(opts, :message)
+
+      file = module.__info__(:compile)[:source] |> Path.relative_to_cwd
+      info = Exception.format_file_line(file, opts[:line])
+      %__MODULE__{message: info <> " " <> message}
+    end
   end
 
   @doc """
@@ -122,22 +166,22 @@ defmodule ExUnit.DocTest do
   Calling `doctest(Module)` will generate tests for all doctests found
   in the module `Module`
 
-  Options can also be supplied:
+  Options can also be given:
 
-    * `:except` — generate tests for all functions except those listed
-      (list of `{function, arity}` tuples).
+    * `:except` - generates tests for all functions except those listed
+      (list of `{function, arity}` tuples, and/or `:moduledoc`).
 
-    * `:only` — generate tests only for functions listed
-      (list of `{function, arity}` tuples).
+    * `:only` - generates tests only for functions listed
+      (list of `{function, arity}` tuples, and/or `:moduledoc`).
 
-    * `:import` — when true, one can test a function defined in the module
+    * `:import` - when `true`, one can test a function defined in the module
       without referring to the module name. However, this is not feasible when
-      there is a clash with a module like Kernel. In these cases, `import`
+      there is a clash with a module like Kernel. In these cases, `:import`
       should be set to `false` and a full `M.f` construct should be used.
 
   ## Examples
 
-      doctest MyModule, except: [trick_fun: 1]
+      doctest MyModule, except: [:moduledoc, trick_fun: 1]
 
   This macro is auto-imported with every `ExUnit.Case`.
   """
@@ -149,8 +193,8 @@ defmodule ExUnit.DocTest do
         end
       end
 
-    tests = quote bind_quoted: binding do
-      file = "(for doctest at) " <> Path.relative_to_cwd(mod.__info__(:compile)[:source])
+    tests = quote bind_quoted: [mod: mod, opts: opts] do
+      file = ExUnit.DocTest.__file__(mod)
       for {name, test} <- ExUnit.DocTest.__doctests__(mod, opts) do
         @tag :doctest
         @file file
@@ -159,6 +203,13 @@ defmodule ExUnit.DocTest do
     end
 
     [require, tests]
+  end
+
+  @doc false
+  def __file__(module) do
+    source = module.__info__(:compile)[:source] ||
+             raise "#{inspect module} does not have compile-time source information"
+    "(for doctest at) " <> Path.relative_to_cwd(source)
   end
 
   @doc false
@@ -176,11 +227,9 @@ defmodule ExUnit.DocTest do
   defp filter_by_opts(tests, opts) do
     only   = opts[:only] || []
     except = opts[:except] || []
-
-    Stream.filter(tests, fn(test) ->
-      fa = test.fun_arity
-      Enum.all?(except, &(&1 != fa)) and Enum.all?(only, &(&1 == fa))
-    end)
+    tests
+    |> Stream.reject(&(&1.fun_arity in except))
+    |> Stream.filter(&(Enum.empty?(only) or &1.fun_arity in only))
   end
 
   ## Compilation of extracted tests
@@ -189,7 +238,7 @@ defmodule ExUnit.DocTest do
     {test_name(test, module, n), test_content(test, module, do_import)}
   end
 
-  defp test_name(%{fun_arity: nil}, m, n) do
+  defp test_name(%{fun_arity: :moduledoc}, m, n) do
     "moduledoc at #{inspect m} (#{n})"
   end
 
@@ -197,19 +246,18 @@ defmodule ExUnit.DocTest do
     "doc at #{inspect m}.#{f}/#{a} (#{n})"
   end
 
-  defp test_content(%{exprs: exprs, line: line, fun_arity: fun_arity}, module, do_import) do
-    file     = module.__info__(:compile)[:source] |> List.to_string
-    location = [line: line, file: Path.relative_to_cwd(file)]
+  defp test_content(%{exprs: exprs, line: line}, module, do_import) do
+    file     = module.__info__(:compile)[:source] |> Path.relative_to_cwd
+    location = [line: line, file: file]
     stack    = Macro.escape [{module, :__MODULE__, 0, location}]
 
     if multiple_exceptions?(exprs) do
-      {fun, arity} = fun_arity
-      raise Error, message: "multiple exceptions in one doctest case are not supported. "
-                            "Invalid doctest for #{inspect module}.#{fun}/#{arity}"
+      raise Error, line: line, module: module,
+                   message: "multiple exceptions in one doctest case are not supported"
     end
 
     tests = Enum.map exprs, fn {expr, expected} ->
-      test_case_content(expr, expected, module, line, file, stack)
+      test_case_content(expr, expected, location, stack)
     end
 
     quote do
@@ -240,17 +288,18 @@ defmodule ExUnit.DocTest do
           reraise e, stack
 
         error ->
+          original_stack = System.stacktrace
           reraise ExUnit.AssertionError,
-            [message: "Doctest failed: got #{inspect(error.__struct__)} with message #{Exception.message(error)}",
-             expr: unquote(whole_expr)],
-            stack
+            [message: "Doctest failed: got #{inspect(error.__struct__)} with message " <> inspect(Exception.message(error)),
+             expr: unquote(String.trim(whole_expr))],
+            original_stack
       end
     end
   end
 
-  defp test_case_content(expr, {:test, expected}, module, line, file, stack) do
-    expr_ast     = string_to_quoted(module, line, file, expr)
-    expected_ast = string_to_quoted(module, line, file, expected)
+  defp test_case_content(expr, {:test, expected}, location, stack) do
+    expr_ast     = string_to_quoted(location, stack, expr)
+    expected_ast = string_to_quoted(location, stack, expected)
 
     quote do
       expected = unquote(expected_ast)
@@ -259,16 +308,19 @@ defmodule ExUnit.DocTest do
         actual ->
           reraise ExUnit.AssertionError,
             [message: "Doctest failed",
-             expr: "#{unquote(String.strip(expr))} === #{unquote(String.strip(expected))}",
+             expr: "#{unquote(String.trim(expr))} === #{unquote(String.trim(expected))}",
              left: actual],
             unquote(stack)
       end
     end
   end
 
-  defp test_case_content(expr, {:inspect, expected}, module, line, file, stack) do
-    expr_ast     = quote do: inspect(unquote(string_to_quoted(module, line, file, expr)))
-    expected_ast = string_to_quoted(module, line, file, expected)
+  defp test_case_content(expr, {:inspect, expected}, location, stack) do
+    expr_ast =
+      quote do
+        inspect(unquote(string_to_quoted(location, stack, expr)))
+      end
+    expected_ast = string_to_quoted(location, stack, expected)
 
     quote do
       expected = unquote(expected_ast)
@@ -277,37 +329,47 @@ defmodule ExUnit.DocTest do
         actual ->
           reraise ExUnit.AssertionError,
             [message: "Doctest failed",
-             expr: "inspect(#{unquote(String.strip(expr))}) === #{unquote(String.strip(expected))}",
+             expr: "inspect(#{unquote(String.trim(expr))}) === #{unquote(String.trim(expected))}",
              left: actual],
             unquote(stack)
       end
     end
   end
 
-  defp test_case_content(expr, {:error, exception, message}, module, line, file, stack) do
-    expr_ast = string_to_quoted(module, line, file, expr)
+  defp test_case_content(expr, {:error, exception, message}, location, stack) do
+    expr_ast = string_to_quoted(location, stack, expr)
 
     quote do
       stack = unquote(stack)
-      expr  = unquote(String.strip(expr))
-      spec  = inspect(unquote(exception)) <> " with message " <> inspect(unquote(message))
+      expr = unquote(String.trim(expr))
 
       try do
         unquote(expr_ast)
       rescue
         error ->
-          unless error.__struct__ == unquote(exception) and
-                 Exception.message(error) == unquote(message) do
-            got = inspect(error.__struct__) <> " with message " <> inspect(Exception.message(error))
-            reraise ExUnit.AssertionError,
-              [message: "Doctest failed: expected exception #{spec} but got #{got}",
-               expr: expr],
-              stack
+          actual_exception = error.__struct__
+          actual_message = Exception.message(error)
+          message =
+            cond do
+              actual_exception != unquote(exception) ->
+                "Doctest failed: expected exception #{inspect(unquote(exception))} but got #{inspect(actual_exception)} with message #{inspect(actual_message)}"
+              actual_message != unquote(message) ->
+                "Doctest failed: wrong message for #{inspect(actual_exception)}\n" <>
+                  "expected:\n" <>
+                  "  #{inspect(unquote(message))}\n" <>
+                  "actual:\n" <>
+                  "  #{inspect(actual_message)}"
+              true ->
+                nil
+            end
+
+          if message do
+            reraise ExUnit.AssertionError, [message: message, expr: expr], stack
           end
       else
         _ ->
           reraise ExUnit.AssertionError,
-            [message: "Doctest failed: expected exception #{spec} but nothing was raised",
+            [message: "Doctest failed: expected exception #{inspect(unquote(exception))} but nothing was raised",
              expr: expr],
             stack
       end
@@ -319,9 +381,7 @@ defmodule ExUnit.DocTest do
     [quote do: import(unquote(mod))]
   end
 
-  defp string_to_quoted(module, line, file, expr) do
-    location = [line: line, file: Path.relative_to_cwd(file)]
-    stack    = Macro.escape [{module, :__MODULE__, 0, location}]
+  defp string_to_quoted(location, stack, expr) do
     try do
       Code.string_to_quoted!(expr, location)
     rescue
@@ -330,7 +390,7 @@ defmodule ExUnit.DocTest do
         quote do
           reraise ExUnit.AssertionError,
             [message: "Doctest did not compile, got: #{unquote(message)}",
-             expr: unquote(String.strip(expr))],
+             expr: unquote(String.trim(expr))],
             unquote(stack)
         end
     end
@@ -342,93 +402,112 @@ defmodule ExUnit.DocTest do
     all_docs = Code.get_docs(module, :all)
 
     unless all_docs do
-      raise Error, message:
+      raise Error, module: module, message:
         "could not retrieve the documentation for module #{inspect module}. " <>
-        "The module was not compiled with documentation or its beam file cannot be accessed"
+        "The module was not compiled with documentation or its BEAM file cannot be accessed"
     end
 
-    moduledocs = extract_from_moduledoc(all_docs[:moduledoc])
+    moduledocs = extract_from_moduledoc(all_docs[:moduledoc], module)
 
     docs = for doc <- all_docs[:docs],
-               doc <- extract_from_doc(doc),
+               doc <- extract_from_doc(doc, module),
                do: doc
 
     moduledocs ++ docs
   end
 
-  defp extract_from_moduledoc({_, doc}) when doc in [false, nil], do: []
+  defp extract_from_moduledoc({_, doc}, _module) when doc in [false, nil], do: []
 
-  defp extract_from_moduledoc({line, doc}) do
-    extract_tests(line, doc)
-  end
-
-  defp extract_from_doc({_, _, _, _, doc}) when doc in [false, nil], do: []
-
-  defp extract_from_doc({fa, line, _, _, doc}) do
-    for test <- extract_tests(line, doc) do
-      %{test | fun_arity: fa}
+  defp extract_from_moduledoc({line, doc}, module) do
+    for test <- extract_tests(line, doc, module) do
+      normalize_test(test, :moduledoc)
     end
   end
 
-  defp extract_tests(line, doc) do
-    lines = String.split(doc, ~r/\n/, trim: false) |> adjust_indent
-    extract_tests(lines, line, "", "", [], true)
+  defp extract_from_doc({_, _, _, _, doc}, _module) when doc in [false, nil], do: []
+
+  defp extract_from_doc({fa, line, _, _, doc}, module) do
+    for test <- extract_tests(line, doc, module) do
+      normalize_test(test, fa)
+    end
   end
 
-  defp adjust_indent(lines) do
-    adjust_indent(lines, [], 0, :text)
-  end
-
-  defp adjust_indent([], adjusted_lines, _indent, _) do
-    Enum.reverse adjusted_lines
+  defp extract_tests(line_no, doc, module) do
+    all_lines = String.split(doc, "\n", trim: false)
+    lines = adjust_indent(all_lines, line_no + 1, module)
+    extract_tests(lines, "", "", [], true, module)
   end
 
   @iex_prompt ["iex>", "iex("]
   @dot_prompt ["...>", "...("]
 
-  defp adjust_indent([line|rest], adjusted_lines, indent, :text) do
-    case String.starts_with?(String.lstrip(line), @iex_prompt) do
-      true  -> adjust_indent([line|rest], adjusted_lines, get_indent(line, indent), :prompt)
-      false -> adjust_indent(rest, adjusted_lines, indent, :text)
+  defp adjust_indent(lines, line_no, module) do
+    adjust_indent(:text, lines, line_no, [], 0, module)
+  end
+
+  defp adjust_indent(:after_prompt, [], line_no, _adjusted_lines, _indent, module) do
+    raise_incomplete_doctest(line_no, module)
+  end
+
+  defp adjust_indent(_kind, [], _line_no, adjusted_lines, _indent, _module) do
+    Enum.reverse adjusted_lines
+  end
+
+  defp adjust_indent(:text, [line | rest], line_no, adjusted_lines, indent, module) do
+    case String.starts_with?(String.trim_leading(line), @iex_prompt) do
+      true  ->
+        adjust_indent(:prompt, [line | rest], line_no, adjusted_lines, get_indent(line, indent), module)
+      false ->
+        adjust_indent(:text, rest, line_no + 1, adjusted_lines, indent, module)
     end
   end
 
-  defp adjust_indent([line|rest], adjusted_lines, indent, check) when check in [:prompt, :after_prompt] do
+  defp adjust_indent(kind, [line | rest], line_no, adjusted_lines, indent, module)
+       when kind in [:prompt, :after_prompt] do
     stripped_line = strip_indent(line, indent)
 
-    case String.lstrip(line) do
+    case String.trim_leading(line) do
       "" ->
-        raise Error, message: "expected non-blank line to follow iex> prompt"
+        raise_incomplete_doctest(line_no, module)
       ^stripped_line ->
         :ok
       _ ->
-        raise Error, message: "indentation level mismatch: #{inspect line}, should have been #{indent} spaces"
+        n_spaces = if indent == 1,
+          do: "#{indent} space",
+          else: "#{indent} spaces"
+
+        raise Error, line: line_no, module: module,
+                     message: "indentation level mismatch: #{inspect line}, should have been #{n_spaces}"
     end
 
-    if String.starts_with?(stripped_line, @iex_prompt ++ @dot_prompt) do
-      adjust_indent(rest, [stripped_line|adjusted_lines], indent, :after_prompt)
-    else
-      next = if check == :prompt, do: :after_prompt, else: :code
-      adjust_indent(rest, [stripped_line|adjusted_lines], indent, next)
-    end
+    adjusted_lines = [{stripped_line, line_no} | adjusted_lines]
+
+    next =
+      cond do
+        kind == :prompt -> :after_prompt
+        String.starts_with?(stripped_line, @iex_prompt ++ @dot_prompt) -> :after_prompt
+        true -> :code
+      end
+
+    adjust_indent(next, rest, line_no + 1, adjusted_lines, indent, module)
   end
 
-  defp adjust_indent([line|rest], adjusted_lines, indent, :code) do
+  defp adjust_indent(:code, [line | rest], line_no, adjusted_lines, indent, module) do
     stripped_line = strip_indent(line, indent)
     cond do
       stripped_line == "" ->
-        adjust_indent(rest, [stripped_line|adjusted_lines], 0, :text)
-      String.starts_with?(String.lstrip(line), @iex_prompt) ->
-        adjust_indent([line|rest], adjusted_lines, indent, :prompt)
+        adjust_indent(:text, rest, line_no + 1, [{stripped_line, line_no} | adjusted_lines], 0, module)
+      String.starts_with?(String.trim_leading(line), @iex_prompt) ->
+        adjust_indent(:prompt, [line | rest], line_no, adjusted_lines, indent, module)
       true ->
-        adjust_indent(rest, [stripped_line|adjusted_lines], indent, :code)
+        adjust_indent(:code, rest, line_no + 1, [{stripped_line, line_no} | adjusted_lines], indent, module)
     end
   end
 
   defp get_indent(line, current_indent) do
-    case Regex.run ~r/iex/, line, return: :index do
-      [{pos, _len}] -> pos
-      nil -> current_indent
+    case :binary.match line, "iex" do
+      {pos, _len} -> pos
+      :nomatch -> current_indent
     end
   end
 
@@ -441,105 +520,150 @@ defmodule ExUnit.DocTest do
     end
   end
 
-  defp extract_tests([], _line, "", "", [], _) do
+  @fences ["```", "~~~"]
+
+  defp extract_tests(lines, expr_acc, expected_acc, acc, new_test, module)
+  defp extract_tests([], "", "", [], _, _) do
     []
   end
 
-  defp extract_tests([], _line, "", "", acc, _) do
-    Enum.reverse(reverse_last_test(acc))
+  defp extract_tests([], "", "", acc, _, _) do
+    Enum.reverse(acc)
   end
 
   # End of input and we've still got a test pending.
-  defp extract_tests([], _, expr_acc, expected_acc, [test=%{exprs: exprs}|t], _) do
-    test = %{test | exprs: [{expr_acc, {:test, expected_acc}} | exprs]}
-    Enum.reverse(reverse_last_test([test|t]))
+  defp extract_tests([], expr_acc, expected_acc, [test | rest], _, _) do
+    test = add_expr(test, expr_acc, expected_acc)
+    Enum.reverse([test | rest])
   end
 
   # We've encountered the next test on an adjacent line. Put them into one group.
-  defp extract_tests([<< "iex>", _ :: binary>>|_] = list, line, expr_acc, expected_acc, [test=%{exprs: exprs}|t], newtest) when expr_acc != "" and expected_acc != "" do
-    test = %{test | exprs: [{expr_acc, {:test, expected_acc}} | exprs]}
-    extract_tests(list, line, "", "", [test|t], newtest)
+  defp extract_tests([{"iex>" <> _, _} | _] = list, expr_acc, expected_acc, [test | rest], new_test, module)
+       when expr_acc != "" and expected_acc != "" do
+    test = add_expr(test, expr_acc, expected_acc)
+    extract_tests(list, "", "", [test | rest], new_test, module)
   end
 
   # Store expr_acc and start a new test case.
-  defp extract_tests([<< "iex>", string :: binary>>|lines], line, "", expected_acc, acc, true) do
-    acc = reverse_last_test(acc)
-    test = %{line: line, fun_arity: nil, exprs: []}
-    extract_tests(lines, line, string, expected_acc, [test|acc], false)
+  defp extract_tests([{"iex>" <> string, line_no} | lines], "", expected_acc, acc, true, module) do
+    test = %{line: line_no, fun_arity: nil, exprs: []}
+    extract_tests(lines, string, expected_acc, [test | acc], false, module)
   end
 
   # Store expr_acc.
-  defp extract_tests([<< "iex>", string :: binary>>|lines], line, "", expected_acc, acc, false) do
-    extract_tests(lines, line, string, expected_acc, acc, false)
+  defp extract_tests([{"iex>" <> string, _} | lines], "", expected_acc, acc, false, module) do
+    extract_tests(lines, string, expected_acc, acc, false, module)
   end
 
   # Still gathering expr_acc. Synonym for the next clause.
-  defp extract_tests([<< "iex>", string :: binary>>|lines], line, expr_acc, expected_acc, acc, newtest) do
-    extract_tests(lines, line, expr_acc <> "\n" <> string, expected_acc, acc, newtest)
+  defp extract_tests([{"iex>" <> string, _} | lines], expr_acc, expected_acc, acc, new_test, module) do
+    extract_tests(lines, expr_acc <> "\n" <> string, expected_acc, acc, new_test, module)
   end
 
   # Still gathering expr_acc. Synonym for the previous clause.
-  defp extract_tests([<< "...>", string :: binary>>|lines], line, expr_acc, expected_acc, acc, newtest) when expr_acc != "" do
-    extract_tests(lines, line, expr_acc <> "\n" <> string, expected_acc, acc, newtest)
+  defp extract_tests([{"...>" <> string, _} | lines], expr_acc, expected_acc, acc, new_test, module)
+       when expr_acc != "" do
+    extract_tests(lines, expr_acc <> "\n" <> string, expected_acc, acc, new_test, module)
   end
 
   # Expression numbers are simply skipped.
-  defp extract_tests([<< "iex(", _ :: 8, string :: binary>>|lines], line, expr_acc, expected_acc, acc, newtest) do
-    extract_tests(["iex" <> skip_iex_number(string)|lines], line, expr_acc, expected_acc, acc, newtest)
+  defp extract_tests([{<<"iex(", _>> <> string = line, line_no} | lines],
+                     expr_acc, expected_acc, acc, new_test, module) do
+    extract_tests([{"iex" <> skip_iex_number(string, module, line_no, line), line_no} | lines],
+                     expr_acc, expected_acc, acc, new_test, module)
   end
 
   # Expression numbers are simply skipped redux.
-  defp extract_tests([<< "...(", _ :: 8, string :: binary>>|lines], line, expr_acc, expected_acc, acc, newtest) do
-    extract_tests(["..." <> skip_iex_number(string)|lines], line, expr_acc, expected_acc, acc, newtest)
+  defp extract_tests([{<<"...(", _>> <> string, line_no} = line | lines],
+                     expr_acc, expected_acc, acc, new_test, module) do
+    extract_tests([{"..." <> skip_iex_number(string, module, line_no, line), line_no} | lines],
+                  expr_acc, expected_acc, acc, new_test, module)
   end
 
   # Skip empty or documentation line.
-  defp extract_tests([_|lines], line, "", "", acc, _) do
-    extract_tests(lines, line, "", "", acc, true)
+  defp extract_tests([_ | lines], "", "", acc, _, module) do
+    extract_tests(lines, "", "", acc, true, module)
+  end
+
+  # Encountered end of fenced code block, store pending test
+  defp extract_tests([{<<fence::3-bytes>> <> _, _} | lines], expr_acc, expected_acc,
+                     [test | rest], _new_test, module)
+       when fence in @fences and expr_acc != "" do
+    test = add_expr(test, expr_acc, expected_acc)
+    extract_tests(lines, "", "", [test | rest], true, module)
   end
 
   # Encountered an empty line, store pending test
-  defp extract_tests([""|lines], line, expr_acc, expected_acc, [test=%{exprs: exprs}|t], _) do
-    test = %{test | exprs: [{expr_acc, {:test, expected_acc}} | exprs]}
-    extract_tests(lines, line,  "", "", [test|t], true)
-  end
-
-  # Exception test.
-  defp extract_tests([<< "** (", string :: binary >>|lines], line, expr_acc, "", [test=%{exprs: exprs}|t], newtest) do
-    test = %{test | exprs: [{expr_acc, extract_error(string, "")} | exprs]}
-    extract_tests(lines, line,  "", "", [test|t], newtest)
+  defp extract_tests([{"", _} | lines], expr_acc, expected_acc, [test | rest], _new_test, module) do
+    test = add_expr(test, expr_acc, expected_acc)
+    extract_tests(lines, "", "", [test | rest], true, module)
   end
 
   # Finally, parse expected_acc.
-  defp extract_tests([expected|lines], line, expr_acc, expected_acc, [test=%{exprs: exprs}|t]=acc, newtest) do
-    if expected =~ ~r/^#[A-Z][\w\.]*<.*>$/ do
-      expected = expected_acc <> "\n" <> inspect(expected)
-      test = %{test | exprs: [{expr_acc, {:inspect, expected}} | exprs]}
-      extract_tests(lines, line,  "", "", [test|t], newtest)
-    else
-      extract_tests(lines, line, expr_acc, expected_acc <> "\n" <> expected, acc, newtest)
-    end
+  defp extract_tests([{expected, _} | lines], expr_acc, "", acc, new_test, module) do
+    extract_tests(lines, expr_acc, expected, acc, new_test, module)
   end
 
-  defp extract_error(<< ")", t :: binary >>, acc) do
-    {:error, Module.concat([acc]), String.strip(t)}
+  defp extract_tests([{expected, _} | lines], expr_acc, expected_acc, acc, new_test, module) do
+    extract_tests(lines, expr_acc, expected_acc <> "\n" <> expected, acc, new_test, module)
   end
 
-  defp extract_error(<< h, t :: binary >>, acc) do
-    extract_error(t, << acc :: binary, h >>)
-  end
-
-  defp skip_iex_number(<< ")", ">", string :: binary >>) do
+  defp skip_iex_number(")>" <> string, _module, _line_no, _line) do
     ">" <> string
   end
 
-  defp skip_iex_number(<< _ :: 8, string :: binary >>) do
-    skip_iex_number(string)
+  defp skip_iex_number("", module, line_no, line) do
+    message =
+      "unknown IEx prompt: #{inspect line}.\nAccepted formats are: iex>, iex(1)>, ...>, ...(1)>}"
+    raise Error, line: line_no, module: module, message: message
   end
 
-  defp reverse_last_test([]), do: []
-  defp reverse_last_test([test=%{exprs: exprs} | t]) do
-    test = %{test | exprs: Enum.reverse(exprs)}
-    [test | t]
+  defp skip_iex_number(<<_>> <> string, module, line_no, line) do
+    skip_iex_number(string, module, line_no, line)
+  end
+
+  defp normalize_test(%{exprs: exprs} = test, fa) do
+    %{test | fun_arity: fa, exprs: Enum.reverse(exprs)}
+  end
+
+  defp add_expr(%{exprs: exprs} = test, expr, expected) do
+    %{test | exprs: [{expr, tag_expected(expected)} | exprs]}
+  end
+
+  defp tag_expected(string) do
+    case string do
+      "** (" <> error ->
+        [mod, message] = :binary.split(error, ")")
+        {:error, Module.concat([mod]), String.trim_leading(message)}
+      _ ->
+        if inspectable?(string) do
+          {:inspect, inspect(string)}
+        else
+          {:test, string}
+        end
+    end
+  end
+
+  defp inspectable?(<<?#, char, rest::binary>>) when char in ?A..?Z,
+    do: inspectable_end?(rest)
+  defp inspectable?(_),
+    do: false
+
+  defp inspectable_end?(<<?., char, rest::binary>>) when char in ?A..?Z,
+    do: inspectable_end?(rest)
+  defp inspectable_end?(<<char, rest::binary>>)
+       when char in ?A..?Z
+       when char in ?a..?z
+       when char in ?0..?9
+       when char == ?_,
+    do: inspectable_end?(rest)
+  defp inspectable_end?(<<?<, _::binary>>),
+    do: true
+  defp inspectable_end?(_),
+    do: false
+
+  defp raise_incomplete_doctest(line_no, module) do
+    raise Error, line: line_no, module: module,
+                 message: "expected non-blank line to follow iex> prompt"
   end
 end

@@ -1,8 +1,13 @@
 Mix.start()
 Mix.shell(Mix.Shell.Process)
 Application.put_env(:mix, :colors, [enabled: false])
-
 ExUnit.start [trace: "--trace" in System.argv]
+
+
+unless {1, 7, 4} <= Mix.SCM.Git.git_version do
+  IO.puts :stderr, "Skipping tests with git sparse checkouts..."
+  ExUnit.configure(exclude: :git_sparse)
+end
 
 defmodule MixTest.Case do
   use ExUnit.CaseTemplate
@@ -21,7 +26,11 @@ defmodule MixTest.Case do
     end
   end
 
-  setup do
+  setup config do
+    if apps = config[:apps] do
+      Logger.remove_backend(:console)
+    end
+
     on_exit fn ->
       Application.start(:logger)
       Mix.env(:dev)
@@ -29,15 +38,18 @@ defmodule MixTest.Case do
       Mix.Shell.Process.flush
       Mix.ProjectStack.clear_cache
       Mix.ProjectStack.clear_stack
-      System.put_env("MIX_HOME", tmp_path(".mix"))
-      delete_tmp_paths
+      delete_tmp_paths()
+
+      if apps do
+        for app <- apps do
+          Application.stop(app)
+          Application.unload(app)
+        end
+        Logger.add_backend(:console, flush: true)
+      end
     end
 
     :ok
-  end
-
-  def elixir_root do
-    Path.expand("../../..", __DIR__)
   end
 
   def fixture_path do
@@ -45,7 +57,7 @@ defmodule MixTest.Case do
   end
 
   def fixture_path(extension) do
-    Path.join fixture_path, extension
+    Path.join fixture_path(), extension
   end
 
   def tmp_path do
@@ -53,13 +65,13 @@ defmodule MixTest.Case do
   end
 
   def tmp_path(extension) do
-    Path.join tmp_path, extension
+    Path.join tmp_path(), to_string(extension)
   end
 
   def purge(modules) do
     Enum.each modules, fn(m) ->
-      :code.delete(m)
       :code.purge(m)
+      :code.delete(m)
     end
   end
 
@@ -82,8 +94,8 @@ defmodule MixTest.Case do
 
   def in_fixture(which, tmp, function) do
     src  = fixture_path(which)
-    dest = tmp_path(tmp)
-    flag = String.to_char_list(tmp_path)
+    dest = tmp_path(String.replace(tmp, ":", "_"))
+    flag = String.to_charlist(tmp_path())
 
     File.rm_rf!(dest)
     File.mkdir_p!(dest)
@@ -123,22 +135,62 @@ defmodule MixTest.Case do
     end
   end
 
+  def mix(args, envs \\ []) when is_list(args) do
+    System.cmd(elixir_executable(),
+               ["-r", mix_executable(), "--" | args],
+               stderr_to_stdout: true,
+               env: envs) |> elem(0)
+  end
+
+  def mix_port(args, envs \\ []) when is_list(args) do
+    Port.open({:spawn_executable, elixir_executable()}, [
+      {:args, ["-r", mix_executable(), "--" | args]},
+      {:env, envs},
+      :binary,
+      :use_stdio,
+      :stderr_to_stdout
+    ])
+  end
+
+  defp mix_executable do
+    Path.expand("../../../bin/mix", __DIR__)
+  end
+
+  defp elixir_executable do
+    Path.expand("../../../bin/elixir", __DIR__)
+  end
+
   defp delete_tmp_paths do
-    tmp = tmp_path |> String.to_char_list
+    tmp = tmp_path() |> String.to_charlist
     for path <- :code.get_path,
         :string.str(path, tmp) != 0,
         do: :code.del_path(path)
   end
 end
 
+## Set up Mix home with Rebar
+
+home = MixTest.Case.tmp_path(".mix")
+File.mkdir_p!(home)
+System.put_env("MIX_HOME", home)
+
+rebar = System.get_env("REBAR") || Path.expand("../../../rebar", __DIR__)
+File.cp!(rebar, Path.join(home, "rebar"))
+rebar = System.get_env("REBAR3") || Path.expand("../../../rebar3", __DIR__)
+File.cp!(rebar, Path.join(home, "rebar3"))
+
 ## Copy fixtures to tmp
 
-source = MixTest.Case.fixture_path("rebar_dep")
-dest = MixTest.Case.tmp_path("rebar_dep")
-File.mkdir_p!(dest)
-File.cp_r!(source, dest)
+fixtures = ~w(rebar_dep rebar_override)
 
-## Generate git repo fixtures
+Enum.each(fixtures, fn fixture ->
+  source = MixTest.Case.fixture_path(fixture)
+  dest = MixTest.Case.tmp_path(fixture)
+  File.mkdir_p!(dest)
+  File.cp_r!(source, dest)
+end)
+
+## Generate Git repo fixtures
 
 # Git repo
 target = Path.expand("fixtures/git_repo", __DIR__)
@@ -161,7 +213,7 @@ unless File.dir?(target) do
 
   File.write! Path.join(target, "mix.exs"), """
   ## Auto-generated fixture
-  defmodule GitRepo.Mix do
+  defmodule GitRepo.Mixfile do
     use Mix.Project
 
     def project do
@@ -173,6 +225,7 @@ unless File.dir?(target) do
   File.cd! target, fn ->
     System.cmd("git", ~w[add .])
     System.cmd("git", ~w[commit -m "ok"])
+    System.cmd("git", ~w[tag without_module])
   end
 
   File.write! Path.join(target, "lib/git_repo.ex"), """
@@ -184,13 +237,38 @@ unless File.dir?(target) do
   end
   """
 
+  ## Sparse
+  subdir = Path.join(target, "sparse_dir")
+  File.mkdir_p!(Path.join(subdir, "lib"))
+
+  File.write! Path.join(subdir, "mix.exs"), """
+  ## Auto-generated fixture
+  defmodule GitSparseRepo.Mixfile do
+    use Mix.Project
+
+    def project do
+      [app: :git_sparse_repo, version: "0.1.0"]
+    end
+  end
+  """
+
+  File.write! Path.join(subdir, "lib/git_sparse_repo.ex"), """
+  ## Auto-generated fixture
+  defmodule GitSparseRepo do
+    def hello do
+      "World"
+    end
+  end
+  """
+
   File.cd! target, fn ->
     System.cmd("git", ~w[add .])
     System.cmd("git", ~w[commit -m "lib"])
+    System.cmd("git", ~w[tag with_module])
   end
 end
 
-# Deps on git repo
+# Deps on Git repo
 target = Path.expand("fixtures/deps_on_git_repo", __DIR__)
 
 unless File.dir?(target) do
@@ -198,13 +276,13 @@ unless File.dir?(target) do
 
   File.write! Path.join(target, "mix.exs"), """
   ## Auto-generated fixture
-  defmodule DepsOnGitRepo.Mix do
+  defmodule DepsOnGitRepo.Mixfile do
     use Mix.Project
 
     def project do
-      [ app: :deps_on_git_repo,
-        version: "0.2.0",
-        deps: [{:git_repo, git: MixTest.Case.fixture_path("git_repo")}] ]
+      [app: :deps_on_git_repo,
+       version: "0.2.0",
+       deps: [{:git_repo, git: MixTest.Case.fixture_path("git_repo")}]]
     end
   end
   """
@@ -223,7 +301,7 @@ unless File.dir?(target) do
   end
 end
 
-# Git rebar
+# Git Rebar
 target = Path.expand("fixtures/git_rebar", __DIR__)
 
 unless File.dir?(target) do
@@ -254,7 +332,7 @@ unless File.dir?(target) do
   end
 end
 
-Enum.each [:invalidapp, :invalidvsn, :noappfile, :ok], fn(dep) ->
+Enum.each [:invalidapp, :invalidvsn, :noappfile, :nosemver, :ok], fn(dep) ->
   File.mkdir_p! Path.expand("fixtures/deps_status/deps/#{dep}/.git", __DIR__)
 end
 
@@ -263,7 +341,6 @@ end
 path = MixTest.Case.tmp_path("beams")
 File.rm_rf!(path)
 File.mkdir_p!(path)
-Code.prepend_path(path)
 
 write_beam = fn {:module, name, bin, _} ->
   path
@@ -283,10 +360,19 @@ defmodule Mix.Tasks.Hello do
     "Hello, World!"
   end
 
+  def run(["--parser" | args]) do
+    OptionParser.parse!(args, strict: [int: :integer])
+  end
+
   def run(args) do
     "Hello, #{Enum.join(args, " ")}!"
   end
 end |> write_beam.()
 
 defmodule Mix.Tasks.Invalid do
+end |> write_beam.()
+
+defmodule Mix.Tasks.Acronym.HTTP do
+  use Mix.Task
+  def run(_), do: "An HTTP Task"
 end |> write_beam.()

@@ -12,13 +12,13 @@ defmodule ExUnit.CaptureIOTest do
       case Enum.split_while(chars, fn(c) -> c != stop_char end) do
         {l, []} ->
           {:more, this_far ++ l}
-        {l, [stop_char|rest]} ->
+        {l, [stop_char | rest]} ->
           {:done, this_far ++ l ++ [stop_char], rest}
       end
     end
 
     def get_line(device \\ Process.group_leader) do
-      send device, {:io_request, self, device, {:get_until, :unicode, "", __MODULE__, :until_new_line, [?\n]}}
+      send device, {:io_request, self(), device, {:get_until, :unicode, "", __MODULE__, :until_new_line, [?\n]}}
       receive do
         {:io_reply, _, data} -> data
       end
@@ -28,9 +28,27 @@ defmodule ExUnit.CaptureIOTest do
   import ExUnit.CaptureIO
   doctest ExUnit.CaptureIO, import: true
 
+  test "no leakage on failures" do
+    group_leader = Process.group_leader()
+
+    test = self()
+    assert_raise ArgumentError, fn ->
+      capture_io(fn ->
+        send(test, {:string_io, Process.group_leader()})
+        raise ArgumentError
+      end)
+    end
+
+    receive do
+      {:string_io, pid} ->
+        ref = Process.monitor(pid)
+        assert_receive {:DOWN, ^ref, _, _, _}
+    end
+    assert Process.group_leader() == group_leader
+  end
+
   test "with no output" do
-    assert capture_io(fn ->
-    end) == ""
+    assert capture_io(fn -> nil end) == ""
   end
 
   test "with put chars" do
@@ -49,7 +67,7 @@ defmodule ExUnit.CaptureIOTest do
 
     assert capture_io(fn ->
       spawn(fn -> :io.put_chars("a") end)
-      :timer.sleep(10)
+      Process.sleep(10)
     end) == "a"
 
     assert capture_io(fn ->
@@ -224,7 +242,7 @@ defmodule ExUnit.CaptureIOTest do
 
     capture_io(":erl. mof*,,l", fn ->
       assert :io.scan_erl_form('>') == {:ok, [{:":", 1}, {:atom, 1, :erl}, {:dot, 1}], 1}
-      assert :io.scan_erl_form('>') == {:ok, [{:atom, 1, :mof}, {:*, 1}, {:"," , 1}, {:",", 1}, {:atom, 1, :l}], 1}
+      assert :io.scan_erl_form('>') == {:ok, [{:atom, 1, :mof}, {:*, 1}, {:",", 1}, {:",", 1}, {:atom, 1, :l}], 1}
       assert :io.scan_erl_form('>') == {:eof, 1}
     end)
 
@@ -267,7 +285,7 @@ defmodule ExUnit.CaptureIOTest do
     end)
   end
 
-  test "with multiple io requests" do
+  test "with multiple IO requests" do
     assert capture_io(fn ->
       send_and_receive_io({:requests, [{:put_chars, :unicode, "a"},
                                         {:put_chars, :unicode, "b"}]})
@@ -279,7 +297,7 @@ defmodule ExUnit.CaptureIOTest do
     end)
   end
 
-  test "with unknown io request" do
+  test "with unknown IO request" do
     assert capture_io(fn ->
       send_and_receive_io(:unknown)
     end) == ""
@@ -289,36 +307,47 @@ defmodule ExUnit.CaptureIOTest do
     end)
   end
 
-  test "with assert inside" do
-    group_leader = :erlang.group_leader
+  test "device re-registering" do
+    {_pid, ref} = spawn_monitor(fn ->
+      capture_io(:stderr, fn ->
+        spawn_link(Kernel, :exit, [:shutdown])
+        Process.sleep(:infinity)
+      end)
+    end)
 
+    # Assert the process is down then invoke capture_io
+    # to trigger the ExUnit.Server, ensuring the DOWN
+    # message from previous capture_io has been processed
+    assert_receive {:DOWN, ^ref, _, _, :shutdown}
+    _ = capture_io(fn -> "trigger" end)
+    assert capture_io(:stderr, fn -> nil end)
+  end
+
+  test "with assert inside" do
     try do
       capture_io(fn ->
         assert false
       end)
     rescue
       error in [ExUnit.AssertionError] ->
-        "Expected truthy, got false" = error.message
+        assert error.message == "Expected truthy, got false"
     end
-
-    # Ensure no leakage on failures
-    assert group_leader == :erlang.group_leader
   end
 
   test "capture :stderr by two processes" do
-    spawn(fn -> capture_io(:stderr, fn -> :timer.sleep(100) end) end)
-    :timer.sleep(10)
+    spawn(fn -> capture_io(:stderr, fn -> Process.sleep(100) end) end)
+    Process.sleep(10)
     assert_raise RuntimeError, "IO device registered at :standard_error is already captured", fn ->
-      capture_io(:stderr, fn -> end)
+      capture_io(:stderr, fn -> nil end)
     end
-    :timer.sleep(100)
+    Process.sleep(100)
   end
 
   defp send_and_receive_io(req) do
-    send :erlang.group_leader, {:io_request, self, self, req}
-    s = self
+    pid = self()
+    send :erlang.group_leader, {:io_request, pid, pid, req}
     receive do
-      {:io_reply, ^s, res} -> res
+      {:io_reply, ^pid, res} -> res
     end
   end
 end

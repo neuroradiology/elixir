@@ -1,6 +1,7 @@
 -module(c).
--compile(export_all).
+-export([c/0]).
 
 -include("r.hrl").
+-behaviour(b).
 
 c() -> #r{cell=specified}.

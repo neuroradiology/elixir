@@ -3,14 +3,35 @@ Code.require_file "../test_helper.exs", __DIR__
 defmodule Kernel.ImportTest do
   use ExUnit.Case, async: true
 
+  # This should not warn due to the empty only
+  import URI, only: []
+
   defmodule ImportAvailable do
     defmacro flatten do
       [flatten: 1]
     end
   end
 
+  test "multi-call" do
+    assert [List, String] = import Elixir.{List, unquote(:String)}
+    assert keymember?([a: 1], :a, 0)
+    assert valid?("ø")
+  end
+
+  test "blank multi-call" do
+    assert [] = import List.{}
+    # Buggy local duplicate is untouched
+    assert duplicate([1], 2) == [1]
+  end
+
+  test "multi-call with options" do
+    assert [List] = import Elixir.{List}, only: []
+    # Buggy local duplicate is untouched
+    assert duplicate([1], 2) == [1]
+  end
+
   test "import all" do
-    import :lists
+    assert :lists = import :lists
     assert flatten([1, [2], 3]) == [1, 2, 3]
   end
 
@@ -20,8 +41,10 @@ defmodule Kernel.ImportTest do
   end
 
   test "import except one" do
-    import :lists, except: [each: 2]
+    import :lists, except: [duplicate: 2]
     assert flatten([1, [2], 3]) == [1, 2, 3]
+    # Buggy local duplicate is untouched
+    assert duplicate([1], 2) == [1]
   end
 
   test "import only via macro" do
@@ -35,13 +58,29 @@ defmodule Kernel.ImportTest do
   end
 
   test "import with options via macro" do
-    import :lists, dynamic_opts
+    import :lists, dynamic_opts()
     assert flatten([1, [2], 3]) == [1, 2, 3]
   end
 
   test "import with double except" do
     import :lists, except: [duplicate: 2]
     import :lists, except: [each: 2]
+    assert append([1], [2, 3]) == [1, 2, 3]
+    # Buggy local duplicate is untouched
+    assert duplicate([1], 2) == [1]
+  end
+
+  test "import except none respects previous import with except" do
+    import :lists, except: [duplicate: 2]
+    import :lists, except: []
+    assert append([1], [2, 3]) == [1, 2, 3]
+    # Buggy local duplicate is untouched
+    assert duplicate([1], 2) == [1]
+  end
+
+  test "import except none respects previous import with only" do
+    import :lists, only: [append: 2]
+    import :lists, except: []
     assert append([1], [2, 3]) == [1, 2, 3]
     # Buggy local duplicate is untouched
     assert duplicate([1], 2) == [1]
@@ -61,7 +100,7 @@ defmodule Kernel.ImportTest do
     assert __underscore__(3) == 3
   end
 
-  test "import non underscored" do
+  test "import non-underscored" do
     import ExplicitUnderscored, only: [__underscore__: 1]
     import Underscored
     assert hello(2) == 2
@@ -104,11 +143,18 @@ defmodule Kernel.ImportTest do
     assert flatten([1, [2], 3]) == [1, 2, 3]
   end
 
+  test "import only removes the non-import part" do
+    import List
+    import List, only: :macros
+    # Buggy local duplicate is used because we asked only for macros
+    assert duplicate([1], 2) == [1]
+  end
+
   test "import lexical on if" do
     if false do
-      import :lists
+      import List
       flatten([1, [2], 3])
-      flunk
+      flunk()
     else
       # Buggy local duplicate is untouched
       assert duplicate([1], 2) == [1]
@@ -118,9 +164,9 @@ defmodule Kernel.ImportTest do
   test "import lexical on case" do
     case true do
       false ->
-        import :lists
+        import List
         flatten([1, [2], 3])
-        flunk
+        flunk()
       true ->
         # Buggy local duplicate is untouched
         assert duplicate([1], 2) == [1]
@@ -129,9 +175,9 @@ defmodule Kernel.ImportTest do
 
   test "import lexical on try" do
     try do
-      import :lists
+      import List
       flatten([1, [2], 3])
-      flunk
+      flunk()
     catch
       _, _ ->
         # Buggy local duplicate is untouched

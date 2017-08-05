@@ -3,58 +3,147 @@ Code.require_file "../test_helper.exs", __DIR__
 defmodule Kernel.DocsTest do
   use ExUnit.Case
 
-  test "compiled with docs" do
-    deftestmodule(SampleDocs)
-    docs = Code.get_docs(SampleDocs, :all)
+  import PathHelpers
 
-    assert [{{:fun, 2}, _, :def, [{:x, [], nil}, {:y, [], nil}], "This is fun!\n"},
-            {{:nofun, 0}, _, :def, [], nil},
-            {{:sneaky, 1}, _, :def, [{:bool1, [], Elixir}], false}] = docs[:docs]
-    assert {_, "Hello, I am a module"} = docs[:moduledoc]
+  test "attributes format" do
+    defmodule DocAttributes do
+      @moduledoc "Module doc"
+      assert @moduledoc == "Module doc"
+      assert Module.get_attribute(__MODULE__, :moduledoc) == {__ENV__.line - 2, "Module doc"}
+
+      @typedoc "Type doc"
+      assert @typedoc == "Type doc"
+      assert Module.get_attribute(__MODULE__, :typedoc) == {__ENV__.line - 2, "Type doc"}
+      @type foobar :: any
+
+      @doc "Function doc"
+      assert @doc == "Function doc"
+      assert Module.get_attribute(__MODULE__, :doc) == {__ENV__.line - 2, "Function doc"}
+      def foobar() do
+        :ok
+      end
+    end
   end
 
   test "compiled without docs" do
     Code.compiler_options(docs: false)
 
-    deftestmodule(SampleNoDocs)
+    write_beam(defmodule WithoutDocs do
+      @moduledoc "Module doc"
 
-    assert Code.get_docs(SampleNoDocs, :docs) == nil
-    assert Code.get_docs(SampleNoDocs, :moduledoc) == nil
+      @doc "Some doc"
+      def foobar(arg), do: arg
+    end)
+
+    assert Code.get_docs(WithoutDocs, :docs) == nil
+    assert Code.get_docs(WithoutDocs, :moduledoc) == nil
+    assert Code.get_docs(WithoutDocs, :type_docs) == nil
+    assert Code.get_docs(WithoutDocs, :callback_docs) == nil
   after
     Code.compiler_options(docs: true)
   end
 
   test "compiled in memory does not have accessible docs" do
-    defmodule NoDocs do
-      @moduledoc "moduledoc"
+    defmodule InMemoryDocs do
+      @moduledoc "Module doc"
 
-      @doc "Some example"
-      def example(var), do: var
+      @doc "Some doc"
+      def foobar(arg), do: arg
     end
 
-    assert Code.get_docs(NoDocs, :docs) == nil
-    assert Code.get_docs(NoDocs, :moduledoc) == nil
+    assert Code.get_docs(InMemoryDocs, :docs) == nil
+    assert Code.get_docs(InMemoryDocs, :moduledoc) == nil
+    assert Code.get_docs(InMemoryDocs, :callback_docs) == nil
   end
 
-  defp deftestmodule(name) do
-    import PathHelpers
+  describe "compiled with docs" do
+    test "infers signatures" do
+      write_beam(defmodule SignatureDocs do
+        def arg_names([], [], %{}, [], %{}), do: false
 
-    write_beam(defmodule name do
-      @moduledoc "Hello, I am a module"
+        @year 2015
+        def with_defaults(@year, arg \\ 0, year \\ @year, fun \\ &>=/2) do
+          {fun, arg + year}
+        end
 
-      @doc """
-      This is fun!
-      """
-      def fun(x, y) do
-        {x, y}
-      end
+        def with_struct(%URI{}), do: :ok
 
-      @doc false
-      def sneaky(true), do: false
+        def with_underscore({_, _} = _two_tuple), do: :ok
+        def with_underscore(_), do: :error
 
-      def nofun() do
-        'not fun at all'
-      end
-    end)
+        def only_underscore(_), do: :ok
+
+        def two_good_names(first, :ok), do: first
+        def two_good_names(second, :error), do: second
+      end)
+
+      assert [{{:arg_names, 5}, _, :def,
+              [{:list1, _, Elixir},
+               {:list2, _, Elixir},
+               {:map1, _, Elixir},
+               {:list3, _, Elixir},
+               {:map2, _, Elixir}], nil},
+             {{:only_underscore, 1}, _, :def,
+              [{:_, _, Elixir}], nil},
+             {{:two_good_names, 2}, _, :def,
+              [{:first, _, nil},
+               {:atom, _, Elixir}], nil},
+             {{:with_defaults, 4}, _, :def,
+              [{:int, _, Elixir},
+               {:\\, _, [{:arg, _, nil}, 0]},
+               {:\\, _, [{:year, _, nil}, 2015]},
+               {:\\, _, [{:fun, _, nil}, {:&, _, [{:/, _, [{:>=, _, nil}, 2]}]}]}], nil},
+             {{:with_struct, 1}, _, :def, [{:uri, _, Elixir}], nil},
+             {{:with_underscore, 1}, _, :def, [{:two_tuple, _, nil}], nil}] = Code.get_docs(SignatureDocs, :docs)
+    end
+
+    test "includes docs for functions, modules, types and callbacks" do
+      write_beam(defmodule SampleDocs do
+        @moduledoc "Module doc"
+
+        @typedoc "Type doc"
+        @type foo(any) :: any
+
+        @typedoc "Opaque type doc"
+        @opaque bar(any) :: any
+
+        @doc "Callback doc"
+        @callback foo(any) :: any
+
+        @doc false
+        @callback bar() :: term
+        @callback baz(any, term) :: any
+
+        @doc "Macrocallback doc"
+        @macrocallback qux(any) :: any
+
+        @doc "Function doc"
+        def foo(arg) do
+          arg + 1
+        end
+
+        @doc false
+        def bar(true), do: false
+      end)
+
+      docs = Code.get_docs(SampleDocs, :all)
+      assert Code.get_docs(SampleDocs, :docs) == docs[:docs]
+      assert Code.get_docs(SampleDocs, :moduledoc) == docs[:moduledoc]
+      assert Code.get_docs(SampleDocs, :type_docs) == docs[:type_docs]
+      assert Code.get_docs(SampleDocs, :callback_docs) == docs[:callback_docs]
+
+      assert [{{:bar, 1}, _, :def, [{:bool, _, Elixir}], false},
+              {{:foo, 1}, _, :def, [{:arg, _, nil}], "Function doc"}] = docs[:docs]
+
+      assert {_, "Module doc"} = docs[:moduledoc]
+
+      assert [{{:bar, 1}, _, :opaque, "Opaque type doc"},
+              {{:foo, 1}, _, :type, "Type doc"}] = docs[:type_docs]
+
+      assert [{{:bar, 0}, _, :callback, false},
+              {{:baz, 2}, _, :callback, nil},
+              {{:foo, 1}, _, :callback, "Callback doc"},
+              {{:qux, 1}, _, :macrocallback, "Macrocallback doc"}] = docs[:callback_docs]
+    end
   end
 end

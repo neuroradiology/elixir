@@ -3,31 +3,35 @@ Code.require_file "../test_helper.exs", __DIR__
 defmodule Kernel.QuoteTest do
   use ExUnit.Case, async: true
 
-  test :list do
+  test "list" do
     assert quote(do: [1, 2, 3]) == [1, 2, 3]
   end
 
-  test :tuple do
+  test "tuple" do
     assert quote(do: {:a, 1}) == {:a, 1}
   end
 
-  test :keep_line do
-    ## DO NOT MOVE THIS LINE
+  test "keep line" do
+    # DO NOT MOVE THIS LINE
     assert quote(location: :keep, do: bar(1, 2, 3)) ==
            {:bar, [file: Path.relative_to_cwd(__ENV__.file), keep: 16], [1, 2, 3]}
   end
 
-  test :fixed_line do
+  test "fixed line" do
     assert quote(line: 3, do: bar(1, 2, 3)) == {:bar, [line: 3], [1, 2, 3]}
   end
 
-  test :quote_line_var do
-    ## DO NOT MOVE THIS LINE
+  test "quote line var" do
+    # DO NOT MOVE THIS LINE
     line = __ENV__.line
     assert quote(line: line, do: bar(1, 2, 3)) == {:bar, [line: 26], [1, 2, 3]}
   end
 
-  test :unquote_call do
+  test "generated" do
+    assert quote(generated: true, do: bar(1)) == {:bar, [generated: true], [1]}
+  end
+
+  test "unquote call" do
     assert quote(do: foo(bar)[unquote(:baz)]) == quote(do: foo(bar)[:baz])
     assert quote(do: unquote(:bar)()) == quote(do: bar())
     assert quote(do: unquote(:bar)(1) do 2 + 3 end) == quote(do: bar(1) do 2 + 3 end)
@@ -35,7 +39,7 @@ defmodule Kernel.QuoteTest do
     assert quote(do: foo.unquote(:bar)(1)) == quote(do: foo.bar(1))
     assert quote(do: foo.unquote(:bar)(1) do 2 + 3 end) == quote(do: foo.bar(1) do 2 + 3 end)
     assert quote(do: foo.unquote({:bar, [], nil})) == quote(do: foo.bar)
-    assert quote(do: foo.unquote({:bar, [], [1,2]})) == quote(do: foo.bar(1,2))
+    assert quote(do: foo.unquote({:bar, [], [1, 2]})) == quote(do: foo.bar(1, 2))
 
     assert Code.eval_quoted(quote(do: Foo.unquote(Bar)))  == {Elixir.Foo.Bar, []}
     assert Code.eval_quoted(quote(do: Foo.unquote(quote do: Bar))) == {Elixir.Foo.Bar, []}
@@ -45,7 +49,7 @@ defmodule Kernel.QuoteTest do
     end
   end
 
-  test :nested_quote do
+  test "nested quote" do
     assert {:quote, _, [[do: {:unquote, _, _}]]} = quote(do: quote(do: unquote(x)))
   end
 
@@ -59,8 +63,8 @@ defmodule Kernel.QuoteTest do
     end
   end
 
-  test :nested_quote_in_macro do
-    assert nested_quote_in_macro == 1
+  test "nested quote in macro" do
+    assert nested_quote_in_macro() == 1
   end
 
   Enum.each [foo: 1, bar: 2, baz: 3], fn {k, v} ->
@@ -69,30 +73,30 @@ defmodule Kernel.QuoteTest do
     end
   end
 
-  test :dynamic_definition_with_unquote do
+  test "dynamic definition with unquote" do
     assert foo(1) == 2
     assert bar(2) == 4
     assert baz(3) == 6
   end
 
-  test :splice_on_root do
+  test "splice on root" do
     contents = [1, 2, 3]
     assert quote(do: (unquote_splicing(contents))) == quote do: (1; 2; 3)
   end
 
-  test :splice_with_tail do
+  test "splice with tail" do
     contents = [1, 2, 3]
-    assert quote(do: [unquote_splicing(contents)|[1, 2, 3]]) ==
+    assert quote(do: [unquote_splicing(contents) | [1, 2, 3]]) ==
            [1, 2, 3, 1, 2, 3]
 
-    assert quote(do: [unquote_splicing(contents)|val]) ==
+    assert quote(do: [unquote_splicing(contents) | val]) ==
            quote(do: [1, 2, 3 | val])
 
-    assert quote(do: [unquote_splicing(contents)|unquote([4])]) ==
+    assert quote(do: [unquote_splicing(contents) | unquote([4])]) ==
            quote(do: [1, 2, 3, 4])
   end
 
-  test :splice_on_stab do
+  test "splice on stab" do
     {fun, []} =
       Code.eval_quoted(quote(do: fn(unquote_splicing([1, 2, 3])) -> :ok end), [])
     assert fun.(1, 2, 3) == :ok
@@ -102,9 +106,9 @@ defmodule Kernel.QuoteTest do
     assert fun.(1, 2, 3) == :ok
   end
 
-  test :splice_on_definition do
+  test "splice on definition" do
     defmodule Hello do
-      def world([unquote_splicing(["foo", "bar"])|rest]) do
+      def world([unquote_splicing(["foo", "bar"]) | rest]) do
         rest
       end
     end
@@ -112,7 +116,7 @@ defmodule Kernel.QuoteTest do
     assert Hello.world(["foo", "bar", "baz"]) == ["baz"]
   end
 
-  test :splice_on_map do
+  test "splice on map" do
     assert %{unquote_splicing([foo: :bar])} == %{foo: :bar}
     assert %{unquote_splicing([foo: :bar]), baz: :bat} == %{foo: :bar, baz: :bat}
     assert %{unquote_splicing([foo: :bar]), :baz => :bat} == %{foo: :bar, baz: :bat}
@@ -122,33 +126,27 @@ defmodule Kernel.QuoteTest do
     assert %{map | unquote_splicing([foo: :bar])} == %{foo: :bar}
   end
 
-  test :when do
-    assert [{:->,_,[[{:when,_,[1,2,3,4]}],5]}] = quote(do: (1, 2, 3 when 4 -> 5))
-    assert [{:->,_,[[{:when,_,[1,2,3,4]}],5]}] = quote(do: ((1, 2, 3) when 4 -> 5))
+  test "when" do
+    assert [{:->, _, [[{:when, _, [1, 2, 3, 4]}], 5]}] = quote(do: (1, 2, 3 when 4 -> 5))
+    assert [{:->, _, [[{:when, _, [1, 2, 3, 4]}], 5]}] = quote(do: ((1, 2, 3) when 4 -> 5))
 
-    assert [{:->,_,[[{:when,_,[1,2,3,{:when,_,[4,5]}]}],6]}] =
+    assert [{:->, _, [[{:when, _, [1, 2, 3, {:when, _, [4, 5]}]}], 6]}] =
              quote(do: ((1, 2, 3) when 4 when 5 -> 6))
   end
 
-  test :stab do
-    assert [{:->, _, [[], nil]}] = (quote do -> end)
-    assert [{:->, _, [[], nil]}] = (quote do: (->))
-
-    assert [{:->, _, [[1], nil]}] = (quote do 1 -> end)
-    assert [{:->, _, [[1], nil]}] = (quote do: (1 ->))
-
+  test "stab" do
     assert [{:->, _, [[], 1]}] = (quote do -> 1 end)
     assert [{:->, _, [[], 1]}] = (quote do: (-> 1))
   end
 
-  test :bind_quoted do
+  test "bind quoted" do
     assert quote(bind_quoted: [foo: 1 + 2], do: foo) == {:__block__, [], [
       {:=, [], [{:foo, [], Kernel.QuoteTest}, 3]},
       {:foo, [], Kernel.QuoteTest}
     ]}
   end
 
-  test :literals do
+  test "literals" do
     assert (quote do: []) == []
     assert (quote do: nil) == nil
     assert (quote do [] end) == []
@@ -159,32 +157,52 @@ defmodule Kernel.QuoteTest do
     [line: 3]
   end
 
-  test :with_dynamic_opts do
-    assert quote(dynamic_opts, do: bar(1, 2, 3)) == {:bar, [line: 3], [1, 2, 3]}
+  test "with dynamic opts" do
+    assert quote(dynamic_opts(), do: bar(1, 2, 3)) == {:bar, [line: 3], [1, 2, 3]}
   end
 
-  test :unary_with_integer_precedence do
-    assert quote(do: +1.foo) == quote(do: (+1).foo)
+  test "unary with integer precedence" do
+    assert quote(do: +1.foo) == quote(do: +(1.foo))
     assert quote(do: @1.foo) == quote(do: (@1).foo)
     assert quote(do: &1.foo) == quote(do: (&1).foo)
   end
 
-  test :operators_slash_arity do
+  test "operators slash arity" do
     assert {:/, _, [{:+, _, _}, 2]} = quote do: +/2
     assert {:/, _, [{:&&, _, _}, 3]} = quote do: &&/3
   end
+
+  test "pipe precedence" do
+    assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
+           quote do: (foo |> bar |> baz)
+
+    assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
+           quote do: (foo do end |> bar |> baz)
+
+    assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
+           quote do: (foo |> bar do end |> baz)
+
+    assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
+           quote do: (foo |> bar |> baz do end)
+
+    assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
+           quote do: (foo do end |> bar |> baz do end)
+
+    assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
+           quote do: (foo do end |> bar do end |> baz do end)
+  end
 end
 
-## DO NOT MOVE THIS LINE
+# DO NOT MOVE THIS LINE
 defmodule Kernel.QuoteTest.Errors do
-  defmacro defadd do
+  defmacro defraise do
     quote location: :keep do
-      def add(a, b), do: a + b
+      def will_raise(_a, _b), do: raise "oops"
     end
   end
 
   defmacro will_raise do
-    quote location: :keep, do: raise "omg"
+    quote location: :keep, do: raise "oops"
   end
 end
 
@@ -193,26 +211,26 @@ defmodule Kernel.QuoteTest.ErrorsTest do
   import Kernel.QuoteTest.Errors
 
   # Defines the add function
-  defadd
+  defraise()
 
-  test :inside_function_error do
-    assert_raise ArithmeticError, fn ->
-      add(:a, :b)
+  test "inside function error" do
+    assert_raise RuntimeError, fn ->
+      will_raise(:a, :b)
     end
 
     mod  = Kernel.QuoteTest.ErrorsTest
-    file = __ENV__.file |> Path.relative_to_cwd |> String.to_char_list
-    assert [{^mod, :add, 2, [file: ^file, line: 182]}|_] = System.stacktrace
+    file = __ENV__.file |> Path.relative_to_cwd |> String.to_charlist
+    assert [{^mod, :will_raise, 2, [file: ^file, line: 200]} | _] = System.stacktrace
   end
 
-  test :outside_function_error do
+  test "outside function error" do
     assert_raise RuntimeError, fn ->
-      will_raise
+      will_raise()
     end
 
     mod  = Kernel.QuoteTest.ErrorsTest
-    file = __ENV__.file |> Path.relative_to_cwd |> String.to_char_list
-    assert [{^mod, _, _, [file: ^file, line: 210]}|_] = System.stacktrace
+    file = __ENV__.file |> Path.relative_to_cwd |> String.to_charlist
+    assert [{^mod, _, _, [file: ^file, line: 228]} | _] = System.stacktrace
   end
 end
 
@@ -262,38 +280,38 @@ defmodule Kernel.QuoteTest.VarHygieneTest do
     end
   end
 
-  test :no_interference do
+  test "no interference" do
     a = 10
-    no_interference
+    no_interference()
     assert a == 10
   end
 
-  test :cross_module_interference do
-    cross_module_no_interference
-    cross_module_interference
-    assert read_cross_module == 1
+  test "cross module interference" do
+    cross_module_no_interference()
+    cross_module_interference()
+    assert read_cross_module() == 1
   end
 
-  test :write_interference do
-    write_interference
+  test "write interference" do
+    write_interference()
     assert a == 1
   end
 
-  test :read_interference do
+  test "read interference" do
     a = 10
-    read_interference
+    read_interference()
   end
 
-  test :nested do
+  test "nested" do
     assert (nested 1 do
       nested 2 do
-        :ok
+        _ = :ok
       end
     end) == 1
   end
 
-  test :hat do
-    assert hat == 1
+  test "hat" do
+    assert hat() == 1
   end
 end
 
@@ -314,7 +332,7 @@ defmodule Kernel.QuoteTest.AliasHygieneTest do
 
   alias Dict, as: SuperDict
 
-  test :annotate_aliases do
+  test "annotate aliases" do
     assert {:__aliases__, [alias: false], [:Foo, :Bar]} =
            quote(do: Foo.Bar)
     assert {:__aliases__, [alias: false], [:Dict, :Bar]} =
@@ -323,23 +341,23 @@ defmodule Kernel.QuoteTest.AliasHygieneTest do
            quote(do: SuperDict.Bar)
   end
 
-  test :expand_aliases do
+  test "expand aliases" do
     assert Code.eval_quoted(quote do: SuperDict.Bar) == {Elixir.Dict.Bar, []}
     assert Code.eval_quoted(quote do: alias!(SuperDict.Bar)) == {Elixir.SuperDict.Bar, []}
   end
 
-  test :expand_aliases_without_macro do
+  test "expand aliases without macro" do
     alias HashDict, as: SuperDict
     assert SuperDict.Bar == Elixir.HashDict.Bar
   end
 
-  test :expand_aliases_with_macro_does_not_expand_source_alias do
+  test "expand aliases with macro does not expand source alias" do
     alias HashDict, as: Dict, warn: false
     require Kernel.QuoteTest.AliasHygiene
     assert Kernel.QuoteTest.AliasHygiene.dict == Elixir.Dict.Bar
   end
 
-  test :expand_aliases_with_macro_has_higher_preference do
+  test "expand aliases with macro has higher preference" do
     alias HashDict, as: SuperDict, warn: false
     require Kernel.QuoteTest.AliasHygiene
     assert Kernel.QuoteTest.AliasHygiene.super_dict == Elixir.Dict.Bar
@@ -348,6 +366,14 @@ end
 
 defmodule Kernel.QuoteTest.ImportsHygieneTest do
   use ExUnit.Case, async: true
+
+  # We are redefining |> and using it inside the quote
+  # and only inside the quote. This code should still compile.
+  defmacro x |> f do
+    quote do
+      unquote(x) |> unquote(f)
+    end
+  end
 
   defmacrop get_list_length do
     quote do
@@ -367,11 +393,11 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
     end
   end
 
-  test :expand_imports do
+  test "expand imports" do
     import Kernel, except: [length: 1]
-    assert get_list_length == 5
-    assert get_list_length_with_partial == 5
-    assert get_list_length_with_function == 5
+    assert get_list_length() == 5
+    assert get_list_length_with_partial() == 5
+    assert get_list_length_with_function() == 5
   end
 
   defmacrop get_string_length do
@@ -382,19 +408,19 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
     end
   end
 
-  test :lazy_expand_imports do
+  test "lazy expand imports" do
     import Kernel, except: [length: 1]
     import String, only: [length: 1]
-    assert get_string_length == 5
+    assert get_string_length() == 5
   end
 
-  test :lazy_expand_imports_no_conflicts do
+  test "lazy expand imports no conflicts" do
     import Kernel, except: [length: 1]
     import String, only: [length: 1]
 
-    assert get_list_length == 5
-    assert get_list_length_with_partial == 5
-    assert get_list_length_with_function == 5
+    assert get_list_length() == 5
+    assert get_list_length_with_partial() == 5
+    assert get_list_length_with_function() == 5
   end
 
   defmacrop with_length do
@@ -405,15 +431,21 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
     end
   end
 
-  test :explicitly_overridden_imports do
-    assert with_length == 5
+  test "explicitly overridden imports" do
+    assert with_length() == 5
   end
-end
 
-defmodule Kernel.QuoteTest.NoQuoteConflictTest do
-  defmacro x |> f do
-    quote do
-      unquote(x) |> unquote(f)
+  defmodule BinaryUtils do
+    defmacro int32 do
+      quote do
+        integer-size(32)
+      end
     end
+  end
+
+  test "checks the context also for variables to zero-arity functions" do
+    import BinaryUtils
+    {:int32, meta, __MODULE__} =  quote do: int32
+    assert meta[:import] == BinaryUtils
   end
 end

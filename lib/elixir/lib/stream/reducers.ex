@@ -1,163 +1,216 @@
 defmodule Stream.Reducers do
-  # Collection of reducers shared by Enum and Stream.
+  # Collection of reducers and utilities shared by Enum and Stream.
   @moduledoc false
 
-  defmacro chunk(n, step, limit, f \\ nil) do
-    quote do
-      fn entry, acc(h, {buffer, count}, t) ->
-        buffer = [entry|buffer]
-        count  = count + 1
+  def chunk_every(chunk_by, enumerable, count, step, leftover) do
+    limit = :erlang.max(count, step)
+    chunk_by.(enumerable, {[], 0}, fn entry, {acc_buffer, acc_count} ->
+      acc_buffer = [entry | acc_buffer]
+      acc_count = acc_count + 1
 
-        new =
-          if count >= unquote(limit) do
-            left = count - unquote(step)
-            {Enum.take(buffer, left), left}
-          else
-            {buffer, count}
-          end
-
-        if count == unquote(n) do
-          cont_with_acc(unquote(f), :lists.reverse(buffer), h, new, t)
+      new_state =
+        if acc_count >= limit do
+          remaining = acc_count - step
+          {Enum.take(acc_buffer, remaining), remaining}
         else
-          {:cont, acc(h, new, t)}
+          {acc_buffer, acc_count}
+        end
+
+      if acc_count == count do
+        {:cont, :lists.reverse(acc_buffer), new_state}
+      else
+        {:cont, new_state}
+      end
+    end, fn {acc_buffer, acc_count} ->
+      if leftover == :discard or acc_count == 0 do
+        {:cont, []}
+      else
+        {:cont, :lists.reverse(acc_buffer, Enum.take(leftover, count - acc_count)), []}
+      end
+    end)
+  end
+
+  def chunk_by(chunk_by, enumerable, fun) do
+    chunk_by.(enumerable, nil, fn
+      entry, nil ->
+        {:cont, {[entry], fun.(entry)}}
+      entry, {acc, value} ->
+        case fun.(entry) do
+          ^value -> {:cont, {[entry | acc], value}}
+          new_value -> {:cont, :lists.reverse(acc), {[entry], new_value}}
+        end
+    end, fn
+      nil -> {:cont, :done}
+      {acc, _value} -> {:cont, :lists.reverse(acc), :done}
+    end)
+  end
+
+  defmacro chunk_while(callback, fun \\ nil) do
+    quote do
+      fn entry, acc(head, acc, tail) ->
+        case unquote(callback).(entry, acc) do
+          {:cont, emit, acc} -> next_with_acc(unquote(fun), emit, head, acc, tail)
+          {:cont, acc} -> skip(acc(head, acc, tail))
+          {:halt, acc} -> {:halt, acc(head, acc, tail)}
         end
       end
     end
   end
 
-  defmacro chunk_by(callback, f \\ nil) do
+  defmacro dedup(callback, fun \\ nil) do
     quote do
-      fn
-        entry, acc(h, {buffer, value}, t) ->
-          new_value = unquote(callback).(entry)
-          if new_value == value do
-            {:cont, acc(h, {[entry|buffer], value}, t)}
-          else
-            cont_with_acc(unquote(f), :lists.reverse(buffer), h, {[entry], new_value}, t)
-          end
-        entry, acc(h, nil, t) ->
-          {:cont, acc(h, {[entry], unquote(callback).(entry)}, t)}
+      fn entry, acc(head, prev, tail) = acc ->
+        value = unquote(callback).(entry)
+        case prev do
+          {:value, ^value} -> skip(acc)
+          _ -> next_with_acc(unquote(fun), entry, head, {:value, value}, tail)
+        end
       end
     end
   end
 
-  defmacro drop(f \\ nil) do
+  defmacro drop(fun \\ nil) do
     quote do
       fn
-        _entry, acc(h, n, t) when n > 0 ->
-          {:cont, acc(h, n-1, t)}
-        entry, acc(h, n, t) ->
-          cont_with_acc(unquote(f), entry, h, n, t)
+        _entry, acc(head, amount, tail) when amount > 0 ->
+          skip(acc(head, amount - 1, tail))
+        entry, acc(head, amount, tail) ->
+          next_with_acc(unquote(fun), entry, head, amount, tail)
       end
     end
   end
 
-  defmacro drop_while(callback, f \\ nil) do
+  defmacro drop_every(nth, fun \\ nil) do
     quote do
-      fn entry, acc(h, bool, t) = orig ->
+      fn
+        entry, acc(head, curr, tail) when curr in [unquote(nth), :first] ->
+          skip(acc(head, 1, tail))
+        entry, acc(head, curr, tail) ->
+          next_with_acc(unquote(fun), entry, head, curr + 1, tail)
+      end
+    end
+  end
+
+  defmacro drop_while(callback, fun \\ nil) do
+    quote do
+      fn entry, acc(head, bool, tail) = original ->
         if bool and unquote(callback).(entry) do
-          {:cont, orig}
+          skip(original)
         else
-          cont_with_acc(unquote(f), entry, h, false, t)
+          next_with_acc(unquote(fun), entry, head, false, tail)
         end
       end
     end
   end
 
-  defmacro filter(callback, f \\ nil) do
+  defmacro filter(callback, fun \\ nil) do
     quote do
-      fn(entry, acc) ->
+      fn entry, acc ->
         if unquote(callback).(entry) do
-          cont(unquote(f), entry, acc)
+          next(unquote(fun), entry, acc)
         else
-          {:cont, acc}
+          skip(acc)
         end
       end
     end
   end
 
-  defmacro filter_map(filter, mapper, f \\ nil) do
+  defmacro filter_map(filter, mapper, fun \\ nil) do
     quote do
-      fn(entry, acc) ->
+      fn entry, acc ->
         if unquote(filter).(entry) do
-          cont(unquote(f), unquote(mapper).(entry), acc)
+          next(unquote(fun), unquote(mapper).(entry), acc)
         else
-          {:cont, acc}
+          skip(acc)
         end
       end
     end
   end
 
-  defmacro map(callback, f \\ nil) do
+  defmacro map(callback, fun \\ nil) do
     quote do
-      fn(entry, acc) ->
-        cont(unquote(f), unquote(callback).(entry), acc)
+      fn entry, acc ->
+        next(unquote(fun), unquote(callback).(entry), acc)
       end
     end
   end
 
-  defmacro reject(callback, f \\ nil) do
+  defmacro map_every(nth, mapper, fun \\ nil) do
     quote do
-      fn(entry, acc) ->
+      fn
+        entry, acc(head, curr, tail) when curr in [unquote(nth), :first] ->
+          next_with_acc(unquote(fun), unquote(mapper).(entry), head, 1, tail)
+        entry, acc(head, curr, tail) ->
+          next_with_acc(unquote(fun), entry, head, curr + 1, tail)
+      end
+    end
+  end
+
+  defmacro reject(callback, fun \\ nil) do
+    quote do
+      fn entry, acc ->
         unless unquote(callback).(entry) do
-          cont(unquote(f), entry, acc)
+          next(unquote(fun), entry, acc)
         else
-          {:cont, acc}
+          skip(acc)
         end
       end
     end
   end
 
-  defmacro scan_2(callback, f \\ nil) do
+  defmacro scan2(callback, fun \\ nil) do
     quote do
       fn
-        entry, acc(h, :first, t) ->
-          cont_with_acc(unquote(f), entry, h, {:ok, entry}, t)
-        entry, acc(h, {:ok, acc}, t) ->
+        entry, acc(head, :first, tail) ->
+          next_with_acc(unquote(fun), entry, head, {:ok, entry}, tail)
+        entry, acc(head, {:ok, acc}, tail) ->
           value = unquote(callback).(entry, acc)
-          cont_with_acc(unquote(f), value, h, {:ok, value}, t)
+          next_with_acc(unquote(fun), value, head, {:ok, value}, tail)
       end
     end
   end
 
-  defmacro scan_3(callback, f \\ nil) do
+  defmacro scan3(callback, fun \\ nil) do
     quote do
-      fn(entry, acc(h, acc, t)) ->
+      fn entry, acc(head, acc, tail) ->
         value = unquote(callback).(entry, acc)
-        cont_with_acc(unquote(f), value, h, value, t)
+        next_with_acc(unquote(fun), value, head, value, tail)
       end
     end
   end
 
-  defmacro take(f \\ nil) do
+  defmacro take(fun \\ nil) do
     quote do
-      fn(entry, acc(h, n, t) = orig) ->
-        if n >= 1 do
-          cont_with_acc(unquote(f), entry, h, n-1, t)
-        else
-          {:halt, orig}
+      fn entry, acc(head, curr, tail) = original ->
+        case curr do
+          0 ->
+            {:halt, original}
+          1 ->
+            {_, acc} = next_with_acc(unquote(fun), entry, head, 0, tail)
+            {:halt, acc}
+          _ ->
+            next_with_acc(unquote(fun), entry, head, curr - 1, tail)
         end
       end
     end
   end
 
-  defmacro take_every(nth, f \\ nil) do
+  defmacro take_every(nth, fun \\ nil) do
     quote do
       fn
-        entry, acc(h, n, t) when n === :first
-                            when n === unquote(nth) ->
-          cont_with_acc(unquote(f), entry, h, 1, t)
-        entry, acc(h, n, t) ->
-          {:cont, acc(h, n+1, t)}
+        entry, acc(head, curr, tail) when curr in [unquote(nth), :first] ->
+          next_with_acc(unquote(fun), entry, head, 1, tail)
+        entry, acc(head, curr, tail) ->
+          skip(acc(head, curr + 1, tail))
       end
     end
   end
 
-  defmacro take_while(callback, f \\ nil) do
+  defmacro take_while(callback, fun \\ nil) do
     quote do
-      fn(entry, acc) ->
+      fn entry, acc ->
         if unquote(callback).(entry) do
-          cont(unquote(f), entry, acc)
+          next(unquote(fun), entry, acc)
         else
           {:halt, acc}
         end
@@ -165,23 +218,23 @@ defmodule Stream.Reducers do
     end
   end
 
-  defmacro uniq(callback, f \\ nil) do
+  defmacro uniq_by(callback, fun \\ nil) do
     quote do
-      fn(entry, acc(h, prev, t) = acc) ->
+      fn entry, acc(head, prev, tail) = original ->
         value = unquote(callback).(entry)
-        if :lists.member(value, prev) do
-          {:cont, acc}
+        if Map.has_key?(prev, value) do
+          skip(original)
         else
-          cont_with_acc(unquote(f), entry, h, [value|prev], t)
+          next_with_acc(unquote(fun), entry, head, Map.put(prev, value, true), tail)
         end
       end
     end
   end
 
-  defmacro with_index(f \\ nil) do
+  defmacro with_index(fun \\ nil) do
     quote do
-      fn(entry, acc(h, counter, t)) ->
-        cont_with_acc(unquote(f), {entry, counter}, h, counter + 1, t)
+      fn entry, acc(head, counter, tail) ->
+        next_with_acc(unquote(fun), {entry, counter}, head, counter + 1, tail)
       end
     end
   end

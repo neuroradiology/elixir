@@ -1,28 +1,32 @@
 defmodule Mix.Tasks.Deps.Get do
   use Mix.Task
 
-  @shortdoc "Get all out of date dependencies"
+  @shortdoc "Gets all out of date dependencies"
 
   @moduledoc """
-  Get all out of date dependencies, i.e. dependencies
+  Gets all out of date dependencies, i.e. dependencies
   that are not available or have an invalid lock.
 
   ## Command line options
 
-    * `--quiet` - do not output verbose messages
-    * `--only`  - only fetch dependencies for given environment
+    * `--only` - only fetches dependencies for given environment
+    * `--no-archives-check` - does not check archives before fetching deps
   """
   @spec run(OptionParser.argv) :: :ok
   def run(args) do
+    unless "--no-archives-check" in args do
+      Mix.Task.run "archive.check", args
+    end
+
     Mix.Project.get!
-    {opts, _, _} = OptionParser.parse(args, switches: [quiet: :boolean, only: :string])
+    {opts, _, _} = OptionParser.parse(args, switches: [only: :string])
 
     # Fetch all deps by default unless --only is given
     fetch_opts = if only = opts[:only], do: [env: :"#{only}"], else: []
 
     apps = Mix.Dep.Fetcher.all(%{}, Mix.Dep.Lock.read, fetch_opts)
 
-    if apps == [] && !opts[:quiet] do
+    if apps == [] do
       Mix.shell.info "All dependencies up to date"
     else
       :ok

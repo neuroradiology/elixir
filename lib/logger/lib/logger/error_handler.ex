@@ -1,12 +1,12 @@
 defmodule Logger.ErrorHandler do
   @moduledoc false
 
-  use GenEvent
+  @behaviour :gen_event
 
   require Logger
 
   def init({otp?, sasl?, threshold}) do
-    # We store the logger PID in the state because when we are shutting
+    # We store the Logger PID in the state because when we are shutting
     # down the Logger application, the Logger process may be terminated
     # and then trying to reach it will lead to crashes. So we send a
     # message to a PID, instead of named process, to avoid crashes on
@@ -26,6 +26,22 @@ defmodule Logger.ErrorHandler do
     state = check_threshold(state)
     log_event(event, state)
     {:ok, state}
+  end
+
+  def handle_call(request, _state) do
+    exit {:bad_call, request}
+  end
+
+  def handle_info(_msg, state) do
+    {:ok, state}
+  end
+
+  def code_change(_old_vsn, state, _extra) do
+    {:ok, state}
+  end
+
+  def terminate(_reason, _state) do
+    :ok
   end
 
   ## Helpers
@@ -54,22 +70,26 @@ defmodule Logger.ErrorHandler do
   defp log_event(_, _state),
     do: :ok
 
-  defp log_event(level, kind, pid, data, state) do
+  defp log_event(level, kind, pid, {type, _} = data, state) do
     %{level: min_level, truncate: truncate,
       utc_log: utc_log?, translators: translators} = Logger.Config.__data__
 
-    if Logger.compare_levels(level, min_level) != :lt &&
-       (message = translate(translators, min_level, level, kind, data, truncate)) do
+    with log when log != :lt <- Logger.compare_levels(level, min_level),
+         {:ok, message} <- translate(translators, min_level, level, kind, data, truncate) do
       message = Logger.Utils.truncate(message, truncate)
 
       # Mode is always async to avoid clogging the error_logger
-      GenEvent.notify(state.logger,
+      meta = [pid: ensure_pid(pid), error_logger: ensure_type(type)]
+      :gen_event.notify(state.logger,
         {level, Process.group_leader(),
-          {Logger, message, Logger.Utils.timestamp(utc_log?), [pid: ensure_pid(pid)]}})
+          {Logger, message, Logger.Utils.timestamp(utc_log?), meta}})
     end
 
     :ok
   end
+
+  defp ensure_type(type) when is_atom(type), do: type
+  defp ensure_type(_), do: :format
 
   defp ensure_pid(pid) when is_pid(pid), do: pid
   defp ensure_pid(_), do: self()
@@ -112,20 +132,20 @@ defmodule Logger.ErrorHandler do
     end
   end
 
-  defp translate([{mod, fun}|t], min_level, level, kind, data, truncate) do
+  defp translate([{mod, fun} | t], min_level, level, kind, data, truncate) do
     case apply(mod, fun, [min_level, level, kind, data]) do
-      {:ok, iodata} -> iodata
-      :skip -> nil
+      {:ok, chardata} -> {:ok, chardata}
+      :skip -> :skip
       :none -> translate(t, min_level, level, kind, data, truncate)
     end
   end
 
   defp translate([], _min_level, _level, :format, {format, args}, truncate) do
     {format, args} = Logger.Utils.inspect(format, args, truncate)
-    :io_lib.format(format, args)
+    {:ok, :io_lib.format(format, args)}
   end
 
   defp translate([], _min_level, _level, :report, {_type, data}, _truncate) do
-    Kernel.inspect(data)
+    {:ok, Kernel.inspect(data)}
   end
 end

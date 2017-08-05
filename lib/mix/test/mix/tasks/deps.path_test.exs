@@ -15,6 +15,19 @@ defmodule Mix.Tasks.DepsPathTest do
     end
   end
 
+  defmodule MismatchDepsApp do
+    def project do
+      [
+        app: :raw_sample,
+        version: "0.1.0",
+        deps: [
+          {:cooked_repo, "0.1.0", path: "custom/raw_repo"}
+        ]
+      ]
+    end
+  end
+
+  @tag apps: [:raw_sample]
   test "does not mark for compilation on get/update" do
     Mix.Project.push DepsApp
 
@@ -24,6 +37,7 @@ defmodule Mix.Tasks.DepsPathTest do
     end
   end
 
+  @tag apps: [:raw_sample]
   test "compiles ands runs even if lock does not match" do
     Mix.Project.push DepsApp
 
@@ -35,20 +49,13 @@ defmodule Mix.Tasks.DepsPathTest do
     end
   end
 
-  defmodule InvalidPathDepsApp do
-    def project do
-      [
-        app: :rebar_as_dep,
-        version: "0.1.0",
-        deps: [{:rebar_dep, path: MixTest.Case.tmp_path("rebar_dep")}]
-      ]
-    end
-  end
+  @tag apps: [:raw_sample]
+  test "uses the name of the app, not the path basename" do
+    Mix.Project.push MismatchDepsApp
 
-  test "raises on non-mix path deps" do
-    Mix.Project.push InvalidPathDepsApp
-    assert_raise Mix.Error, ~r/:path option can only be used with mix projects/, fn ->
-      Mix.Tasks.Deps.Get.run []
+    in_fixture "deps_status", fn ->
+      Mix.Tasks.Deps.Compile.run []
+      assert File.exists?("_build/dev/lib/cooked_repo/ebin")
     end
   end
 end
