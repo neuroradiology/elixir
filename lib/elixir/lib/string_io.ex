@@ -15,7 +15,7 @@ defmodule StringIO do
 
   use GenServer
 
-  @doc """
+  @doc ~S"""
   Creates an IO device.
 
   `string` will be the initial input of the newly created
@@ -23,7 +23,59 @@ defmodule StringIO do
 
   If the `:capture_prompt` option is set to `true`,
   prompts (specified as arguments to `IO.get*` functions)
-  are captured.
+  are captured in the output.
+
+  The device will be created and sent to the function given.
+  When the function returns, the device will be closed. The final
+  result will be a tuple with `:ok` and the result of the function.
+
+  ## Examples
+
+      iex> StringIO.open("foo", [], fn pid ->
+      ...>   input = IO.gets(pid, ">")
+      ...>   IO.write(pid, "The input was #{input}")
+      ...>   StringIO.contents(pid)
+      ...> end)
+      {:ok, {"", "The input was foo"}}
+
+      iex> StringIO.open("foo", [capture_prompt: true], fn pid ->
+      ...>   input = IO.gets(pid, ">")
+      ...>   IO.write(pid, "The input was #{input}")
+      ...>   StringIO.contents(pid)
+      ...> end)
+      {:ok, {"", ">The input was foo"}}
+
+  """
+  @doc since: "1.7.0"
+  @spec open(binary, keyword, (pid -> res)) :: {:ok, res} when res: var
+  def open(string, options, function)
+      when is_binary(string) and is_list(options) and is_function(function, 1) do
+    {:ok, pid} = GenServer.start_link(__MODULE__, {string, options}, [])
+
+    try do
+      {:ok, function.(pid)}
+    after
+      {:ok, {_input, _output}} = close(pid)
+    end
+  end
+
+  @doc ~S"""
+  Creates an IO device.
+
+  `string` will be the initial input of the newly created
+  device.
+
+  `options_or_function` can be a keyword list of options or
+  a function.
+
+  If options are provided, the result will be `{:ok, pid}`, returning the
+  IO device created. The option `:capture_prompt`, when set to `true`, causes
+  prompts (which are specified as arguments to `IO.get*` functions) to be
+  included in the device's output.
+
+  If a function is provided, the device will be created and sent to the
+  function. When the function returns, the device will be closed. The final
+  result will be a tuple with `:ok` and the result of the function.
 
   ## Examples
 
@@ -39,10 +91,25 @@ defmodule StringIO do
       iex> StringIO.contents(pid)
       {"", ">"}
 
+      iex> StringIO.open("foo", fn pid ->
+      ...>   input = IO.gets(pid, ">")
+      ...>   IO.write(pid, "The input was #{input}")
+      ...>   StringIO.contents(pid)
+      ...> end)
+      {:ok, {"", "The input was foo"}}
+
   """
   @spec open(binary, keyword) :: {:ok, pid}
-  def open(string, options \\ []) when is_binary(string) do
-    GenServer.start_link(__MODULE__, {string, options}, [])
+  @spec open(binary, (pid -> res)) :: {:ok, res} when res: var
+  def open(string, options_or_function \\ [])
+
+  def open(string, options_or_function) when is_binary(string) and is_list(options_or_function) do
+    GenServer.start_link(__MODULE__, {string, options_or_function}, [])
+  end
+
+  def open(string, options_or_function)
+      when is_binary(string) and is_function(options_or_function, 1) do
+    open(string, [], options_or_function)
   end
 
   @doc """
@@ -99,20 +166,23 @@ defmodule StringIO do
 
   ## callbacks
 
+  @impl true
   def init({string, options}) do
     capture_prompt = options[:capture_prompt] || false
     {:ok, %{input: string, output: "", capture_prompt: capture_prompt}}
   end
 
+  @impl true
   def handle_info({:io_request, from, reply_as, req}, state) do
     state = io_request(from, reply_as, req, state)
     {:noreply, state}
   end
 
-  def handle_info(message, state) do
-    super(message, state)
+  def handle_info(_message, state) do
+    {:noreply, state}
   end
 
+  @impl true
   def handle_call(:contents, _from, %{input: input, output: output} = state) do
     {:reply, {input, output}, state}
   end
@@ -123,10 +193,6 @@ defmodule StringIO do
 
   def handle_call(:close, _from, %{input: input, output: output} = state) do
     {:stop, :normal, {:ok, {input, output}}, state}
-  end
-
-  def handle_call(request, from, state) do
-    super(request, from, state)
   end
 
   defp io_request(from, reply_as, req, state) do
@@ -209,9 +275,12 @@ defmodule StringIO do
     case :unicode.characters_to_binary(chars, encoding, :unicode) do
       string when is_binary(string) ->
         {:ok, %{state | output: output <> string}}
+
       {_, _, _} ->
         {{:error, req}, state}
     end
+  rescue
+    ArgumentError -> {{:error, req}, state}
   end
 
   ## get_chars
@@ -220,6 +289,7 @@ defmodule StringIO do
     case get_chars(input, encoding, count) do
       {:error, _} = error ->
         {error, state}
+
       {result, input} ->
         {result, state_after_read(state, input, prompt, 1)}
     end
@@ -243,6 +313,7 @@ defmodule StringIO do
       case :file_io_server.count_and_find(input, count, encoding) do
         {buf_count, split_pos} when buf_count < count or split_pos == :none ->
           {input, ""}
+
         {_buf_count, split_pos} ->
           <<chars::binary-size(split_pos), rest::binary>> = input
           {chars, rest}
@@ -259,16 +330,18 @@ defmodule StringIO do
     case bytes_until_eol(input, encoding, 0) do
       {:split, 0} ->
         {:eof, state_after_read(state, "", prompt, 1)}
+
       {:split, count} ->
         {result, remainder} = :erlang.split_binary(input, count)
-
         {result, state_after_read(state, remainder, prompt, 1)}
+
       {:replace_split, count} ->
         {result, remainder} = :erlang.split_binary(input, count)
+        result = binary_part(result, 0, byte_size(result) - 2) <> "\n"
+        {result, state_after_read(state, remainder, prompt, 1)}
 
-        {binary_part(result, 0, byte_size(result) - 2) <> "\n", state_after_read(state, remainder, prompt, 1)}
-      :error
-        -> {{:error, :collect_line}, state}
+      :error ->
+        {{:error, :collect_line}, state}
     end
   end
 
@@ -294,6 +367,7 @@ defmodule StringIO do
     case apply(mod, fun, [continuation, :eof | args]) do
       {:done, result, rest} ->
         {result, rest, count + 1}
+
       {:more, next_continuation} ->
         get_until("", encoding, mod, fun, args, next_continuation, count + 1)
     end
@@ -307,8 +381,10 @@ defmodule StringIO do
         case apply(mod, fun, [continuation, binary_to_list(line, encoding) | args]) do
           {:done, result, :eof} ->
             {result, rest, count + 1}
+
           {:done, result, extra} ->
             {result, extra ++ binary_to_list(rest, encoding), count + 1}
+
           {:more, next_continuation} ->
             get_until(rest, encoding, mod, fun, args, next_continuation, count + 1)
         end
@@ -348,7 +424,8 @@ defmodule StringIO do
   end
 
   defp state_after_read(%{capture_prompt: true, output: output} = state, remainder, prompt, count) do
-    %{state | input: remainder, output: <<output::binary, :binary.copy(IO.chardata_to_string(prompt), count)::binary>>}
+    output = <<output::binary, :binary.copy(IO.chardata_to_string(prompt), count)::binary>>
+    %{state | input: remainder, output: output}
   end
 
   defp bytes_until_eol("", _, count), do: {:split, count}
@@ -366,7 +443,7 @@ defmodule StringIO do
   defp bytes_until_eol(<<_::binary>>, _, _), do: :error
 
   defp io_reply(from, reply_as, reply) do
-    send from, {:io_reply, reply_as, reply}
+    send(from, {:io_reply, reply_as, reply})
   end
 
   defp to_reply(list) when is_list(list), do: IO.chardata_to_string(list)

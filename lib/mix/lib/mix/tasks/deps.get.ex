@@ -11,23 +11,27 @@ defmodule Mix.Tasks.Deps.Get do
 
     * `--only` - only fetches dependencies for given environment
     * `--no-archives-check` - does not check archives before fetching deps
+
   """
-  @spec run(OptionParser.argv) :: :ok
+
+  @impl true
   def run(args) do
     unless "--no-archives-check" in args do
-      Mix.Task.run "archive.check", args
+      Mix.Task.run("archive.check", args)
     end
 
-    Mix.Project.get!
-    {opts, _, _} = OptionParser.parse(args, switches: [only: :string])
+    Mix.Project.get!()
+    {opts, _, _} = OptionParser.parse(args, switches: [only: :string, target: :string])
 
-    # Fetch all deps by default unless --only is given
-    fetch_opts = if only = opts[:only], do: [env: :"#{only}"], else: []
+    fetch_opts =
+      for {switch, key} <- [only: :env, target: :target],
+          value = opts[switch],
+          do: {key, :"#{value}"}
 
-    apps = Mix.Dep.Fetcher.all(%{}, Mix.Dep.Lock.read, fetch_opts)
+    apps = Mix.Dep.Fetcher.all(%{}, Mix.Dep.Lock.read(), fetch_opts)
 
     if apps == [] do
-      Mix.shell.info "All dependencies up to date"
+      Mix.shell().info("All dependencies are up to date")
     else
       :ok
     end

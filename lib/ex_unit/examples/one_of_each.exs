@@ -62,6 +62,10 @@ defmodule TestOneOfEach do
   end
 
   test "12. assert that a message is received within a timeout" do
+    send self(), {:ok, 1}
+    send self(), :message_in_my_inbox
+    send self(), {:ok, 2}
+    send self(), :another_message
     assert_receive :no_message_after_timeout
   end
 
@@ -143,20 +147,23 @@ defmodule TestOneOfEach do
     raise ExUnit.MultiError, errors: [error1, error2]
   end
 
-  @tag report: [:user_id, :post_id, :many_ids]
-  test "27. tag reporting" do
-    flunk "oops"
-  end
-
   @tag capture_log: true
-  test "28. log capturing" do
+  test "27. log capturing" do
     require Logger
     Logger.debug "this will be logged"
     flunk "oops"
   end
 
-  test "29. function clause error" do
+  test "28. function clause error" do
     Access.fetch(:foo, :bar)
+  end
+
+  test "29. function call arguments" do
+    assert some_vars(1 + 2, 3 + 4)
+  end
+
+  defp some_vars(_a, _b) do
+    false
   end
 
   defp blows_up do

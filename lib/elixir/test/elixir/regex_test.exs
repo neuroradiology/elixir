@@ -1,7 +1,40 @@
-Code.require_file "test_helper.exs", __DIR__
+Code.require_file("test_helper.exs", __DIR__)
 
 defmodule RegexTest do
   use ExUnit.Case, async: true
+
+  @re_21_3_little %Regex{
+    re_pattern:
+      {:re_pattern, 1, 0, 0,
+       <<69, 82, 67, 80, 94, 0, 0, 0, 0, 0, 0, 0, 17, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255,
+         255, 99, 0, 0, 0, 0, 0, 1, 0, 0, 0, 64, 0, 6, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 102, 111, 111, 0, 131, 0, 20, 29, 99, 133,
+         0, 7, 0, 1, 29, 100, 119, 0, 5, 29, 101, 120, 0, 12, 120, 0, 20, 0>>},
+    re_version: {"8.42 2018-03-20", :little},
+    source: "c(?<foo>d|e)"
+  }
+
+  @re_21_3_big %Regex{
+    re_pattern:
+      {:re_pattern, 1, 0, 0,
+       <<80, 67, 82, 69, 0, 0, 0, 86, 0, 0, 0, 0, 0, 0, 0, 17, 255, 255, 255, 255, 255, 255, 255,
+         255, 0, 99, 0, 0, 0, 0, 0, 1, 0, 0, 0, 56, 0, 6, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 1, 102, 111, 111, 0, 131, 0, 20, 29, 99, 133, 0, 7, 0, 1, 29, 100, 119,
+         0, 5, 29, 101, 120, 0, 12, 120, 0, 20, 0>>},
+    re_version: {"8.42 2018-03-20", :big},
+    source: "c(?<foo>d|e)"
+  }
+
+  @re_19_3_little %Regex{
+    re_pattern:
+      {:re_pattern, 1, 0, 0,
+       <<69, 82, 67, 80, 94, 0, 0, 0, 0, 0, 0, 0, 17, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255,
+         255, 99, 0, 0, 0, 0, 0, 1, 0, 0, 0, 64, 0, 6, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 102, 111, 111, 0, 125, 0, 20, 29, 99, 127,
+         0, 7, 0, 1, 29, 100, 113, 0, 5, 29, 101, 114, 0, 12, 114, 0, 20, 0>>},
+    re_version: {"8.33 2013-05-29", :little},
+    source: "c(?<foo>d|e)"
+  }
 
   doctest Regex
 
@@ -35,18 +68,19 @@ defmodule RegexTest do
   test "literal source" do
     assert Regex.source(Regex.compile!("foo")) == "foo"
     assert Regex.source(~r"foo") == "foo"
-    assert Regex.re_pattern(Regex.compile!("foo"))
-           == Regex.re_pattern(~r"foo")
+    assert Regex.re_pattern(Regex.compile!("foo")) == Regex.re_pattern(~r"foo")
 
     assert Regex.source(Regex.compile!("\a\b\d\e\f\n\r\s\t\v")) == "\a\b\d\e\f\n\r\s\t\v"
     assert Regex.source(~r<\a\b\d\e\f\n\r\s\t\v>) == "\a\\b\\d\\e\f\n\r\\s\t\v"
-    assert Regex.re_pattern(Regex.compile!("\a\b\d\e\f\n\r\s\t\v"))
-           == Regex.re_pattern(~r"\a\010\177\033\f\n\r \t\v")
+
+    assert Regex.re_pattern(Regex.compile!("\a\b\d\e\f\n\r\s\t\v")) ==
+             Regex.re_pattern(~r"\a\010\177\033\f\n\r \t\v")
 
     assert Regex.source(Regex.compile!("\a\\b\\d\e\f\n\r\\s\t\v")) == "\a\\b\\d\e\f\n\r\\s\t\v"
     assert Regex.source(~r<\a\\b\\d\\e\f\n\r\\s\t\v>) == "\a\\\\b\\\\d\\\\e\f\n\r\\\\s\t\v"
-    assert Regex.re_pattern(Regex.compile!("\a\\b\\d\e\f\n\r\\s\t\v"))
-           == Regex.re_pattern(~r"\a\b\d\e\f\n\r\s\t\v")
+
+    assert Regex.re_pattern(Regex.compile!("\a\\b\\d\e\f\n\r\\s\t\v")) ==
+             Regex.re_pattern(~r"\a\b\d\e\f\n\r\s\t\v")
   end
 
   test "Unicode" do
@@ -119,11 +153,11 @@ defmodule RegexTest do
     assert Regex.match?(~r/foo/i, "FOO")
     assert Regex.match?(~r/\d{1,3}/i, "123")
 
-    assert Regex.match?(~r/foo/,   "afooa")
+    assert Regex.match?(~r/foo/, "afooa")
     refute Regex.match?(~r/^foo/, "afooa")
-    assert Regex.match?(~r/^foo/,  "fooa")
+    assert Regex.match?(~r/^foo/, "fooa")
     refute Regex.match?(~r/foo$/, "afooa")
-    assert Regex.match?(~r/foo$/,  "afoo")
+    assert Regex.match?(~r/foo$/, "afoo")
   end
 
   test "named_captures/2" do
@@ -154,6 +188,12 @@ defmodule RegexTest do
     assert Regex.run(~r"e", "abcd", return: :index) == nil
   end
 
+  test "run/3 with regexes compiled in different systems" do
+    assert Regex.run(@re_21_3_little, "abcd abce", capture: :all_names) == ["d"]
+    assert Regex.run(@re_21_3_big, "abcd abce", capture: :all_names) == ["d"]
+    assert Regex.run(@re_19_3_little, "abcd abce", capture: :all_names) == ["d"]
+  end
+
   test "scan/2" do
     assert Regex.scan(~r"c(d|e)", "abcd abce") == [["cd", "d"], ["ce", "e"]]
     assert Regex.scan(~r"c(?:d|e)", "abcd abce") == [["cd"], ["ce"]]
@@ -165,6 +205,12 @@ defmodule RegexTest do
     assert Regex.scan(~r/c(?<foo>d)/, "abcd", capture: :all_names) == [["d"]]
     assert Regex.scan(~r/c(?<foo>d)/, "no_match", capture: :all_names) == []
     assert Regex.scan(~r/c(?<foo>d|e)/, "abcd abce", capture: :all_names) == [["d"], ["e"]]
+  end
+
+  test "scan/2 with regexes compiled in different systems" do
+    assert Regex.scan(@re_21_3_little, "abcd abce", capture: :all_names) == [["d"], ["e"]]
+    assert Regex.scan(@re_21_3_big, "abcd abce", capture: :all_names) == [["d"], ["e"]]
+    assert Regex.scan(@re_19_3_little, "abcd abce", capture: :all_names) == [["d"], ["e"]]
   end
 
   test "split/2,3" do
@@ -187,29 +233,40 @@ defmodule RegexTest do
   end
 
   test "split/3 with the :on option" do
-    assert Regex.split(~r/()abc()/, "xabcxabcx", on: :none) ==
-           ["xabcxabcx"]
-    assert Regex.split(~r/()abc()/, "xabcxabcx", on: :all_but_first) ==
-           ["x", "abc", "x", "abc", "x"]
+    assert Regex.split(~r/()abc()/, "xabcxabcx", on: :none) == ["xabcxabcx"]
 
-    assert Regex.split(~r/(?<first>)abc(?<last>)/, "xabcxabcx", on: [:first, :last]) ==
-           ["x", "abc", "x", "abc", "x"]
-    assert Regex.split(~r/(?<first>)abc(?<last>)/, "xabcxabcx", on: [:last, :first]) ==
-           ["xabc", "xabc", "x"]
+    parts = ["x", "abc", "x", "abc", "x"]
+    assert Regex.split(~r/()abc()/, "xabcxabcx", on: :all_but_first) == parts
 
-    assert Regex.split(~r/a(?<second>b)c/, "abc", on: [:second]) ==
-           ["a", "c"]
-    assert Regex.split(~r/a(?<second>b)c|a(?<fourth>d)c/, "abc adc abc", on: [:second]) ==
-           ["a", "c adc a", "c"]
+    assert Regex.split(~r/(?<first>)abc(?<last>)/, "xabcxabcx", on: [:first, :last]) == parts
+
+    parts = ["xabc", "xabc", "x"]
+    assert Regex.split(~r/(?<first>)abc(?<last>)/, "xabcxabcx", on: [:last, :first]) == parts
+
+    assert Regex.split(~r/a(?<second>b)c/, "abc", on: [:second]) == ["a", "c"]
+
+    parts = ["a", "c adc a", "c"]
+    assert Regex.split(~r/a(?<second>b)c|a(?<fourth>d)c/, "abc adc abc", on: [:second]) == parts
+
     assert Regex.split(~r/a(?<second>b)c|a(?<fourth>d)c/, "abc adc abc", on: [:second, :fourth]) ==
-           ["a", "c a", "c a", "c"]
+             ["a", "c a", "c a", "c"]
   end
 
   test "split/3 with the :include_captures option" do
     assert Regex.split(~r/([ln])/, "Erlang", include_captures: true) == ["Er", "l", "a", "n", "g"]
     assert Regex.split(~r/([kw])/, "Elixir", include_captures: true) == ["Elixir"]
-    assert Regex.split(~r/([Ee]lixir)/, "Elixir", include_captures: true, trim: true) == ["Elixir"]
-    assert Regex.split(~r/([Ee]lixir)/, "Elixir", include_captures: true, trim: false) == ["", "Elixir", ""]
+
+    assert Regex.split(~r/([Ee]lixir)/, "Elixir", include_captures: true, trim: true) ==
+             ["Elixir"]
+
+    assert Regex.split(~r/([Ee]lixir)/, "Elixir", include_captures: true, trim: false) ==
+             ["", "Elixir", ""]
+
+    assert Regex.split(~r//, "abc", include_captures: true) ==
+             ["", "", "a", "", "b", "", "c", "", ""]
+
+    assert Regex.split(~r/a/, "abc", include_captures: true) == ["", "a", "bc"]
+    assert Regex.split(~r/c/, "abc", include_captures: true) == ["ab", "c", ""]
   end
 
   test "replace/3,4" do
@@ -225,10 +282,8 @@ defmodule RegexTest do
     assert Regex.replace(~r(b), "abcbe", "d") == "adcde"
     assert Regex.replace(~r(b), "abcbe", "d", global: false) == "adcbe"
 
-    assert Regex.replace(~r/ /, "first third", "\\second\\") ==
-           "first\\second\\third"
-    assert Regex.replace(~r/ /, "first third", "\\\\second\\\\") ==
-           "first\\second\\third"
+    assert Regex.replace(~r/ /, "first third", "\\second\\") == "first\\second\\third"
+    assert Regex.replace(~r/ /, "first third", "\\\\second\\\\") == "first\\second\\third"
 
     assert Regex.replace(~r[a(b)c], "abcabc", fn -> "ac" end) == "acac"
     assert Regex.replace(~r[a(b)c], "abcabc", fn "abc" -> "ac" end) == "acac"
@@ -255,11 +310,12 @@ defmodule RegexTest do
 
     assert matches_escaped?("\\A  \\z")
     assert matches_escaped?("  x  ")
-    assert matches_escaped?("  x    x ") # Unicode spaces here
+    # Unicode spaces here
+    assert matches_escaped?("  x    x ")
     assert matches_escaped?("# lol")
 
     assert matches_escaped?("\\A.^$*+?()[{\\| \t\n\x20\\z #hello\u202F\u205F")
-    assert Regex.match? Regex.compile!("[" <> Regex.escape("!-#") <> "]"), "-"
+    assert Regex.match?(Regex.compile!("[" <> Regex.escape("!-#") <> "]"), "-")
 
     assert Regex.escape("{}") == "\\{\\}"
     assert Regex.escape("[]") == "\\[\\]"
@@ -273,6 +329,6 @@ defmodule RegexTest do
   end
 
   defp matches_escaped?(string, match) do
-    Regex.match? ~r/#{Regex.escape(string)}/simxu, match
+    Regex.match?(~r/#{Regex.escape(string)}/simxu, match)
   end
 end

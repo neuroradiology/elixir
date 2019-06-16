@@ -11,44 +11,50 @@ defmodule Agent do
 
   ## Examples
 
-  For example, in the Mix tool that ships with Elixir, we need
-  to keep a set of all tasks executed by a given project. Since
-  this set is shared, we can implement it with an agent:
+  For example, the following agent implements a counter:
 
-      defmodule Mix.TasksServer do
+      defmodule Counter do
         use Agent
 
-        def start_link do
-          Agent.start_link(fn -> MapSet.new end, name: __MODULE__)
+        def start_link(initial_value) do
+          Agent.start_link(fn -> initial_value end, name: __MODULE__)
         end
 
-        @doc "Checks if the task has already executed"
-        def executed?(task, project) do
-          item = {task, project}
-          Agent.get(__MODULE__, fn set ->
-            item in set
-          end)
+        def value do
+          Agent.get(__MODULE__, & &1)
         end
 
-        @doc "Marks a task as executed"
-        def put_task(task, project) do
-          item = {task, project}
-          Agent.update(__MODULE__, &MapSet.put(&1, item))
-        end
-
-        @doc "Resets the executed tasks and returns the previous list of tasks"
-        def take_all() do
-          Agent.get_and_update(__MODULE__, fn set ->
-            {Enum.into(set, []), MapSet.new}
-          end)
+        def increment do
+          Agent.update(__MODULE__, &(&1 + 1))
         end
       end
 
-  Agents provide a segregation between the client and server APIs (similar
-  to GenServers). In particular, the anonymous functions given to the `Agent`
-  are executed inside the agent (the server). This distinction is important
-  because you may want to avoid expensive operations inside the agent,
-  as they will effectively block the agent until the request is fulfilled.
+  Usage would be:
+
+      Counter.start_link(0)
+      #=> {:ok, #PID<0.123.0>}
+
+      Counter.value()
+      #=> 0
+
+      Counter.increment()
+      #=> :ok
+
+      Counter.increment()
+      #=> :ok
+
+      Counter.value()
+      #=> 2
+
+  Thanks to the agent server process, the counter can be safely incremented
+  concurrently.
+
+  Agents provide a segregation between the client and server APIs (similar to
+  `GenServer`s). In particular, the functions passed as arguments to the calls to
+  `Agent` functions are invoked inside the agent (the server). This distinction
+  is important because you may want to avoid expensive operations inside the
+  agent, as they will effectively block the agent until the request is
+  fulfilled.
 
   Consider these two examples:
 
@@ -59,7 +65,7 @@ defmodule Agent do
 
       # Compute in the agent/client
       def get_something(agent) do
-        Agent.get(agent, &(&1)) |> do_something_expensive()
+        Agent.get(agent, & &1) |> do_something_expensive()
       end
 
   The first function blocks the agent. The second function copies all the state
@@ -73,20 +79,61 @@ defmodule Agent do
   than in the server can lead to race conditions if multiple clients are trying
   to update the same state to different values.
 
-  Finally note `use Agent` defines a `child_spec/1` function, allowing the
-  defined module to be put under a supervision tree. The generated
-  `child_spec/1` can be customized with the following options:
+  ## How to supervise
 
-    * `:id` - the child specification id, defaults to the current module
+  An `Agent` is most commonly started under a supervision tree.
+  When we invoke `use Agent`, it automatically defines a `child_spec/1`
+  function that allows us to start the agent directly under a supervisor.
+  To start an agent under a supervisor with an initial counter of 0,
+  one may do:
+
+      children = [
+        {Counter, 0}
+      ]
+
+      Supervisor.start_link(children, strategy: :one_for_all)
+
+  While one could also simply pass the `Counter` as a child to the supervisor,
+  such as:
+
+      children = [
+        Counter # Same as {Counter, []}
+      ]
+
+      Supervisor.start_link(children, strategy: :one_for_all)
+
+  The definition above wouldn't work for this particular example,
+  as it would attempt to start the counter with an initial value
+  of an empty list. However, this may be a viable option in your
+  own agents. A common approach is to use a keyword list, as that
+  would allow setting the initial value and giving a name to the
+  counter process, for example:
+
+      def start_link(opts) do
+        {initial_value, opts} = Keyword.pop(opts, :initial_value, 0)
+        Agent.start_link(fn -> initial_value end, opts)
+      end
+
+  and then you can use `Counter`, `{Counter, name: :my_counter}` or
+  even `{Counter, initial_value: 0, name: :my_counter}` as a child
+  specification.
+
+  `use Agent` also accepts a list of options which configures the
+  child specification and therefore how it runs under a supervisor.
+  The generated `child_spec/1` can be customized with the following options:
+
+    * `:id` - the child specification identifier, defaults to the current module
     * `:start` - how to start the child process (defaults to calling `__MODULE__.start_link/1`)
     * `:restart` - when the child should be restarted, defaults to `:permanent`
-    * `:shutdown` - how to shut down the child
+    * `:shutdown` - how to shut down the child, either immediately or by giving it time to shut down
 
   For example:
 
       use Agent, restart: :transient, shutdown: 10_000
 
-  See the `Supervisor` docs for more information.
+  See the "Child specification" section in the `Supervisor` module for more
+  detailed information. The `@doc` annotation immediately preceding
+  `use Agent` will be attached to the generated `child_spec/1` function.
 
   ## Name registration
 
@@ -139,7 +186,12 @@ defmodule Agent do
   @typedoc "The agent state"
   @type state :: term
 
-  @doc false
+  @doc """
+  Returns a specification to start an agent under a supervisor.
+
+  See the "Child specification" section in the `Supervisor` module for more detailed information.
+  """
+  @doc since: "1.5.0"
   def child_spec(arg) do
     %{
       id: Agent,
@@ -150,17 +202,21 @@ defmodule Agent do
   @doc false
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts] do
-      spec = [
-        id: opts[:id] || __MODULE__,
-        start: Macro.escape(opts[:start]) || quote(do: {__MODULE__, :start_link, [arg]}),
-        restart: opts[:restart] || :permanent,
-        shutdown: opts[:shutdown] || 5000,
-        type: :worker
-      ]
+      if Module.get_attribute(__MODULE__, :doc) == nil do
+        @doc """
+        Returns a specification to start this module under a supervisor.
 
-      @doc false
+        See `Supervisor`.
+        """
+      end
+
       def child_spec(arg) do
-        %{unquote_splicing(spec)}
+        default = %{
+          id: __MODULE__,
+          start: {__MODULE__, :start_link, [arg]}
+        }
+
+        Supervisor.child_spec(default, unquote(Macro.escape(opts)))
       end
 
       defoverridable child_spec: 1
@@ -172,9 +228,9 @@ defmodule Agent do
 
   This is often used to start the agent as part of a supervision tree.
 
-  Once the agent is spawned, the given function `fun` is invoked and its return
-  value is used as the agent state. Note that `start_link/2` does not return
-  until the given function has returned.
+  Once the agent is spawned, the given function `fun` is invoked in the server
+  process, and should return the initial agent state. Note that `start_link/2`
+  does not return until the given function has returned.
 
   ## Options
 
@@ -211,7 +267,7 @@ defmodule Agent do
       %RuntimeError{message: "oops"}
 
   """
-  @spec start_link((() -> term), GenServer.options) :: on_start
+  @spec start_link((() -> term), GenServer.options()) :: on_start
   def start_link(fun, options \\ []) when is_function(fun, 0) do
     GenServer.start_link(Agent.Server, fun, options)
   end
@@ -223,7 +279,7 @@ defmodule Agent do
   instead of an anonymous function; `fun` in `module` will be called with the
   given arguments `args` to initialize the state.
   """
-  @spec start_link(module, atom, [any], GenServer.options) :: on_start
+  @spec start_link(module, atom, [any], GenServer.options()) :: on_start
   def start_link(module, fun, args, options \\ []) do
     GenServer.start_link(Agent.Server, {module, fun, args}, options)
   end
@@ -240,7 +296,7 @@ defmodule Agent do
       42
 
   """
-  @spec start((() -> term), GenServer.options) :: on_start
+  @spec start((() -> term), GenServer.options()) :: on_start
   def start(fun, options \\ []) when is_function(fun, 0) do
     GenServer.start(Agent.Server, fun, options)
   end
@@ -250,7 +306,7 @@ defmodule Agent do
 
   See `start_link/4` for more information.
   """
-  @spec start(module, atom, [any], GenServer.options) :: on_start
+  @spec start(module, atom, [any], GenServer.options()) :: on_start
   def start(module, fun, args, options \\ []) do
     GenServer.start(Agent.Server, {module, fun, args}, options)
   end
@@ -383,6 +439,15 @@ defmodule Agent do
 
   Note that `cast` returns `:ok` immediately, regardless of whether `agent` (or
   the node it should live on) exists.
+
+  ## Examples
+
+      iex> {:ok, pid} = Agent.start_link(fn -> 42 end)
+      iex> Agent.cast(pid, fn state -> state + 1 end)
+      :ok
+      iex> Agent.get(pid, fn state -> state end)
+      43
+
   """
   @spec cast(agent, (state -> state)) :: :ok
   def cast(agent, fun) when is_function(fun, 1) do

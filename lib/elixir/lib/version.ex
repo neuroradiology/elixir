@@ -6,7 +6,7 @@ defmodule Version do
   generated after parsing via `Version.parse/1`.
 
   `Version` parsing and requirements follow
-  [SemVer 2.0 schema](http://semver.org/).
+  [SemVer 2.0 schema](https://semver.org/).
 
   ## Versions
 
@@ -14,13 +14,17 @@ defmodule Version do
 
       MAJOR.MINOR.PATCH
 
-  Pre-releases are supported by appending `-[0-9A-Za-z-\.]`:
+  Pre-releases are supported by optionally appending a hyphen and a series of
+  period-separated identifiers immediately following the patch version.
+  Identifiers consist of only ASCII alphanumeric characters and hyphens (`[0-9A-Za-z-]`):
 
       "1.0.0-alpha.3"
 
-  Build information can be added by appending `+[0-9A-Za-z-\.]`:
+  Build information can be added by appending a plus sign and a series of
+  dot-separated identifiers immediately following the patch or pre-release version.
+  Identifiers consist of only ASCII alphanumeric characters and hyphens (`[0-9A-Za-z-]`):
 
-      "1.0.0-alpha.3+20130417140000"
+      "1.0.0-alpha.3+20130417140000.amd64"
 
   ## Struct
 
@@ -31,9 +35,9 @@ defmodule Version do
   ## Requirements
 
   Requirements allow you to specify which versions of a given
-  dependency you are willing to work against. Requirements support common
-  operators like `>=`, `<=`, `>`, `==`, and friends that
-  work as one would expect:
+  dependency you are willing to work against. Requirements support the common
+  comparison operators such as `>`, `>=`, `<`, `<=`, `==`, `!=` that work as one would expect,
+  and additionally the special operator `~>` described in detail further below.
 
       # Only version 2.0.0
       "== 2.0.0"
@@ -51,10 +55,11 @@ defmodule Version do
 
       "~> 2.0.0"
 
-  `~>` will never include pre-release versions of its upper bound.
-  It can also be used to set an upper bound on only the major
+  `~>` will never include pre-release versions of its upper bound,
+  regardless of the usage of the `:allow_pre` option, or whether the operand
+  is a pre-release version. It can also be used to set an upper bound on only the major
   version part. See the table below for `~>` requirements and
-  their corresponding translation.
+  their corresponding translations.
 
   `~>`           | Translation
   :------------- | :---------------------
@@ -64,74 +69,111 @@ defmodule Version do
   `~> 2.0`       | `>= 2.0.0 and < 3.0.0`
   `~> 2.1`       | `>= 2.1.0 and < 3.0.0`
 
-  When `allow_pre: false` is set, the requirement will not match a
-  pre-release version unless the operand is a pre-release version.
+  The requirement operand after the `~>` is allowed to omit the patch version,
+  allowing us to express `~> 2.1` or `~> 2.1-dev`, something that wouldn't be allowed
+  when using the common comparison operators.
+
+  When the `:allow_pre` option is set `false` in `Version.match?/3`, the requirement
+  will not match a pre-release version unless the operand is a pre-release version.
   The default is to always allow pre-releases but note that in
   Hex `:allow_pre` is set to `false`. See the table below for examples.
 
-  Requirement    | Version     | `:allow_pre` | Matches
-  :------------- | :---------- | :----------- | :------
-  `~> 2.0`       | `2.1.0`     | -            | `true`
-  `~> 2.0`       | `3.0.0`     | -            | `false`
-  `~> 2.0.0`     | `2.0.1`     | -            | `true`
-  `~> 2.0.0`     | `2.1.0`     | -            | `false`
-  `~> 2.1.2`     | `2.1.3-dev` | `true`       | `true`
-  `~> 2.1.2`     | `2.1.3-dev` | `false`      | `false`
-  `~> 2.1-dev`   | `2.2.0-dev` | `false`      | `true`
-  `~> 2.1.2-dev` | `2.1.3-dev` | `false`      | `true`
-  `>= 2.1.0`     | `2.2.0-dev` | `false`      | `false`
-  `>= 2.1.0-dev` | `2.2.3-dev` | `true`       | `true`
+  Requirement    | Version     | `:allow_pre`      | Matches
+  :------------- | :---------- | :---------------- | :------
+  `~> 2.0`       | `2.1.0`     | `true` or `false` | `true`
+  `~> 2.0`       | `3.0.0`     | `true` or `false` | `false`
+  `~> 2.0.0`     | `2.0.5`     | `true` or `false` | `true`
+  `~> 2.0.0`     | `2.1.0`     | `true` or `false` | `false`
+  `~> 2.1.2`     | `2.1.6-dev` | `true`            | `true`
+  `~> 2.1.2`     | `2.1.6-dev` | `false`           | `false`
+  `~> 2.1-dev`   | `2.2.0-dev` | `true` or `false` | `true`
+  `~> 2.1.2-dev` | `2.1.6-dev` | `true` or `false` | `true`
+  `>= 2.1.0`     | `2.2.0-dev` | `true`            | `true`
+  `>= 2.1.0`     | `2.2.0-dev` | `false`           | `false`
+  `>= 2.1.0-dev` | `2.2.6-dev` | `true` or `false` | `true`
 
   """
 
   import Kernel, except: [match?: 2]
   defstruct [:major, :minor, :patch, :pre, :build]
 
-  @type version     :: String.t | t
-  @type requirement :: String.t | Version.Requirement.t
-  @type major       :: String.t | non_neg_integer
-  @type minor       :: non_neg_integer | nil
-  @type patch       :: non_neg_integer | nil
-  @type pre         :: [String.t | non_neg_integer]
-  @type build       :: String.t | nil
-  @type matchable   :: {major :: major,
-                        minor :: minor,
-                        patch :: patch,
-                        pre   :: pre}
-  @type t           :: %__MODULE__{
-                         major: major,
-                         minor: minor,
-                         patch: patch,
-                         pre:   pre,
-                         build: build}
+  @type version :: String.t() | t
+  @type requirement :: String.t() | Version.Requirement.t()
+  @type major :: non_neg_integer
+  @type minor :: non_neg_integer
+  @type patch :: non_neg_integer
+  @type pre :: [String.t() | non_neg_integer]
+  @type build :: String.t() | nil
+  @type t :: %__MODULE__{major: major, minor: minor, patch: patch, pre: pre, build: build}
 
   defmodule Requirement do
-    @moduledoc false
+    @moduledoc """
+    A struct that holds version requirement information.
+
+    The struct fields are private and should not be accessed.
+
+    See the "Requirements" section in the `Version` module
+    for more information.
+    """
+
     defstruct [:source, :matchspec, :compiled]
-    @type t :: %__MODULE__{}
+
+    @opaque t :: %__MODULE__{
+              source: String.t(),
+              matchspec: :ets.match_spec() | :ets.comp_match_spec(),
+              compiled: boolean
+            }
+
+    @doc false
+    @spec new(String.t(), :ets.match_spec()) :: t
+    def new(source, spec) do
+      %__MODULE__{source: source, matchspec: spec, compiled: false}
+    end
+
+    @doc false
+    @spec compile(t) :: t
+    def compile(%__MODULE__{matchspec: spec} = requirement) do
+      %{requirement | matchspec: :ets.match_spec_compile(spec), compiled: true}
+    end
+
+    @doc false
+    @spec match?(t, tuple) :: boolean
+    def match?(%__MODULE__{matchspec: spec, compiled: true}, matchable_pattern) do
+      matches = :ets.match_spec_run([matchable_pattern], spec)
+      matches != []
+    end
+
+    def match?(%__MODULE__{matchspec: spec, compiled: false}, matchable_pattern) do
+      {:ok, result} = :ets.test_ms(matchable_pattern, spec)
+      result != false
+    end
   end
 
   defmodule InvalidRequirementError do
     defexception [:requirement]
 
+    @impl true
     def exception(requirement) when is_binary(requirement) do
       %__MODULE__{requirement: requirement}
     end
 
+    @impl true
     def message(%{requirement: requirement}) do
-      "invalid requirement: #{inspect requirement}"
+      "invalid requirement: #{inspect(requirement)}"
     end
   end
 
   defmodule InvalidVersionError do
     defexception [:version]
 
+    @impl true
     def exception(version) when is_binary(version) do
       %__MODULE__{version: version}
     end
 
+    @impl true
     def message(%{version: version}) do
-      "invalid version: #{inspect version}"
+      "invalid version: #{inspect(version)}"
     end
   end
 
@@ -147,8 +189,8 @@ defmodule Version do
   ## Options
 
     * `:allow_pre` (boolean) - when `false`, pre-release versions will not match
-      unless the operand is a pre-release version. See the table above
-      for examples. Defaults to `true`.
+      unless the operand is a pre-release version. Defaults to `true`.
+      For examples, please refer to the table above under the "Requirements" section.
 
   ## Examples
 
@@ -156,6 +198,12 @@ defmodule Version do
       true
 
       iex> Version.match?("2.0.0", "== 1.0.0")
+      false
+
+      iex> Version.match?("2.1.6-dev", "~> 2.1.2")
+      true
+
+      iex> Version.match?("2.1.6-dev", "~> 2.1.2", allow_pre: false)
       false
 
       iex> Version.match?("foo", "== 1.0.0")
@@ -169,23 +217,14 @@ defmodule Version do
   def match?(version, requirement, opts \\ [])
 
   def match?(version, requirement, opts) when is_binary(requirement) do
-    case parse_requirement(requirement) do
-      {:ok, requirement} ->
-        match?(version, requirement, opts)
-      :error ->
-        raise InvalidRequirementError, requirement
-    end
+    match?(version, parse_requirement!(requirement), opts)
   end
 
-  def match?(version, %Requirement{matchspec: spec, compiled: false}, opts) do
+  def match?(version, requirement, opts) do
     allow_pre = Keyword.get(opts, :allow_pre, true)
-    {:ok, result} = :ets.test_ms(to_matchable(version, allow_pre), spec)
-    result != false
-  end
+    matchable_pattern = to_matchable(version, allow_pre)
 
-  def match?(version, %Requirement{matchspec: spec, compiled: true}, opts) do
-    allow_pre = Keyword.get(opts, :allow_pre, true)
-    :ets.match_spec_run([to_matchable(version, allow_pre)], spec) != []
+    Requirement.match?(requirement, matchable_pattern)
   end
 
   @doc """
@@ -254,23 +293,23 @@ defmodule Version do
       :error
 
   """
-  @spec parse(String.t) :: {:ok, t} | :error
+  @spec parse(String.t()) :: {:ok, t} | :error
   def parse(string) when is_binary(string) do
     case Version.Parser.parse_version(string) do
       {:ok, {major, minor, patch, pre, build_parts}} ->
         build = if build_parts == [], do: nil, else: Enum.join(build_parts, "")
-        version = %Version{major: major, minor: minor, patch: patch,
-                           pre: pre, build: build}
+        version = %Version{major: major, minor: minor, patch: patch, pre: pre, build: build}
         {:ok, version}
-     :error ->
-       :error
+
+      :error ->
+        :error
     end
   end
 
   @doc """
   Parses a version string into a `Version`.
 
-  If `string` is an invalid version, an `InvalidVersionError` is raised.
+  If `string` is an invalid version, a `Version.InvalidVersionError` is raised.
 
   ## Examples
 
@@ -281,7 +320,7 @@ defmodule Version do
       ** (Version.InvalidVersionError) invalid version: "2.0-alpha1"
 
   """
-  @spec parse!(String.t) :: t | no_return
+  @spec parse!(String.t()) :: t
   def parse!(string) when is_binary(string) do
     case parse(string) do
       {:ok, version} -> version
@@ -302,13 +341,41 @@ defmodule Version do
       :error
 
   """
-  @spec parse_requirement(String.t) :: {:ok, Requirement.t} | :error
+  @spec parse_requirement(String.t()) :: {:ok, Requirement.t()} | :error
   def parse_requirement(string) when is_binary(string) do
     case Version.Parser.parse_requirement(string) do
       {:ok, spec} ->
-        {:ok, %Requirement{source: string, matchspec: spec, compiled: false}}
+        requirement = Requirement.new(string, spec)
+        {:ok, requirement}
+
       :error ->
         :error
+    end
+  end
+
+  @doc """
+  Parses a version requirement string into a `Version.Requirement` struct.
+
+  If `string` is an invalid requirement, a `Version.InvalidRequirementError` is raised.
+
+  ## Examples
+
+      iex> Version.parse_requirement!("== 2.0.1")
+      #Version.Requirement<== 2.0.1>
+
+      iex> Version.parse_requirement!("== == 2.0.1")
+      ** (Version.InvalidRequirementError) invalid requirement: "== == 2.0.1"
+
+  """
+  @doc since: "1.8.0"
+  @spec parse_requirement!(String.t()) :: Requirement.t()
+  def parse_requirement!(string) when is_binary(string) do
+    case Version.Parser.parse_requirement(string) do
+      {:ok, spec} ->
+        Requirement.new(string, spec)
+
+      :error ->
+        raise InvalidRequirementError, string
     end
   end
 
@@ -321,9 +388,9 @@ defmodule Version do
   can not be sent to a process on another node and still remain a valid
   compiled match_spec, nor can it be stored on disk).
   """
-  @spec compile_requirement(Requirement.t) :: Requirement.t
-  def compile_requirement(%Requirement{matchspec: spec} = req) do
-    %{req | matchspec: :ets.match_spec_compile(spec), compiled: true}
+  @spec compile_requirement(Requirement.t()) :: Requirement.t()
+  def compile_requirement(requirement) do
+    Requirement.compile(requirement)
   end
 
   defp to_matchable(%Version{major: major, minor: minor, patch: patch, pre: pre}, allow_pre?) do
@@ -334,6 +401,7 @@ defmodule Version do
     case Version.Parser.parse_version(string) do
       {:ok, {major, minor, patch, pre, _build_parts}} ->
         {major, minor, patch, pre, allow_pre?}
+
       :error ->
         raise InvalidVersionError, string
     end
@@ -352,8 +420,9 @@ defmodule Version do
       {"!=", :!=},
       {"!", :!=},
       {" or ", :||},
-      {" and ", :&&},
+      {" and ", :&&}
     ]
+
     for {string_op, atom_op} <- operators do
       def lexer(unquote(string_op) <> rest, acc) do
         lexer(rest, [unquote(atom_op) | acc])
@@ -373,8 +442,10 @@ defmodule Version do
         case head do
           head when is_binary(head) ->
             [<<head::binary, char::utf8>> | acc]
+
           head when head in [:||, :&&] ->
             [<<char::utf8>>, :==, head | acc]
+
           _other ->
             [<<char::utf8>>, head | acc]
         end
@@ -386,13 +457,12 @@ defmodule Version do
       Enum.reverse(acc)
     end
 
-    @spec parse_requirement(String.t) :: {:ok, term} | :error
+    @spec parse_requirement(String.t()) :: {:ok, term} | :error
     def parse_requirement(source) do
       lexed = lexer(source, [])
       to_matchspec(lexed)
     end
 
-    @spec parse_version(String.t) :: {:ok, Version.matchable} | :error
     def parse_version(string, approximate? \\ false) when is_binary(string) do
       destructure [version_with_pre, build], String.split(string, "+", parts: 2)
       destructure [version, pre], String.split(version_with_pre, "-", parts: 2)
@@ -412,6 +482,7 @@ defmodule Version do
     end
 
     defp require_digits(nil), do: :error
+
     defp require_digits(string) do
       if leading_zero?(string), do: :error, else: parse_digits(string, "")
     end
@@ -421,18 +492,19 @@ defmodule Version do
 
     defp parse_digits(<<char, rest::binary>>, acc) when char in ?0..?9,
       do: parse_digits(rest, <<acc::binary, char>>)
-    defp parse_digits(<<>>, acc) when byte_size(acc) > 0,
-      do: {:ok, String.to_integer(acc)}
-    defp parse_digits(_, _acc),
-      do: :error
+
+    defp parse_digits(<<>>, acc) when byte_size(acc) > 0, do: {:ok, String.to_integer(acc)}
+    defp parse_digits(_, _acc), do: :error
 
     defp maybe_patch(patch, approximate?)
     defp maybe_patch(nil, true), do: {:ok, nil}
     defp maybe_patch(patch, _), do: require_digits(patch)
 
     defp optional_dot_separated(nil), do: {:ok, []}
+
     defp optional_dot_separated(string) do
       parts = String.split(string, ".")
+
       if Enum.all?(parts, &(&1 != "" and valid_identifier?(&1))) do
         {:ok, parts}
       else
@@ -448,6 +520,7 @@ defmodule Version do
           else
             convert_parts_to_integer(rest, [integer | acc])
           end
+
         :error ->
           convert_parts_to_integer(rest, [part | acc])
       end
@@ -482,17 +555,17 @@ defmodule Version do
     end
 
     # or <op> | and <op>
-    defp valid_requirement?(a, [b | next]) when is_atom(a) and is_atom(b) and a in [:'||', :'&&'] do
+    defp valid_requirement?(a, [b | next]) when is_atom(a) and is_atom(b) and a in [:||, :&&] do
       valid_requirement?(b, next)
     end
 
     # <version> or | <version> and
-    defp valid_requirement?(a, [b | next]) when is_binary(a) and is_atom(b) and b in [:'||', :'&&'] do
+    defp valid_requirement?(a, [b | next]) when is_binary(a) and is_atom(b) and b in [:||, :&&] do
       valid_requirement?(b, next)
     end
 
     # or <version> | and <version>
-    defp valid_requirement?(a, [b | next]) when is_atom(a) and is_binary(b) and a in [:'||', :'&&'] do
+    defp valid_requirement?(a, [b | next]) when is_atom(a) and is_binary(b) and a in [:||, :&&] do
       valid_requirement?(b, next)
     end
 
@@ -518,8 +591,8 @@ defmodule Version do
     defp to_matchspec(lexed) do
       if valid_requirement?(lexed) do
         first = to_condition(lexed)
-        rest  = Enum.drop(lexed, 2)
-        {:ok, [{{:'$1', :'$2', :'$3', :'$4', :'$5'}, [to_condition(first, rest)], [:'$_']}]}
+        rest = Enum.drop(lexed, 2)
+        {:ok, [{{:"$1", :"$2", :"$3", :"$4", :"$5"}, [to_condition(first, rest)], [:"$_"]}]}
       else
         :error
       end
@@ -534,46 +607,54 @@ defmodule Version do
 
     defp to_condition([:!=, version | _]) do
       matchable = parse_condition(version)
-      main_condition(:'/=', matchable)
+      main_condition(:"/=", matchable)
     end
 
     defp to_condition([:~>, version | _]) do
       from = parse_condition(version, true)
-      to   = approximate_upper(from)
+      to = approximate_upper(from)
 
-      {:andalso, to_condition([:>=, matchable_to_string(from)]),
-                 to_condition([:<, matchable_to_string(to)])}
+      {
+        :andalso,
+        to_condition([:>=, matchable_to_string(from)]),
+        to_condition([:<, matchable_to_string(to)])
+      }
     end
 
     defp to_condition([:>, version | _]) do
       {major, minor, patch, pre} = parse_condition(version)
 
-      {:andalso, {:orelse, main_condition(:>, {major, minor, patch}),
-                           {:andalso, main_condition(:==, {major, minor, patch}),
-                                      pre_condition(:>, pre)}},
-                  no_pre_condition(pre)}
+      {
+        :andalso,
+        {
+          :orelse,
+          main_condition(:>, {major, minor, patch}),
+          {:andalso, main_condition(:==, {major, minor, patch}), pre_condition(:>, pre)}
+        },
+        no_pre_condition(pre)
+      }
     end
 
     defp to_condition([:>=, version | _]) do
       matchable = parse_condition(version)
 
-      {:orelse, main_condition(:==, matchable),
-                to_condition([:>, version])}
+      {:orelse, main_condition(:==, matchable), to_condition([:>, version])}
     end
 
     defp to_condition([:<, version | _]) do
       {major, minor, patch, pre} = parse_condition(version)
 
-      {:orelse, main_condition(:<, {major, minor, patch}),
-                {:andalso, main_condition(:==, {major, minor, patch}),
-                           pre_condition(:<, pre)}}
+      {
+        :orelse,
+        main_condition(:<, {major, minor, patch}),
+        {:andalso, main_condition(:==, {major, minor, patch}), pre_condition(:<, pre)}
+      }
     end
 
     defp to_condition([:<=, version | _]) do
       matchable = parse_condition(version)
 
-      {:orelse, main_condition(:==, matchable),
-                to_condition([:<, version])}
+      {:orelse, main_condition(:==, matchable), to_condition([:<, version])}
     end
 
     defp to_condition(current, []) do
@@ -591,52 +672,65 @@ defmodule Version do
     defp parse_condition(version, approximate? \\ false) do
       case parse_version(version, approximate?) do
         {:ok, {major, minor, patch, pre, _build}} -> {major, minor, patch, pre}
-        :error -> throw :invalid_matchspec
+        :error -> throw(:invalid_matchspec)
       end
     end
 
     defp main_condition(op, version) when tuple_size(version) == 3 do
-      {op, {{:'$1', :'$2', :'$3'}},
-           {:const, version}}
+      {op, {{:"$1", :"$2", :"$3"}}, {:const, version}}
     end
 
     defp main_condition(op, version) when tuple_size(version) == 4 do
-      {op, {{:'$1', :'$2', :'$3', :'$4'}},
-           {:const, version}}
+      {op, {{:"$1", :"$2", :"$3", :"$4"}}, {:const, version}}
     end
 
     defp pre_condition(:>, pre) do
       length_pre = length(pre)
 
-      {:orelse, {:andalso, {:==, {:length, :'$4'}, 0},
-                           {:const, length_pre != 0}},
-                {:andalso, {:const, length_pre != 0},
-                           {:orelse, {:>, {:length, :'$4'}, length_pre},
-                                     {:andalso, {:==, {:length, :'$4'}, length_pre},
-                                                {:>, :'$4', {:const, pre}}}}}}
+      {
+        :orelse,
+        {:andalso, {:==, {:length, :"$4"}, 0}, {:const, length_pre != 0}},
+        {
+          :andalso,
+          {:const, length_pre != 0},
+          {
+            :orelse,
+            {:>, {:length, :"$4"}, length_pre},
+            {:andalso, {:==, {:length, :"$4"}, length_pre}, {:>, :"$4", {:const, pre}}}
+          }
+        }
+      }
     end
 
     defp pre_condition(:<, pre) do
       length_pre = length(pre)
 
-      {:orelse, {:andalso, {:'/=', {:length, :'$4'}, 0},
-                           {:const, length_pre == 0}},
-                {:andalso, {:'/=', {:length, :'$4'}, 0},
-                           {:orelse, {:<, {:length, :'$4'}, length_pre},
-                                     {:andalso, {:==, {:length, :'$4'}, length_pre},
-                                                {:<, :'$4', {:const, pre}}}}}}
+      {
+        :orelse,
+        {:andalso, {:"/=", {:length, :"$4"}, 0}, {:const, length_pre == 0}},
+        {
+          :andalso,
+          {:"/=", {:length, :"$4"}, 0},
+          {
+            :orelse,
+            {:<, {:length, :"$4"}, length_pre},
+            {:andalso, {:==, {:length, :"$4"}, length_pre}, {:<, :"$4", {:const, pre}}}
+          }
+        }
+      }
     end
 
     defp no_pre_condition([]) do
-      {:orelse, :'$5', {:==, {:length, :'$4'}, 0}}
+      {:orelse, :"$5", {:==, {:length, :"$4"}, 0}}
     end
+
     defp no_pre_condition(_pre) do
       {:const, true}
     end
 
     defp matchable_to_string({major, minor, patch, pre}) do
       patch = if patch, do: "#{patch}", else: "0"
-      pre   = if pre != [], do: "-#{Enum.join(pre, ".")}"
+      pre = if pre != [], do: "-#{Enum.join(pre, ".")}"
       "#{major}.#{minor}.#{patch}#{pre}"
     end
   end

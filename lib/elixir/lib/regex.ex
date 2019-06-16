@@ -7,9 +7,9 @@ defmodule Regex do
   in the [`:re` module documentation](http://www.erlang.org/doc/man/re.html).
 
   Regular expressions in Elixir can be created using the sigils
-  [`~r`](Kernel.html#sigil_r/2) or [`~R`](Kernel.html#sigil_R/2):
+  `~r` (see `Kernel.sigil_r/2`) or `~R` (see `Kernel.sigil_R/2`):
 
-      # A simple regular expressions that matches foo anywhere in the string
+      # A simple regular expression that matches foo anywhere in the string
       ~r/foo/
 
       # A regular expression with case insensitive and Unicode options
@@ -26,25 +26,12 @@ defmodule Regex do
 
       ~r/(?<foo>.)(?<bar>.)/ == ~r/(?<foo>.)(?<bar>.)/
 
-  may return `true` or `false` depending on your machine, endianess,
+  may return `true` or `false` depending on your machine, endianness,
   available optimizations and others. You can, however, retrieve the source
   of a compiled regular expression by accessing the `source` field, and then
   compare those directly:
 
       ~r/(?<foo>.)(?<bar>.)/.source == ~r/(?<foo>.)(?<bar>.)/.source
-
-  ## Precompilation
-
-  Regular expressions built with sigil are precompiled and stored in `.beam`
-  files. This may be a problem if you are precompiling Elixir to run in
-  different OTP releases, as OTP releases may update the underlying regular
-  expression engine at any time.
-
-  For such reasons, we always recomend precompiling Elixir projects using
-  the OTP version meant to run in production. In case cross-compilation is
-  really necessary, you can manually invoke `Regex.recompile/1` or `Regex.
-  recompile!/1` to perform a runtime version check and recompile the regex
-  if necessary.
 
   ## Modifiers
 
@@ -58,7 +45,7 @@ defmodule Regex do
 
     * `dotall` (s) - causes dot to match newlines and also set newline to
       anycrlf; the new line setting can be overridden by setting `(*CR)` or
-      `(*LF)` or `(*CRLF)` or `(*ANY)` according to re documentation
+      `(*LF)` or `(*CRLF)` or `(*ANY)` according to `:re` documentation
 
     * `multiline` (m) - causes `^` and `$` to mark the beginning and end of
       each line; use `\A` and `\z` to match the end or beginning of the string
@@ -79,7 +66,7 @@ defmodule Regex do
     * `no_auto_capture` - not available, use `?:` instead
     * `newline` - not available, use `(*CR)` or `(*LF)` or `(*CRLF)` or
       `(*ANYCRLF)` or `(*ANY)` at the beginning of the regexp according to the
-      re documentation
+      `:re` documentation
 
   ## Captures
 
@@ -93,7 +80,7 @@ defmodule Regex do
       complete matching part of the string; all explicitly captured subpatterns
       are discarded
 
-    * `:all_but_first`- all but the first matching subpattern, i.e. all
+    * `:all_but_first` - all but the first matching subpattern, i.e. all
       explicitly captured subpatterns, but not the complete matching part of
       the string
 
@@ -103,6 +90,56 @@ defmodule Regex do
 
     * `list(binary)` - a list of named captures to capture
 
+  ## Character classes
+
+  Regex supports several built in named character classes. These are used by
+  enclosing the class name in `[: :]` inside a group. For example:
+
+      iex> String.match?("123", ~r/^[[:alnum:]]+$/)
+      true
+      iex> String.match?("123 456", ~r/^[[:alnum:][:blank:]]+$/)
+      true
+
+  The supported class names are:
+
+    * alnum - Letters and digits
+    * alpha - Letters
+    * ascii - Character codes 0-127
+    * blank - Space or tab only
+    * cntrl - Control characters
+    * digit - Decimal digits (same as \\d)
+    * graph - Printing characters, excluding space
+    * lower - Lowercase letters
+    * print - Printing characters, including space
+    * punct - Printing characters, excluding letters, digits, and space
+    * space - Whitespace (the same as \s from PCRE 8.34)
+    * upper - Uppercase letters
+    * word  - "Word" characters (same as \w)
+    * xdigit - Hexadecimal digits
+
+  Note the behaviour of those classes may change according to the Unicode
+  and other modifiers:
+
+      iex> String.match?("josé", ~r/^[[:lower:]]+$/)
+      false
+      iex> String.match?("josé", ~r/^[[:lower:]]+$/u)
+      true
+
+  ## Precompilation
+
+  Regular expressions built with sigil are precompiled and stored in `.beam`
+  files. Precompiled regexes will be checked in runtime and may work slower
+  between operating systems and OTP releases. This is rarely a problem, as most Elixir code
+  shared during development is compiled on the target (such as dependencies,
+  archives, and escripts) and, when running in production, the code must either
+  be compiled on the target (via `mix compile` or similar) or released on the
+  host (via `mix releases` or similar) with a matching OTP, OS and architecture
+  as as the target.
+
+  If you know you are running on a different system that the current one and
+  you are doing multiple matches with the regex, you can manually invoke
+  `Regex.recompile/1` or `Regex.recompile!/1` to perform a runtime version
+  check and recompile the regex if necessary.
   """
 
   defstruct re_pattern: nil, source: "", opts: "", re_version: ""
@@ -117,8 +154,9 @@ defmodule Regex do
   Compiles the regular expression.
 
   The given options can either be a binary with the characters
-  representing the same regex options given to the `~r` sigil,
-  or a list of options, as expected by the Erlang's `:re` module.
+  representing the same regex options given to the
+  `~r` (see `Kernel.sigil_r/2`) sigil, or a list of options, as
+  expected by the Erlang's `:re` module.
 
   It returns `{:ok, regex}` in case of success,
   `{:error, reason}` otherwise.
@@ -126,14 +164,14 @@ defmodule Regex do
   ## Examples
 
       iex> Regex.compile("foo")
-      {:ok, ~r"foo"}
+      {:ok, ~r/foo/}
 
       iex> Regex.compile("*foo")
       {:error, {'nothing to repeat', 0}}
 
   """
   @spec compile(binary, binary | [term]) :: {:ok, t} | {:error, any}
-  def compile(source, options \\ "") do
+  def compile(source, options \\ "") when is_binary(source) do
     compile(source, options, version())
   end
 
@@ -151,10 +189,11 @@ defmodule Regex do
     compile(source, options, "", version)
   end
 
-  defp compile(source, opts, doc_opts, version) when is_binary(source) do
+  defp compile(source, opts, doc_opts, version) do
     case :re.compile(source, opts) do
       {:ok, re_pattern} ->
         {:ok, %Regex{re_pattern: re_pattern, re_version: version, source: source, opts: doc_opts}}
+
       error ->
         error
     end
@@ -164,7 +203,7 @@ defmodule Regex do
   Compiles the regular expression and raises `Regex.CompileError` in case of errors.
   """
   @spec compile!(binary, binary | [term]) :: t
-  def compile!(source, options \\ "") do
+  def compile!(source, options \\ "") when is_binary(source) do
     case compile(source, options) do
       {:ok, regex} -> regex
       {:error, {reason, at}} -> raise Regex.CompileError, "#{reason} at position #{at}"
@@ -177,14 +216,15 @@ defmodule Regex do
   This checks the version stored in the regular expression
   and recompiles the regex in case of version mismatch.
   """
+  @doc since: "1.4.0"
   @spec recompile(t) :: t
   def recompile(%Regex{} = regex) do
     version = version()
 
-    # We use Map.get/3 by choice to support old regexes versions.
-    case Map.get(regex, :re_version, :error) do
-      ^version ->
+    case regex do
+      %{re_version: ^version} ->
         {:ok, regex}
+
       _ ->
         %{source: source, opts: opts} = regex
         compile(source, opts, version)
@@ -194,6 +234,7 @@ defmodule Regex do
   @doc """
   Recompiles the existing regular expression and raises `Regex.CompileError` in case of errors.
   """
+  @doc since: "1.4.0"
   @spec recompile!(t) :: t
   def recompile!(regex) do
     case recompile(regex) do
@@ -205,13 +246,10 @@ defmodule Regex do
   @doc """
   Returns the version of the underlying Regex engine.
   """
-  # TODO: No longer check for function_exported? on OTP 20+.
+  @doc since: "1.4.0"
+  @spec version :: term()
   def version do
-    if function_exported?(:re, :version, 0) do
-      :re.version()
-    else
-      "8.33 2013-05-29"
-    end
+    {:re.version(), :erlang.system_info(:endian)}
   end
 
   @doc """
@@ -226,9 +264,9 @@ defmodule Regex do
       false
 
   """
-  @spec match?(t, String.t) :: boolean
-  def match?(%Regex{re_pattern: compiled}, string) when is_binary(string) do
-    :re.run(string, compiled, [{:capture, :none}]) == :match
+  @spec match?(t, String.t()) :: boolean
+  def match?(%Regex{} = regex, string) when is_binary(string) do
+    safe_run(regex, string, [{:capture, :none}]) == :match
   end
 
   @doc """
@@ -255,7 +293,8 @@ defmodule Regex do
 
   ## Options
 
-    * `:return`  - sets to `:index` to return indexes. Defaults to `:binary`.
+    * `:return` - set to `:index` to return byte index and match length.
+      Defaults to `:binary`.
     * `:capture` - what to capture in the result. Check the moduledoc for `Regex`
       to see the possible capture values.
 
@@ -274,21 +313,24 @@ defmodule Regex do
   @spec run(t, binary, [term]) :: nil | [binary] | [{integer, integer}]
   def run(regex, string, options \\ [])
 
-  def run(%Regex{re_pattern: compiled}, string, options) when is_binary(string) do
-    return   = Keyword.get(options, :return, :binary)
+  def run(%Regex{} = regex, string, options) when is_binary(string) do
+    return = Keyword.get(options, :return, :binary)
     captures = Keyword.get(options, :capture, :all)
 
-    case :re.run(string, compiled, [{:capture, captures, return}]) do
+    case safe_run(regex, string, [{:capture, captures, return}]) do
       :nomatch -> nil
-      :match   -> []
+      :match -> []
       {:match, results} -> results
     end
   end
 
   @doc """
-  Returns the given captures as a map or `nil` if no captures are
-  found. The option `:return` can be set to `:index` to get indexes
-  back.
+  Returns the given captures as a map or `nil` if no captures are found.
+
+  ## Options
+
+    * `:return` - set to `:index` to return byte index and match length.
+      Defaults to `:binary`.
 
   ## Examples
 
@@ -302,7 +344,7 @@ defmodule Regex do
       nil
 
   """
-  @spec named_captures(t, String.t, [term]) :: map | nil
+  @spec named_captures(t, String.t(), [term]) :: map | nil
   def named_captures(regex, string, options \\ []) when is_binary(string) do
     names = names(regex)
     options = Keyword.put(options, :capture, names)
@@ -327,7 +369,7 @@ defmodule Regex do
       "foo"
 
   """
-  @spec source(t) :: String.t
+  @spec source(t) :: String.t()
   def source(%Regex{source: source}) do
     source
   end
@@ -341,7 +383,7 @@ defmodule Regex do
       "m"
 
   """
-  @spec opts(t) :: String.t
+  @spec opts(t) :: String.t()
   def opts(%Regex{opts: opts}) do
     opts
   end
@@ -355,8 +397,18 @@ defmodule Regex do
       ["foo"]
 
   """
-  @spec names(t) :: [String.t]
-  def names(%Regex{re_pattern: re_pattern}) do
+  @spec names(t) :: [String.t()]
+  def names(%Regex{re_pattern: compiled, re_version: version, source: source}) do
+    re_pattern =
+      case version() do
+        ^version ->
+          compiled
+
+        _ ->
+          {:ok, recompiled} = :re.compile(source)
+          recompiled
+      end
+
     {:namelist, names} = :re.inspect(re_pattern, :namelist)
     names
   end
@@ -370,7 +422,8 @@ defmodule Regex do
 
   ## Options
 
-    * `:return`  - sets to `:index` to return indexes. Defaults to `:binary`.
+    * `:return` - set to `:index` to return byte index and match length.
+      Defaults to `:binary`.
     * `:capture` - what to capture in the result. Check the moduledoc for `Regex`
       to see the possible capture values.
 
@@ -388,19 +441,33 @@ defmodule Regex do
       iex> Regex.scan(~r/\p{Sc}/u, "$, £, and €")
       [["$"], ["£"], ["€"]]
 
+      iex> Regex.scan(~r/=+/, "=ü†ƒ8===", return: :index)
+      [[{0, 1}], [{9, 3}]]
+
   """
-  @spec scan(t, String.t, [term]) :: [[String.t]]
+  @spec scan(t, String.t(), [term]) :: [[String.t()]]
   def scan(regex, string, options \\ [])
 
-  def scan(%Regex{re_pattern: compiled}, string, options) when is_binary(string) do
-    return   = Keyword.get(options, :return, :binary)
+  def scan(%Regex{} = regex, string, options) when is_binary(string) do
+    return = Keyword.get(options, :return, :binary)
     captures = Keyword.get(options, :capture, :all)
-    options  = [{:capture, captures, return}, :global]
+    options = [{:capture, captures, return}, :global]
 
-    case :re.run(string, compiled, options) do
+    case safe_run(regex, string, options) do
       :match -> []
       :nomatch -> []
       {:match, results} -> results
+    end
+  end
+
+  defp safe_run(
+         %Regex{re_pattern: compiled, source: source, re_version: version},
+         string,
+         options
+       ) do
+    case version() do
+      ^version -> :re.run(string, compiled, options)
+      _ -> :re.run(string, source, options)
     end
   end
 
@@ -416,6 +483,7 @@ defmodule Regex do
       given pattern.
 
     * `:trim` - when `true`, removes empty strings (`""`) from the result.
+      Defaults to `false`.
 
     * `:on` - specifies which captures to split the string on, and in what
       order. Defaults to `:first` which means captures inside the regex do not
@@ -429,14 +497,14 @@ defmodule Regex do
       iex> Regex.split(~r{-}, "a-b-c")
       ["a", "b", "c"]
 
-      iex> Regex.split(~r{-}, "a-b-c", [parts: 2])
+      iex> Regex.split(~r{-}, "a-b-c", parts: 2)
       ["a", "b-c"]
 
       iex> Regex.split(~r{-}, "abc")
       ["abc"]
 
       iex> Regex.split(~r{}, "abc")
-      ["a", "b", "c", ""]
+      ["", "a", "b", "c", ""]
 
       iex> Regex.split(~r{a(?<second>b)c}, "abc")
       ["", ""]
@@ -451,7 +519,7 @@ defmodule Regex do
       ["a", "b", "c"]
 
   """
-  @spec split(t, String.t, [term]) :: [String.t]
+  @spec split(t, String.t(), [term]) :: [String.t()]
   def split(regex, string, options \\ [])
 
   def split(%Regex{}, "", opts) do
@@ -462,26 +530,32 @@ defmodule Regex do
     end
   end
 
-  def split(%Regex{re_pattern: compiled}, string, opts) when is_binary(string) and is_list(opts) do
+  def split(%Regex{} = regex, string, opts)
+      when is_binary(string) and is_list(opts) do
     on = Keyword.get(opts, :on, :first)
-    case :re.run(string, compiled, [:global, capture: on]) do
+
+    case safe_run(regex, string, [:global, capture: on]) do
       {:match, matches} ->
-        do_split(matches, string, 0,
-                 parts_to_index(Keyword.get(opts, :parts, :infinity)),
-                 Keyword.get(opts, :trim, false),
-                 Keyword.get(opts, :include_captures, false))
+        index = parts_to_index(Keyword.get(opts, :parts, :infinity))
+        trim = Keyword.get(opts, :trim, false)
+        include_captures = Keyword.get(opts, :include_captures, false)
+        do_split(matches, string, 0, index, trim, include_captures)
+
       :match ->
         [string]
+
       :nomatch ->
         [string]
     end
   end
 
-  defp parts_to_index(:infinity),                      do: 0
+  defp parts_to_index(:infinity), do: 0
   defp parts_to_index(n) when is_integer(n) and n > 0, do: n
 
-  defp do_split(_, string, offset, _counter, true, _with_captures) when byte_size(string) <= offset,
-    do: []
+  defp do_split(_, string, offset, _counter, true, _with_captures)
+       when byte_size(string) <= offset do
+    []
+  end
 
   defp do_split(_, string, offset, 1, _trim, _with_captures),
     do: [binary_part(string, offset, byte_size(string) - offset)]
@@ -489,8 +563,10 @@ defmodule Regex do
   defp do_split([], string, offset, _counter, _trim, _with_captures),
     do: [binary_part(string, offset, byte_size(string) - offset)]
 
-  defp do_split([[{pos, _} | h] | t], string, offset, counter, trim, with_captures) when pos - offset < 0,
-    do: do_split([h | t], string, offset, counter, trim, with_captures)
+  defp do_split([[{pos, _} | h] | t], string, offset, counter, trim, with_captures)
+       when pos - offset < 0 do
+    do_split([h | t], string, offset, counter, trim, with_captures)
+  end
 
   defp do_split([[] | t], string, offset, counter, trim, with_captures),
     do: do_split(t, string, offset, counter, trim, with_captures)
@@ -499,16 +575,13 @@ defmodule Regex do
     new_offset = pos + length
     keep = pos - offset
 
-    if keep == 0 and length == 0 do
-      do_split([h | t], string, new_offset, counter, trim, true)
-    else
-      <<_::binary-size(offset), part::binary-size(keep), match::binary-size(length), _::binary>> = string
+    <<_::binary-size(offset), part::binary-size(keep), match::binary-size(length), _::binary>> =
+      string
 
-      if keep == 0 and (length == 0 or trim) do
-        [match | do_split([h | t], string, new_offset, counter - 1, trim, true)]
-      else
-        [part, match | do_split([h | t], string, new_offset, counter - 1, trim, true)]
-      end
+    if keep == 0 and trim do
+      [match | do_split([h | t], string, new_offset, counter - 1, trim, true)]
+    else
+      [part, match | do_split([h | t], string, new_offset, counter - 1, trim, true)]
     end
   end
 
@@ -516,7 +589,7 @@ defmodule Regex do
     new_offset = pos + length
     keep = pos - offset
 
-    if keep == 0 and (length == 0 or trim) do
+    if keep == 0 and trim do
       do_split([h | t], string, new_offset, counter, trim, false)
     else
       <<_::binary-size(offset), part::binary-size(keep), _::binary>> = string
@@ -569,7 +642,7 @@ defmodule Regex do
       "Abcadc"
 
   """
-  @spec replace(t, String.t, String.t | (... -> String.t), [term]) :: String.t
+  @spec replace(t, String.t(), String.t() | (... -> String.t()), [term]) :: String.t()
   def replace(regex, string, replacement, options \\ [])
 
   def replace(regex, string, replacement, options)
@@ -578,27 +651,28 @@ defmodule Regex do
   end
 
   def replace(regex, string, replacement, options)
-      when is_binary(string) and is_function(replacement) and is_list(options)  do
-    {:arity, arity} = :erlang.fun_info(replacement, :arity)
+      when is_binary(string) and is_function(replacement) and is_list(options) do
+    {:arity, arity} = Function.info(replacement, :arity)
     do_replace(regex, string, {replacement, arity}, options)
   end
 
-  defp do_replace(%Regex{re_pattern: compiled}, string, replacement, options) do
+  defp do_replace(%Regex{} = regex, string, replacement, options) do
     opts = if Keyword.get(options, :global) != false, do: [:global], else: []
     opts = [{:capture, :all, :index} | opts]
 
-    case :re.run(string, compiled, opts) do
+    case safe_run(regex, string, opts) do
       :nomatch ->
         string
+
       {:match, [mlist | t]} when is_list(mlist) ->
-        apply_list(string, replacement, [mlist | t]) |> IO.iodata_to_binary
+        apply_list(string, replacement, [mlist | t]) |> IO.iodata_to_binary()
+
       {:match, slist} ->
-        apply_list(string, replacement, [slist]) |> IO.iodata_to_binary
+        apply_list(string, replacement, [slist]) |> IO.iodata_to_binary()
     end
   end
 
-  defp precompile_replacement(""),
-    do: []
+  defp precompile_replacement(""), do: []
 
   defp precompile_replacement(<<?\\, ?g, ?{, rest::binary>>) when byte_size(rest) > 0 do
     {ns, <<?}, rest::binary>>} = pick_int(rest)
@@ -618,6 +692,7 @@ defmodule Regex do
     case precompile_replacement(rest) do
       [head | t] when is_binary(head) ->
         [<<x, head::binary>> | t]
+
       other ->
         [<<x>> | other]
     end
@@ -644,7 +719,8 @@ defmodule Regex do
     string
   end
 
-  defp apply_list(whole, string, pos, replacement, [[{mpos, _} | _] | _] = list) when mpos > pos do
+  defp apply_list(whole, string, pos, replacement, [[{mpos, _} | _] | _] = list)
+       when mpos > pos do
     length = mpos - pos
     <<untouched::binary-size(length), rest::binary>> = string
     [untouched | apply_list(whole, rest, mpos, replacement, list)]
@@ -671,8 +747,10 @@ defmodule Regex do
       cond do
         is_binary(part) ->
           part
+
         part >= tuple_size(indexes) ->
           ""
+
         true ->
           get_index(string, elem(indexes, part))
       end
@@ -712,11 +790,11 @@ defmodule Regex do
       "\\\\what\\ if"
 
   """
-  @spec escape(String.t) :: String.t
+  @spec escape(String.t()) :: String.t()
   def escape(string) when is_binary(string) do
     string
     |> escape(_length = 0, string)
-    |> IO.iodata_to_binary
+    |> IO.iodata_to_binary()
   end
 
   @escapable '.^$*+?()[]{}|#-\\\t\n\v\f\r\s'
@@ -751,7 +829,7 @@ defmodule Regex do
   def unescape_map(?t), do: ?\t
   def unescape_map(?v), do: ?\v
   def unescape_map(?a), do: ?\a
-  def unescape_map(_),  do: false
+  def unescape_map(_), do: false
 
   # Private Helpers
 
@@ -760,12 +838,14 @@ defmodule Regex do
   defp translate_options(<<?x, t::binary>>, acc), do: translate_options(t, [:extended | acc])
   defp translate_options(<<?f, t::binary>>, acc), do: translate_options(t, [:firstline | acc])
   defp translate_options(<<?U, t::binary>>, acc), do: translate_options(t, [:ungreedy | acc])
-  defp translate_options(<<?s, t::binary>>, acc), do: translate_options(t, [:dotall, {:newline, :anycrlf} | acc])
+
+  defp translate_options(<<?s, t::binary>>, acc),
+    do: translate_options(t, [:dotall, {:newline, :anycrlf} | acc])
+
   defp translate_options(<<?m, t::binary>>, acc), do: translate_options(t, [:multiline | acc])
 
-  # TODO: Remove on 2.0
   defp translate_options(<<?r, t::binary>>, acc) do
-    IO.warn "the /r modifier in regular expressions is deprecated, please use /U instead"
+    IO.warn("the /r modifier in regular expressions is deprecated, please use /U instead")
     translate_options(t, [:ungreedy | acc])
   end
 

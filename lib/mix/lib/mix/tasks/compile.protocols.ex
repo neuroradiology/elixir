@@ -1,8 +1,8 @@
 defmodule Mix.Tasks.Compile.Protocols do
   use Mix.Task.Compiler
 
-  @manifest ".compile.protocols"
-  @manifest_vsn :v2
+  @manifest "compile.protocols"
+  @manifest_vsn 1
 
   @moduledoc ~S"""
   Consolidates all protocols in all paths.
@@ -40,23 +40,24 @@ defmodule Mix.Tasks.Compile.Protocols do
       true
 
   """
-  @spec run(OptionParser.argv) :: :ok
+
+  @impl true
   def run(args) do
-    config = Mix.Project.config
-    Mix.Task.run "compile", args
+    config = Mix.Project.config()
+    Mix.Task.run("compile")
     {opts, _, _} = OptionParser.parse(args, switches: [force: :boolean, verbose: :boolean])
 
-    output   = Mix.Project.consolidation_path(config)
-    manifest = Path.join(output, @manifest)
-
+    manifest = manifest()
+    output = Mix.Project.consolidation_path(config)
     protocols_and_impls = protocols_and_impls(config)
 
     cond do
-      opts[:force] || Mix.Utils.stale?(Mix.Project.config_files(), [manifest]) ->
+      opts[:force] || Mix.Utils.stale?([Mix.Project.config_mtime()], [manifest]) ->
         clean()
         paths = consolidation_paths()
+
         paths
-        |> Protocol.extract_protocols
+        |> Protocol.extract_protocols()
         |> consolidate(paths, output, manifest, protocols_and_impls, opts)
 
       protocols_and_impls ->
@@ -69,17 +70,26 @@ defmodule Mix.Tasks.Compile.Protocols do
     end
   end
 
-  @doc """
-  Cleans up consolidated protocols.
-  """
+  @impl true
   def clean do
-    File.rm_rf(Mix.Project.consolidation_path)
+    File.rm(manifest())
+    File.rm_rf(Mix.Project.consolidation_path())
+  end
+
+  @impl true
+  def manifests, do: [manifest()]
+
+  defp manifest, do: Path.join(Mix.Project.manifest_path(), @manifest)
+
+  @doc """
+  Returns if protocols have been consolidated at least once.
+  """
+  def consolidated? do
+    File.regular?(manifest())
   end
 
   defp protocols_and_impls(config) do
-    deps = for(%{scm: scm, opts: opts} <- Mix.Dep.cached(),
-               not scm.fetchable?,
-               do: opts[:build])
+    deps = for %{scm: scm, opts: opts} <- Mix.Dep.cached(), not scm.fetchable?, do: opts[:build]
 
     app =
       if Mix.Project.umbrella?(config) do
@@ -90,7 +100,7 @@ defmodule Mix.Tasks.Compile.Protocols do
 
     protocols_and_impls =
       for path <- app ++ deps do
-        manifest_path = Path.join(path, ".compile.elixir")
+        manifest_path = Path.join(path, ".mix/compile.elixir")
         compile_path = Path.join(path, "ebin")
         Mix.Compilers.Elixir.protocols_and_impls(manifest_path, compile_path)
       end
@@ -99,7 +109,7 @@ defmodule Mix.Tasks.Compile.Protocols do
   end
 
   defp consolidation_paths do
-    filter_otp(:code.get_path, :code.lib_dir)
+    filter_otp(:code.get_path(), :code.lib_dir())
   end
 
   defp filter_otp(paths, otp) do
@@ -118,7 +128,7 @@ defmodule Mix.Tasks.Compile.Protocols do
     protocols
     |> Enum.uniq()
     |> Enum.map(&Task.async(fn -> consolidate(&1, paths, output, opts) end))
-    |> Enum.map(&Task.await(&1, 30_000))
+    |> Enum.map(&Task.await(&1, 30000))
 
     write_manifest(manifest, metadata)
     :ok
@@ -127,11 +137,13 @@ defmodule Mix.Tasks.Compile.Protocols do
   defp consolidate(protocol, paths, output, opts) do
     impls = Protocol.extract_impls(protocol, paths)
     reload(protocol)
+
     case Protocol.consolidate(protocol, impls) do
       {:ok, binary} ->
-        File.write!(Path.join(output, "#{protocol}.beam"), binary)
+        File.write!(Path.join(output, "#{Atom.to_string(protocol)}.beam"), binary)
+
         if opts[:verbose] do
-          Mix.shell.info "Consolidated #{inspect protocol}"
+          Mix.shell().info("Consolidated #{inspect_protocol(protocol)}")
         end
 
       # If we remove a dependency and we have implemented one of its
@@ -142,10 +154,17 @@ defmodule Mix.Tasks.Compile.Protocols do
       # in umbrella apps with shared build.
       {:error, :no_beam_info} ->
         remove_consolidated(protocol, output)
+
         if opts[:verbose] do
-          Mix.shell.info "Unavailable #{inspect protocol}"
+          Mix.shell().info("Unavailable #{inspect_protocol(protocol)}")
         end
     end
+  end
+
+  # We cannot use the inspect protocol while consolidating
+  # since inspect may not be available.
+  defp inspect_protocol(protocol) do
+    Code.Identifier.inspect_as_atom(protocol)
   end
 
   defp reload(module) do
@@ -155,8 +174,7 @@ defmodule Mix.Tasks.Compile.Protocols do
 
   defp read_manifest(manifest, output) do
     try do
-      [@manifest_vsn | metadata] =
-        manifest |> File.read! |> :erlang.binary_to_term()
+      [@manifest_vsn | metadata] = manifest |> File.read!() |> :erlang.binary_to_term()
       metadata
     rescue
       _ ->
@@ -167,10 +185,8 @@ defmodule Mix.Tasks.Compile.Protocols do
   end
 
   defp write_manifest(manifest, metadata) do
-    manifest_data =
-      [@manifest_vsn | metadata]
-      |> :erlang.term_to_binary([:compressed])
-
+    File.mkdir_p!(Path.dirname(manifest))
+    manifest_data = :erlang.term_to_binary([@manifest_vsn | metadata], [:compressed])
     File.write!(manifest, manifest_data)
   end
 
@@ -189,12 +205,12 @@ defmodule Mix.Tasks.Compile.Protocols do
       Enum.reduce(new_metadata -- old_metadata, protocols, fn
         {_, {:impl, protocol}, _beam}, protocols ->
           Map.put(protocols, protocol, true)
+
         {protocol, :protocol, _beam}, protocols ->
           Map.put(protocols, protocol, true)
       end)
 
-    removed_metadata =
-      old_metadata -- new_metadata
+    removed_metadata = old_metadata -- new_metadata
 
     removed_protocols =
       for {protocol, :protocol, _beam} <- removed_metadata,
@@ -212,6 +228,6 @@ defmodule Mix.Tasks.Compile.Protocols do
   end
 
   defp remove_consolidated(protocol, output) do
-    File.rm Path.join(output, "#{protocol}.beam")
+    File.rm(Path.join(output, "#{Atom.to_string(protocol)}.beam"))
   end
 end

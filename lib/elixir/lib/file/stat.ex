@@ -12,7 +12,7 @@ defmodule File.Stat do
 
     * `size` - size of file in bytes.
 
-    * `type` - `:device | :directory | :regular | :other`; the type of the
+    * `type` - `:device | :directory | :regular | :other | :symlink`; the type of the
       file.
 
     * `access` - `:read | :write | :read_write | :none`; the current system
@@ -53,16 +53,32 @@ defmodule File.Stat do
   """
 
   record = Record.extract(:file_info, from_lib: "kernel/include/file.hrl")
-  keys   = :lists.map(&elem(&1, 0), record)
-  vals   = :lists.map(&{&1, [], nil}, keys)
-  pairs  = :lists.zip(keys, vals)
+  keys = :lists.map(&elem(&1, 0), record)
+  vals = :lists.map(&{&1, [], nil}, keys)
+  pairs = :lists.zip(keys, vals)
 
   defstruct keys
-  @type t :: %__MODULE__{}
+
+  @type t :: %__MODULE__{
+          size: non_neg_integer(),
+          type: :device | :directory | :regular | :other | :symlink,
+          access: :read | :write | :read_write | :none,
+          atime: :calendar.datetime() | integer(),
+          mtime: :calendar.datetime() | integer(),
+          ctime: :calendar.datetime() | integer(),
+          mode: non_neg_integer(),
+          links: non_neg_integer(),
+          major_device: non_neg_integer(),
+          minor_device: non_neg_integer(),
+          inode: non_neg_integer(),
+          uid: non_neg_integer(),
+          gid: non_neg_integer()
+        }
 
   @doc """
   Converts a `File.Stat` struct to a `:file_info` record.
   """
+  @spec to_record(t()) :: :file.file_info()
   def to_record(%File.Stat{unquote_splicing(pairs)}) do
     {:file_info, unquote_splicing(vals)}
   end
@@ -70,7 +86,9 @@ defmodule File.Stat do
   @doc """
   Converts a `:file_info` record into a `File.Stat`.
   """
+  @spec from_record(:file.file_info()) :: t()
   def from_record(file_info)
+
   def from_record({:file_info, unquote_splicing(vals)}) do
     %File.Stat{unquote_splicing(pairs)}
   end

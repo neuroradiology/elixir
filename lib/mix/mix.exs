@@ -1,11 +1,11 @@
-defmodule Mix.Mixfile do
+defmodule Mix.MixProject do
   use Mix.Project
 
   def project do
     [
       app: :mix,
       build_per_environment: false,
-      version: System.version,
+      version: System.version(),
       escript: [main_module: Mix.CLI]
     ]
   end

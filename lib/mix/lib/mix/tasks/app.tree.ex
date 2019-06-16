@@ -19,28 +19,33 @@ defmodule Mix.Tasks.App.Tree do
 
     * `--format` - Can be set to one of either:
 
-      * `pretty` - uses Unicode codepoints for formatting the tree.
+      * `pretty` - uses Unicode code points for formatting the tree.
         This is the default except on Windows.
 
-      * `plain` - does not use Unicode codepoints for formatting the tree.
+      * `plain` - does not use Unicode code points for formatting the tree.
         This is the default on Windows.
 
       * `dot` - produces a DOT graph description of the application tree
         in `app_tree.dot` in the current directory.
         Warning: this will overwrite any previously generated file.
+
   """
 
   @default_excluded [:kernel, :stdlib, :compiler]
 
-  @spec run(OptionParser.argv) :: :ok
+  @impl true
   def run(args) do
-    Mix.Task.run "compile"
+    Mix.Task.run("compile")
 
     {app, opts} =
       case OptionParser.parse!(args, strict: [exclude: :keep, format: :string]) do
         {opts, []} ->
-          app = Mix.Project.config[:app] || Mix.raise("no application given and none found in mix.exs file")
+          app =
+            Mix.Project.config()[:app] ||
+              Mix.raise("no application given and none found in mix.exs file")
+
           {app, opts}
+
         {opts, [app]} ->
           {String.to_atom(app), opts}
       end
@@ -54,8 +59,9 @@ defmodule Mix.Tasks.App.Tree do
     end
 
     if opts[:format] == "dot" do
-      Mix.Utils.write_dot_graph!("app_tree.dot", "application tree",
-                                 [{:normal, app}], callback, opts)
+      root = [{:normal, app}]
+      Mix.Utils.write_dot_graph!("app_tree.dot", "application tree", root, callback, opts)
+
       """
       Generated "app_tree.dot" in the current directory. To generate a PNG:
 
@@ -63,8 +69,8 @@ defmodule Mix.Tasks.App.Tree do
 
       For more options see http://www.graphviz.org/.
       """
-      |> String.trim_trailing
-      |> Mix.shell.info
+      |> String.trim_trailing()
+      |> Mix.shell().info()
     else
       Mix.Utils.print_tree([{:normal, app}], callback, opts)
     end
@@ -84,6 +90,6 @@ defmodule Mix.Tasks.App.Tree do
     Enum.map(apps, &{:normal, &1}) ++ Enum.map(included_apps, &{:included, &1})
   end
 
-  defp type(:normal),   do: nil
+  defp type(:normal), do: nil
   defp type(:included), do: "(included)"
 end

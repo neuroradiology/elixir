@@ -1,12 +1,13 @@
 defmodule Mix.Tasks.Compile do
-  use Mix.Task
+  use Mix.Task.Compiler
 
   @shortdoc "Compiles source files"
 
   @moduledoc """
   A meta task that compiles source files.
 
-  It simply runs the compilers registered in your project.
+  It simply runs the compilers registered in your project and returns
+  a tuple with the compilation status and a list of diagnostics.
 
   ## Configuration
 
@@ -42,85 +43,116 @@ defmodule Mix.Tasks.Compile do
 
   ## Command line options
 
-    * `--list`              - lists all enabled compilers
+    * `--list` - lists all enabled compilers
     * `--no-archives-check` - skips checking of archives
-    * `--no-deps-check`     - skips checking of dependencies
-    * `--force`             - forces compilation
+    * `--no-deps-check` - skips checking of dependencies
+    * `--no-protocol-consolidation` - skips protocol consolidation
+    * `--force` - forces compilation
+    * `--return-errors` - returns error status and diagnostics instead of exiting on error
+    * `--erl-config` - path to an Erlang term file that will be loaded as Mix config
 
   """
-  @spec run(OptionParser.argv) :: :ok | :noop
+
+  @impl true
   def run(["--list"]) do
     loadpaths!()
-    _ = Mix.Task.load_all
+    _ = Mix.Task.load_all()
 
-    shell   = Mix.shell
-    modules = Mix.Task.all_modules
+    shell = Mix.shell()
+    modules = Mix.Task.all_modules()
 
-    docs = for module <- modules,
-               task = Mix.Task.task_name(module),
-               match?("compile." <> _, task),
-               doc = Mix.Task.moduledoc(module) do
-      {task, first_line(doc)}
-    end
+    docs =
+      for module <- modules,
+          task = Mix.Task.task_name(module),
+          match?("compile." <> _, task),
+          doc = Mix.Task.moduledoc(module) do
+        {task, first_line(doc)}
+      end
 
-    max = Enum.reduce docs, 0, fn({task, _}, acc) ->
-      max(byte_size(task), acc)
-    end
+    max =
+      Enum.reduce(docs, 0, fn {task, _}, acc ->
+        max(byte_size(task), acc)
+      end)
 
     sorted = Enum.sort(docs)
 
-    Enum.each sorted, fn({task, doc}) ->
-      shell.info format('mix ~-#{max}s # ~ts', [task, doc])
-    end
+    Enum.each(sorted, fn {task, doc} ->
+      shell.info(format('mix ~-#{max}s # ~ts', [task, doc]))
+    end)
 
     compilers = compilers() ++ if(consolidate_protocols?(:ok), do: [:protocols], else: [])
-    shell.info "\nEnabled compilers: #{Enum.join compilers, ", "}"
+    shell.info("\nEnabled compilers: #{Enum.join(compilers, ", ")}")
     :ok
   end
 
   def run(args) do
-    Mix.Project.get!
-    Mix.Task.run "loadpaths", args
+    Mix.Project.get!()
+    Mix.Task.run("loadpaths", args)
+    {opts, _, _} = OptionParser.parse(args, switches: [erl_config: :string])
 
-    res = Mix.Task.run "compile.all", args
-    res = if :ok in List.wrap(res), do: :ok, else: :noop
+    load_erl_config(opts)
 
-    if consolidate_protocols?(res) do
-      Mix.Task.run "compile.protocols", args
-      :ok
-    else
-      res
-    end
+    {res, diagnostics} =
+      Mix.Task.run("compile.all", args)
+      |> List.wrap()
+      |> Enum.map(&Mix.Task.Compiler.normalize(&1, :all))
+      |> Enum.reduce({:noop, []}, &merge_diagnostics/2)
+
+    res =
+      if consolidate_protocols?(res) and "--no-protocol-consolidation" not in args do
+        Mix.Task.run("compile.protocols", args)
+        :ok
+      else
+        res
+      end
+
+    {res, diagnostics}
+  end
+
+  defp merge_diagnostics({status1, diagnostics1}, {status2, diagnostics2}) do
+    new_status =
+      cond do
+        status1 == :error or status2 == :error -> :error
+        status1 == :ok or status2 == :ok -> :ok
+        true -> :noop
+      end
+
+    {new_status, diagnostics1 ++ diagnostics2}
   end
 
   # Loadpaths without checks because compilers may be defined in deps.
   defp loadpaths! do
-    Mix.Task.run "loadpaths", ["--no-elixir-version-check", "--no-deps-check", "--no-archives-check"]
-    Mix.Task.reenable "loadpaths"
-    Mix.Task.reenable "deps.loadpaths"
+    args = ["--no-elixir-version-check", "--no-deps-check", "--no-archives-check"]
+    Mix.Task.run("loadpaths", args)
+    Mix.Task.reenable("loadpaths")
+    Mix.Task.reenable("deps.loadpaths")
   end
 
   defp consolidate_protocols?(:ok) do
-    Mix.Project.config[:consolidate_protocols]
+    Mix.Project.config()[:consolidate_protocols]
   end
+
   defp consolidate_protocols?(:noop) do
-    config = Mix.Project.config
-    config[:consolidate_protocols] and not File.exists?(Mix.Project.consolidation_path(config))
+    config = Mix.Project.config()
+    config[:consolidate_protocols] and not Mix.Tasks.Compile.Protocols.consolidated?()
+  end
+
+  defp consolidate_protocols?(:error) do
+    false
   end
 
   @doc """
   Returns all compilers.
   """
   def compilers do
-    Mix.Project.config[:compilers] || Mix.compilers
+    Mix.Project.config()[:compilers] || Mix.compilers()
   end
 
-  @doc """
-  Returns manifests for all compilers.
-  """
+  @impl true
   def manifests do
-    Enum.flat_map(compilers(), fn(compiler) ->
+    Enum.flat_map(compilers(), fn compiler ->
       module = Mix.Task.get("compile.#{compiler}")
+
       if module && function_exported?(module, :manifests, 0) do
         module.manifests
       else
@@ -130,10 +162,17 @@ defmodule Mix.Tasks.Compile do
   end
 
   defp format(expression, args) do
-    :io_lib.format(expression, args) |> IO.iodata_to_binary
+    :io_lib.format(expression, args) |> IO.iodata_to_binary()
   end
 
   defp first_line(doc) do
-    String.split(doc, "\n", parts: 2) |> hd |> String.trim |> String.trim_trailing(".")
+    String.split(doc, "\n", parts: 2) |> hd |> String.trim() |> String.trim_trailing(".")
+  end
+
+  defp load_erl_config(opts) do
+    if path = opts[:erl_config] do
+      {:ok, terms} = :file.consult(path)
+      Application.put_all_env(terms, persistent: true)
+    end
   end
 end

@@ -15,11 +15,14 @@ defmodule Mix.Tasks.Deps.Precompile do
   loading is deliberately ad-hoc, loading as much as
   possible without validating the files.
   """
+
+  @impl true
   def run(_) do
-    config = Mix.Project.config
+    config = Mix.Project.config()
+
     Mix.Project.build_path(config)
     |> Path.join("lib/*/ebin")
-    |> Path.wildcard
+    |> Path.wildcard()
     |> List.delete(config[:app] && Mix.Project.compile_path(config))
     |> Enum.each(&Code.prepend_path/1)
   end

@@ -1,11 +1,13 @@
 %% Convenience functions used throughout elixir source code
 %% for ast manipulation and querying.
 -module(elixir_utils).
--export([get_line/1, split_last/1, noop/0,
+-export([get_line/1, split_last/1, noop/0, var_context/2,
   characters_to_list/1, characters_to_binary/1, relative_to_cwd/1,
-  macro_name/1, returns_boolean/1, caller/4, meta_location/1,
-  read_file_type/1, read_link_type/1, read_mtime_and_size/1, change_universal_time/2,
-  guard_op/2, match_op/2, extract_splat_guards/1, extract_guards/1]).
+  macro_name/1, returns_boolean/1, caller/4, meta_keep/1,
+  read_file_type/1, read_file_type/2, read_link_type/1, read_posix_mtime_and_size/1,
+  change_posix_time/2, change_universal_time/2,
+  guard_op/2, extract_splat_guards/1, extract_guards/1,
+  erlang_comparison_op_to_elixir/1]).
 -include("elixir.hrl").
 -include_lib("kernel/include/file.hrl").
 
@@ -13,13 +15,6 @@
 
 macro_name(Macro) ->
   list_to_atom("MACRO-" ++ atom_to_list(Macro)).
-
-% Operators
-
-match_op('++', 2) -> true;
-match_op('+', 1) -> true;
-match_op('-', 1) -> true;
-match_op(_, _) -> false.
 
 guard_op('andalso', 2) ->
   true;
@@ -34,6 +29,18 @@ guard_op(Op, Arity) ->
     send  -> false
   catch
     _:_ -> false
+  end.
+
+erlang_comparison_op_to_elixir('/=') -> '!=';
+erlang_comparison_op_to_elixir('=<') -> '<=';
+erlang_comparison_op_to_elixir('=:=') -> '===';
+erlang_comparison_op_to_elixir('=/=') -> '!==';
+erlang_comparison_op_to_elixir(Other) -> Other.
+
+var_context(Meta, Kind) ->
+  case lists:keyfind(counter, 1, Meta) of
+    {counter, Counter} -> Counter;
+    false -> Kind
   end.
 
 % Extract guards
@@ -63,7 +70,10 @@ split_last([H], Acc)     -> {lists:reverse(Acc), H};
 split_last([H | T], Acc) -> split_last(T, [H | Acc]).
 
 read_file_type(File) ->
-  case file:read_file_info(File) of
+  read_file_type(File, []).
+
+read_file_type(File, Opts) ->
+  case file:read_file_info(File, [{time, posix} | Opts]) of
     {ok, #file_info{type=Type}} -> {ok, Type};
     {error, _} = Error -> Error
   end.
@@ -74,16 +84,19 @@ read_link_type(File) ->
     {error, _} = Error -> Error
   end.
 
-read_mtime_and_size(File) ->
-  case file:read_file_info(File, [{time, universal}]) of
+read_posix_mtime_and_size(File) ->
+  case file:read_file_info(File, [raw, {time, posix}]) of
     {ok, #file_info{mtime=Mtime, size=Size}} -> {ok, Mtime, Size};
     {error, _} = Error -> Error
   end.
 
+change_posix_time(Name, Time) when is_integer(Time) ->
+  file:write_file_info(Name, #file_info{mtime=Time}, [raw, {time, posix}]).
+
 change_universal_time(Name, {{Y, M, D}, {H, Min, Sec}}=Time)
-  when is_integer(Y), is_integer(M), is_integer(D),
-       is_integer(H), is_integer(Min), is_integer(Sec)->
-    file:write_file_info(Name, #file_info{mtime=Time}, [{time, universal}]).
+    when is_integer(Y), is_integer(M), is_integer(D),
+         is_integer(H), is_integer(Min), is_integer(Sec) ->
+  file:write_file_info(Name, #file_info{mtime=Time}, [{time, universal}]).
 
 relative_to_cwd(Path) ->
   try elixir_compiler:get_opt(relative_paths) of
@@ -96,18 +109,23 @@ relative_to_cwd(Path) ->
 characters_to_list(Data) when is_list(Data) ->
   Data;
 characters_to_list(Data) ->
-  case elixir_config:safe_get(bootstrap, true) of
-    true  -> unicode:characters_to_list(Data);
-    false -> 'Elixir.String':to_charlist(Data)
+  case unicode:characters_to_list(Data) of
+    Result when is_list(Result) -> Result;
+    {error, Encoded, Rest} -> conversion_error(invalid, Encoded, Rest);
+    {incomplete, Encoded, Rest} -> conversion_error(incomplete, Encoded, Rest)
   end.
 
 characters_to_binary(Data) when is_binary(Data) ->
   Data;
 characters_to_binary(Data) ->
-  case elixir_config:safe_get(bootstrap, true) of
-    true -> unicode:characters_to_binary(Data);
-    false -> 'Elixir.List':to_string(Data)
+  case unicode:characters_to_binary(Data) of
+    Result when is_binary(Result) -> Result;
+    {error, Encoded, Rest} -> conversion_error(invalid, Encoded, Rest);
+    {incomplete, Encoded, Rest} -> conversion_error(incomplete, Encoded, Rest)
   end.
+
+conversion_error(Kind, Encoded, Rest) ->
+  error('Elixir.UnicodeConversionError':exception([{encoded, Encoded}, {rest, Rest}, {kind, Kind}])).
 
 %% Returns the caller as a stacktrace entry.
 caller(Line, File, nil, _) ->
@@ -129,22 +147,15 @@ get_line(Opts) when is_list(Opts) ->
 
 %% Meta location.
 %%
-%% Macros add a file+keep pair on location keep
-%% which we should take into account for error
-%% reporting.
+%% Macros add a file pair on location keep which we
+%% should take into account for error reporting.
 %%
-%% Returns {binary, integer} on location keep or
-%% nil.
+%% Returns {binary, integer} on location keep or nil.
 
-meta_location(Meta) ->
-  case lists:keyfind(file, 1, Meta) of
-    {file, MetaFile} when is_binary(MetaFile) ->
-      MetaLine =
-        case lists:keyfind(keep, 1, Meta) of
-          {keep, Keep} when is_integer(Keep) -> Keep;
-          _ -> 0
-        end,
-      {MetaFile, MetaLine};
+meta_keep(Meta) ->
+  case lists:keyfind(keep, 1, Meta) of
+    {keep, {File, Line} = Pair} when is_binary(File), is_integer(Line) ->
+      Pair;
     _ ->
       nil
   end.
@@ -186,7 +197,7 @@ returns_boolean({'cond', _, [[{do, Clauses}]]}) ->
     ({'->', _, [_, Expr]}) -> returns_boolean(Expr)
   end, Clauses);
 
-returns_boolean({'__block__', [], Exprs}) ->
+returns_boolean({'__block__', _, Exprs}) ->
   returns_boolean(lists:last(Exprs));
 
 returns_boolean(_) -> false.

@@ -5,42 +5,22 @@
 defmodule Mix.Dep.Lock do
   @moduledoc false
 
-  @manifest ".compile.lock"
-
-  @doc """
-  Returns the manifest file for dependencies.
-
-  The manifest is used to check if the lockfile
-  itself is up to date.
-  """
-  def manifest(path \\ Mix.Project.manifest_path) do
-    Path.join(path, @manifest)
-  end
-
-  @doc """
-  Touches the manifest file to force recompilation.
-  """
-  def touch_manifest do
-    path = Mix.Project.manifest_path
-    File.mkdir_p!(path)
-    File.touch!(manifest(path))
-  end
-
   @doc """
   Reads the lockfile, returns a map containing
   each app name and its current lock information.
   """
   @spec read() :: map
   def read() do
-    case File.read(lockfile()) do
-      {:ok, info} ->
-        assert_no_merge_conflicts_in_lockfile(lockfile(), info)
-        case Code.eval_string(info, [], file: lockfile()) do
-          {lock, _binding} when is_map(lock)  -> lock
-          {_, _binding} -> %{}
-        end
-      {:error, _} ->
-        %{}
+    lockfile = lockfile()
+    opts = [file: lockfile, warn_on_unnecessary_quotes: false]
+
+    with {:ok, contents} <- File.read(lockfile),
+         assert_no_merge_conflicts_in_lockfile(lockfile, contents),
+         {:ok, quoted} <- Code.string_to_quoted(contents, opts),
+         {%{} = lock, _binding} <- Code.eval_quoted(quoted, opts) do
+      lock
+    else
+      _ -> %{}
     end
   end
 
@@ -52,22 +32,26 @@ defmodule Mix.Dep.Lock do
     unless map == read() do
       lines =
         for {app, rev} <- Enum.sort(map), rev != nil do
-          ~s("#{app}": #{inspect rev, limit: :infinity})
+          ~s(  "#{app}": #{inspect(rev, limit: :infinity)},\n)
         end
-      File.write! lockfile(), "%{" <> Enum.join(lines, ",\n  ") <> "}\n"
-      touch_manifest()
+
+      File.write!(lockfile(), ["%{\n", lines, "}\n"])
+      Mix.Task.run("will_recompile")
     end
+
     :ok
   end
 
   defp lockfile do
-    Mix.Project.config[:lockfile]
+    Mix.Project.config()[:lockfile]
   end
 
   defp assert_no_merge_conflicts_in_lockfile(lockfile, info) do
     if String.contains?(info, ~w(<<<<<<< ======= >>>>>>>)) do
-      Mix.raise "Your #{lockfile} contains merge conflicts. Please resolve the conflicts " <>
-                "and run the command again"
+      Mix.raise(
+        "Your #{lockfile} contains merge conflicts. Please resolve the conflicts " <>
+          "and run the command again"
+      )
     end
   end
 end

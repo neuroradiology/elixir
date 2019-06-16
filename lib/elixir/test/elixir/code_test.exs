@@ -1,25 +1,25 @@
-Code.require_file "test_helper.exs", __DIR__
+Code.require_file("test_helper.exs", __DIR__)
 
 defmodule CodeTest do
   use ExUnit.Case, async: true
 
   doctest Code
-
   import PathHelpers
 
   def genmodule(name) do
     defmodule name do
-      Kernel.LexicalTracker.remote_references(__MODULE__)
+      Kernel.LexicalTracker.remote_references(__ENV__.lexical_tracker)
     end
   end
 
-  contents = quote do
-    defmodule CodeTest.Sample do
-      def eval_quoted_info, do: {__MODULE__, __ENV__.file, __ENV__.line}
+  contents =
+    quote do
+      defmodule CodeTest.Sample do
+        def eval_quoted_info, do: {__MODULE__, __ENV__.file, __ENV__.line}
+      end
     end
-  end
 
-  Code.eval_quoted contents, [], file: "sample.ex", line: 13
+  Code.eval_quoted(contents, [], file: "sample.ex", line: 13)
 
   describe "eval_string/1-3" do
     test "correctly evaluates a string of code" do
@@ -31,13 +31,13 @@ defmodule CodeTest do
       assert {3, _} = Code.eval_string("a + b", [a: 1, b: 2], __ENV__)
     end
 
-    test "can return bindings from a different context" do
+    test "returns bindings from a different context" do
       assert Code.eval_string("var!(a, Sample) = 1") == {1, [{{:a, Sample}, 1}]}
     end
 
     test "supports unnamed scopes" do
       assert {%RuntimeError{}, [a: %RuntimeError{}]} =
-        Code.eval_string("a = (try do (raise \"hello\") rescue e -> e end)")
+               Code.eval_string("a = (try do (raise \"hello\") rescue e -> e end)")
     end
 
     test "supports the :requires option" do
@@ -49,11 +49,10 @@ defmodule CodeTest do
         functions: [{Kernel, [is_atom: 1]}],
         macros: [{Kernel, [and: 2]}],
         aliases: [{K, Kernel}],
-        requires: [Kernel],
+        requires: [Kernel]
       ]
 
       code = "is_atom(:foo) and K.is_list([])"
-
       assert Code.eval_string(code, [], options) == {true, []}
     end
 
@@ -62,7 +61,7 @@ defmodule CodeTest do
         Code.eval_string("<<a::size(b)>>", a: :a, b: :b)
       rescue
         _ ->
-          assert System.stacktrace |> Enum.any?(&(elem(&1, 0) == __MODULE__))
+          assert Enum.any?(__STACKTRACE__, &(elem(&1, 0) == __MODULE__))
       end
     end
   end
@@ -74,7 +73,9 @@ defmodule CodeTest do
 
   test "eval_quoted/2 with a %Macro.Env{} struct as the second argument" do
     alias :lists, as: MyList
-    assert Code.eval_quoted(quote(do: MyList.flatten [[1, 2, 3]]), [], __ENV__) == {[1, 2, 3], []}
+
+    assert Code.eval_quoted(quote(do: MyList.flatten([[1, 2, 3]])), [], __ENV__) ==
+             {[1, 2, 3], []}
   end
 
   test "eval_file/1" do
@@ -85,69 +86,216 @@ defmodule CodeTest do
     end
   end
 
+  test "compile_file/1" do
+    assert Code.compile_file(fixture_path("code_sample.exs")) == []
+    refute fixture_path("code_sample.exs") in Code.required_files()
+  end
+
   test "require_file/1" do
-    Code.require_file fixture_path("code_sample.exs")
-    assert fixture_path("code_sample.exs") in Code.loaded_files
+    assert Code.require_file(fixture_path("code_sample.exs")) == []
+    assert fixture_path("code_sample.exs") in Code.required_files()
     assert Code.require_file(fixture_path("code_sample.exs")) == nil
 
-    Code.unload_files [fixture_path("code_sample.exs")]
-    refute fixture_path("code_sample.exs") in Code.loaded_files
+    Code.unrequire_files([fixture_path("code_sample.exs")])
+    refute fixture_path("code_sample.exs") in Code.required_files()
     assert Code.require_file(fixture_path("code_sample.exs")) != nil
+  after
+    Code.unrequire_files([fixture_path("code_sample.exs")])
   end
 
-  test "string_to_quoted/1" do
-    assert Code.string_to_quoted("1 + 2") == {:ok, {:+, [line: 1], [1, 2]}}
-    assert Code.string_to_quoted("a.1") == {:error, {1, "syntax error before: ", "1"}}
-  end
-
-  test "string_to_quoted/1 for presence of sigils terminators" do
-    assert Code.string_to_quoted("~r/foo/") ==
-           {:ok, {:sigil_r, [terminator: '/', line: 1], [{:<<>>, [line: 1], ["foo"]}, []]}}
-    assert Code.string_to_quoted("~r[foo]") ==
-           {:ok, {:sigil_r, [terminator: '[', line: 1], [{:<<>>, [line: 1], ["foo"]}, []]}}
-    assert Code.string_to_quoted("~r\"foo\"") ==
-           {:ok, {:sigil_r, [terminator: '"', line: 1], [{:<<>>, [line: 1], ["foo"]}, []]}}
-    assert Code.string_to_quoted("~S\"\"\"\nsigil heredoc\n\"\"\"") ==
-           {:ok, {:sigil_S, [terminator: '"""', line: 1], [{:<<>>, [line: 1], ["sigil heredoc\n"]}, []]}}
-    assert Code.string_to_quoted("~S'''\nsigil heredoc\n'''") ==
-           {:ok, {:sigil_S, [terminator: '\'\'\'', line: 1], [{:<<>>, [line: 1], ["sigil heredoc\n"]}, []]}}
-  end
-
-  test "string_to_quoted!/1 works as string_to_quoted/1 but raises on errors" do
-    assert Code.string_to_quoted!("1 + 2") == {:+, [line: 1], [1, 2]}
-
-    assert_raise SyntaxError, fn ->
-      Code.string_to_quoted!("a.1")
+  describe "string_to_quoted/2" do
+    test "converts strings to quoted expressions" do
+      assert Code.string_to_quoted("1 + 2") == {:ok, {:+, [line: 1], [1, 2]}}
+      assert Code.string_to_quoted("a.1") == {:error, {1, "syntax error before: ", "\"1\""}}
     end
 
-    assert_raise TokenMissingError, fn ->
-      Code.string_to_quoted!("1 +")
+    test "converts strings to quoted with column information" do
+      string_to_quoted = &Code.string_to_quoted(&1, columns: true)
+      assert string_to_quoted.("1 + 2") == {:ok, {:+, [line: 1, column: 3], [1, 2]}}
+
+      foo = {:foo, [line: 1, column: 1], nil}
+      bar = {:bar, [line: 1, column: 7], nil}
+      assert string_to_quoted.("foo + bar") == {:ok, {:+, [line: 1, column: 5], [foo, bar]}}
+    end
+
+    test "returns an error tuple on hex errors" do
+      assert Code.string_to_quoted(~S["\x"]) ==
+               {:error, {1, "missing hex sequence after \\x, expected \\xHH", "\""}}
+
+      assert Code.string_to_quoted(~S[:"\x"]) ==
+               {:error, {1, "missing hex sequence after \\x, expected \\xHH", ":\""}}
+
+      assert Code.string_to_quoted(~S["\x": 123]) ==
+               {:error, {1, "missing hex sequence after \\x, expected \\xHH", "\""}}
+
+      assert Code.string_to_quoted(~s["""\n\\x\n"""]) ==
+               {:error, {1, "missing hex sequence after \\x, expected \\xHH", "\"\"\""}}
+    end
+
+    test "returns an error tuple on interpolation in calls" do
+      msg =
+        "interpolation is not allowed when calling function/macro. Found interpolation in a call starting with: "
+
+      assert Code.string_to_quoted(".\"\#{}\"") == {:error, {1, msg, "\""}}
+      assert Code.string_to_quoted(".\"a\#{:b}\"c") == {:error, {1, msg, "\""}}
+    end
+
+    test "returns an error tuple on long atoms" do
+      atom =
+        "@GR{+z]`_XrNla!d<GTZ]iw[s'l2N<5hGD0(.xh&}>0ptDp(amr.oS&<q(FA)5T3=},^{=JnwIOE*DPOslKV KF-kb7NF&Y#Lp3D7l/!s],^hnz1iB |E8~Y'-Rp&*E(O}|zoB#xsE.S/~~'=%H'2HOZu0PCfz6j=eHq5:yk{7&|}zeRONM+KWBCAUKWFw(tv9vkHTu#Ek$&]Q:~>,UbT}v$L|rHHXGV{;W!>avHbD[T-G5xrzR6m?rQPot-37B@"
+
+      assert Code.string_to_quoted(~s[:"#{atom}"]) ==
+               {:error, {1, "atom length must be less than system limit: ", atom}}
+    end
+
+    test "returns an error tuple when no atom is found with :existing_atoms_only" do
+      assert Code.string_to_quoted(":there_is_no_such_atom", existing_atoms_only: true) ==
+               {:error, {1, "unsafe atom does not exist: ", "there_is_no_such_atom"}}
+    end
+
+    test "supports static_atoms_encoder" do
+      ref = make_ref()
+
+      encoder = fn atom, meta ->
+        assert atom == "there_is_no_such_atom"
+        assert meta[:line] == 1
+        assert meta[:column] == 1
+        assert meta[:file] == "nofile"
+        {:ok, {:my, "atom", ref}}
+      end
+
+      assert {:ok, {:my, "atom", ^ref}} =
+               Code.string_to_quoted(":there_is_no_such_atom", static_atoms_encoder: encoder)
+    end
+
+    test "static_atoms_encoder, error case" do
+      encoder = fn _atom, _meta ->
+        {:error, "Invalid atom name"}
+      end
+
+      assert {:error, {1, "Invalid atom name: ", "there_is_no_such_atom"}} =
+               Code.string_to_quoted(":there_is_no_such_atom", static_atoms_encoder: encoder)
+    end
+
+    test "returns an error tuple on long atoms, even when using static_atoms_encoder" do
+      atom = String.duplicate("a", 256)
+
+      encoder = fn atom, _meta -> {:ok, atom} end
+
+      assert Code.string_to_quoted(atom, static_atoms_encoder: encoder) ==
+               {:error, {1, "atom length must be less than system limit: ", atom}}
+    end
+
+    test "extended static_atoms_encoder" do
+      encoder = fn string, _metadata ->
+        try do
+          {:ok, String.to_existing_atom(string)}
+        rescue
+          ArgumentError ->
+            {:ok, {:user_atom, string}}
+        end
+      end
+
+      assert {:ok, {:try, _, [[do: {:test, _, [{{:user_atom, "atom_does_not_exist"}, _, []}]}]]}} =
+               Code.string_to_quoted("try do: test(atom_does_not_exist())",
+                 static_atoms_encoder: encoder
+               )
+    end
+
+    test "raises on errors when string_to_quoted!/2 is used" do
+      assert Code.string_to_quoted!("1 + 2") == {:+, [line: 1], [1, 2]}
+
+      assert_raise SyntaxError, fn ->
+        Code.string_to_quoted!("a.1")
+      end
+
+      assert_raise TokenMissingError, fn ->
+        Code.string_to_quoted!("1 +")
+      end
     end
   end
 
-  test "string_to_quoted!/2 raises with the :existing_atoms_only option" do
-    assert catch_error(Code.string_to_quoted!(":there_is_no_such_atom", existing_atoms_only: true)) == :badarg
-  end
+  describe "string_to_quoted/2 with :formatter_metadata (private)" do
+    test "adds terminator information to sigils" do
+      string_to_quoted = &Code.string_to_quoted!(&1, formatter_metadata: true)
 
-  test "string_to_quoted/2 with wrap_literals_in_blocks option" do
-    assert Code.string_to_quoted("\"one\"", wrap_literals_in_blocks: true) == {:ok, {:__block__, [line: 1], ["one"]}}
-    assert Code.string_to_quoted("\"one\"") == {:ok, "one"}
-    assert Code.string_to_quoted("?é", wrap_literals_in_blocks: true) == {:ok, {:__block__, [format: :char, line: 1], [233]}}
-    assert Code.string_to_quoted("0b10", wrap_literals_in_blocks: true) == {:ok, {:__block__, [format: :binary, line: 1], [2]}}
-    assert Code.string_to_quoted("12", wrap_literals_in_blocks: true) == {:ok, {:__block__, [format: :decimal, line: 1], [12]}}
-    assert Code.string_to_quoted("0o123", wrap_literals_in_blocks: true) == {:ok, {:__block__, [format: :octal, line: 1], [83]}}
-    assert Code.string_to_quoted("0xEF", wrap_literals_in_blocks: true) == {:ok, {:__block__, [format: :hexadecimal, line: 1], [239]}}
-    assert Code.string_to_quoted("12.3", wrap_literals_in_blocks: true) == {:ok, {:__block__, [line: 1], [12.3]}}
-    assert Code.string_to_quoted("nil", wrap_literals_in_blocks: true) == {:ok, {:__block__, [line: 1], [nil]}}
-    assert Code.string_to_quoted(":one", wrap_literals_in_blocks: true) == {:ok, {:__block__, [line: 1], [:one]}}
-    assert Code.string_to_quoted("[1]", wrap_literals_in_blocks: true) ==
-           {:ok, {:__block__, [line: 1], [[{:__block__, [format: :decimal, line: 1], [1]}]]}}
-    assert Code.string_to_quoted("{:ok, :test}", wrap_literals_in_blocks: true) ==
-           {:ok, {:__block__, [line: 1], [{{:__block__, [line: 1], [:ok]}, {:__block__, [line: 1], [:test]}}]}}
-    assert Code.string_to_quoted("\"\"\"\nhello\n\"\"\"", wrap_literals_in_blocks: true)
-           {:ok, {:__block__, [format: :bin_heredoc, line: 1], ["hello\n"]}}
-    assert Code.string_to_quoted("'''\nhello\n'''", wrap_literals_in_blocks: true)
-           {:ok, {:__block__, [format: :list_heredoc, line: 1], ['hello\n']}}
+      assert string_to_quoted.("~r/foo/") ==
+               {:sigil_r, [terminator: "/", line: 1], [{:<<>>, [line: 1], ["foo"]}, []]}
+
+      assert string_to_quoted.("~r[foo]") ==
+               {:sigil_r, [terminator: "[", line: 1], [{:<<>>, [line: 1], ["foo"]}, []]}
+
+      assert string_to_quoted.("~r\"foo\"") ==
+               {:sigil_r, [terminator: "\"", line: 1], [{:<<>>, [line: 1], ["foo"]}, []]}
+
+      meta = [terminator: "\"\"\"", line: 1]
+      args = {:sigil_S, meta, [{:<<>>, [line: 1], ["sigil heredoc\n"]}, []]}
+      assert string_to_quoted.("~S\"\"\"\nsigil heredoc\n\"\"\"") == args
+
+      meta = [terminator: "'''", line: 1]
+      args = {:sigil_S, meta, [{:<<>>, [line: 1], ["sigil heredoc\n"]}, []]}
+      assert string_to_quoted.("~S'''\nsigil heredoc\n'''") == args
+    end
+
+    test "wraps literals in blocks when :formatter_metadata (private) is given" do
+      string_to_quoted = &Code.string_to_quoted!(&1, formatter_metadata: true)
+
+      assert string_to_quoted.(~s("one")) == {:__block__, [format: :string, line: 1], ["one"]}
+      assert string_to_quoted.("'one'") == {:__block__, [format: :charlist, line: 1], ['one']}
+      assert string_to_quoted.("?é") == {:__block__, [original: '?é', line: 1], [233]}
+      assert string_to_quoted.("0b10") == {:__block__, [original: '0b10', line: 1], [2]}
+      assert string_to_quoted.("12") == {:__block__, [original: '12', line: 1], [12]}
+      assert string_to_quoted.("0o123") == {:__block__, [original: '0o123', line: 1], [83]}
+      assert string_to_quoted.("0xEF") == {:__block__, [original: '0xEF', line: 1], [239]}
+      assert string_to_quoted.("12.3") == {:__block__, [original: '12.3', line: 1], [12.3]}
+      assert string_to_quoted.("nil") == {:__block__, [line: 1], [nil]}
+      assert string_to_quoted.(":one") == {:__block__, [line: 1], [:one]}
+
+      args = [[{:__block__, [original: '1', line: 1], [1]}]]
+
+      assert string_to_quoted.("[1]") ==
+               {:__block__, [eol: false, closing: [line: 1], line: 1], args}
+
+      args = [{{:__block__, [line: 1], [:ok]}, {:__block__, [line: 1], [:test]}}]
+
+      assert string_to_quoted.("{:ok, :test}") ==
+               {:__block__, [eol: false, closing: [line: 1], line: 1], args}
+
+      assert string_to_quoted.(~s("""\nhello\n""")) ==
+               {:__block__, [format: :bin_heredoc, line: 1], ["hello\n"]}
+
+      assert string_to_quoted.("'''\nhello\n'''") ==
+               {:__block__, [format: :list_heredoc, line: 1], ['hello\n']}
+
+      left = {:__block__, [original: '1', line: 1, closing: [line: 1], line: 1], [1]}
+      right = {:__block__, [format: :string, line: 1], ["hello"]}
+      args = [{:->, [line: 1], [[left], right]}]
+
+      assert string_to_quoted.(~s[fn (1) -> "hello" end]) ==
+               {:fn, [closing: [line: 1], line: 1], args}
+    end
+
+    test "adds newlines information to blocks when :formatter_metadata (private) is given" do
+      file = """
+      one();two()
+      three()
+
+      four()
+
+
+      five()
+      """
+
+      args = [
+        {:one, [eol: false, closing: [line: 1], line: 1], []},
+        {:two, [newlines: 0, eol: false, closing: [line: 1], line: 1], []},
+        {:three, [newlines: 1, eol: false, closing: [line: 2], line: 2], []},
+        {:four, [newlines: 2, eol: false, closing: [line: 4], line: 4], []},
+        {:five, [newlines: 3, eol: false, closing: [line: 7], line: 7], []}
+      ]
+
+      assert Code.string_to_quoted!(file, formatter_metadata: true) == {:__block__, [], args}
+    end
   end
 
   test "compile source" do
@@ -161,17 +309,19 @@ defmodule CodeTest do
 
   describe "compile_string/1" do
     test "compiles the given string" do
-      assert [{CompileStringSample, _}] = Code.compile_string("defmodule CompileStringSample, do: :ok")
+      assert [{CompileStringSample, _}] =
+               Code.compile_string("defmodule CompileStringSample, do: :ok")
     after
-      :code.purge CompileSimpleSample
-      :code.delete CompileSimpleSample
+      :code.purge(CompileSimpleSample)
+      :code.delete(CompileSimpleSample)
     end
 
     test "works across lexical scopes" do
-      assert [{CompileCrossSample, _}] = Code.compile_string("CodeTest.genmodule CompileCrossSample")
+      assert [{CompileCrossSample, _}] =
+               Code.compile_string("CodeTest.genmodule CompileCrossSample")
     after
-      :code.purge CompileCrossSample
-      :code.delete CompileCrossSample
+      :code.purge(CompileCrossSample)
+      :code.delete(CompileCrossSample)
     end
   end
 
@@ -187,11 +337,13 @@ defmodule CodeTest do
 
   test "compiler_options/1 validates options" do
     message = "unknown compiler option: :not_a_valid_option"
+
     assert_raise RuntimeError, message, fn ->
       Code.compiler_options(not_a_valid_option: :foo)
     end
 
     message = "compiler option :debug_info should be a boolean, got: :not_a_boolean"
+
     assert_raise RuntimeError, message, fn ->
       Code.compiler_options(debug_info: :not_a_boolean)
     end
@@ -203,10 +355,21 @@ defmodule Code.SyncTest do
 
   test "path manipulation" do
     path = Path.join(__DIR__, "fixtures")
-    Code.prepend_path path
-    assert to_charlist(path) in :code.get_path
+    Code.prepend_path(path)
+    assert to_charlist(path) in :code.get_path()
 
-    Code.delete_path path
-    refute to_charlist(path) in :code.get_path
+    Code.delete_path(path)
+    refute to_charlist(path) in :code.get_path()
+  end
+
+  test "purges compiler modules" do
+    quoted = quote(do: Agent.start_link(fn -> :ok end))
+    Code.compile_quoted(quoted)
+
+    {:ok, claimed} = Code.purge_compiler_modules()
+    assert claimed > 0
+
+    {:ok, claimed} = Code.purge_compiler_modules()
+    assert claimed == 0
   end
 end

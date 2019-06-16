@@ -16,16 +16,16 @@ translate({'=', Meta, [Left, Right]}, S) ->
     {TLeft, #elixir_erl{extra_guards=ExtraGuards, context=Context} = SL0}
         when ExtraGuards =/= [], Context =/= match ->
       SL1 = SL0#elixir_erl{extra_guards=[]},
+      {ResultVarName, _, SL2} = elixir_erl_var:build('_', SL1),
       Match = {match, ?ann(Meta), TLeft, TRight},
       Generated = ?ann(?generated(Meta)),
-      {ResultVarName, _, SL2} = elixir_erl_var:build('_', SL1),
       ResultVar = {var, Generated, ResultVarName},
       ResultMatch = {match, Generated, ResultVar, Match},
       True = {atom, Generated, true},
       Reason = {tuple, Generated, [{atom, Generated, badmatch}, ResultVar]},
-      RaiseExpr = elixir_erl:remote(Generated, erlang, error, [Reason]),
+      RaiseExpr = ?remote(Generated, erlang, error, [Reason]),
       GuardsExp = {'if', Generated, [
-        {clause, Generated, [], [ExtraGuards], [True]},
+        {clause, Generated, [], [ExtraGuards], [ResultVar]},
         {clause, Generated, [], [[True]], [RaiseExpr]}
       ]},
       {{block, Generated, [ResultMatch, GuardsExp]}, SL2};
@@ -66,12 +66,17 @@ translate({'__block__', Meta, Args}, S) when is_list(Args) ->
 translate({'__CALLER__', Meta, Atom}, S) when is_atom(Atom) ->
   {{var, ?ann(Meta), '__CALLER__'}, S#elixir_erl{caller=true}};
 
-translate({'super', Meta, [{Kind, Name} | Args]}, S) ->
+translate({'__STACKTRACE__', Meta, Atom}, S = #elixir_erl{stacktrace={Var, _}}) when is_atom(Atom) ->
+  {{var, ?ann(Meta), Var}, S#elixir_erl{stacktrace={Var, true}}};
+
+translate({'super', Meta, Args}, S) ->
   %% In the expanded AST, super is used to invoke a function
   %% in the current module originated from a default clause
   %% or a super call.
   {TArgs, SA} = translate_args(Args, S),
   Ann = ?ann(Meta),
+  {super, {Kind, Name}} = lists:keyfind(super, 1, Meta),
+
   if
     Kind == defmacro; Kind == defmacrop ->
       MacroName = elixir_utils:macro_name(Name),
@@ -106,23 +111,22 @@ translate({fn, Meta, Clauses}, S) ->
 %% Cond
 
 translate({'cond', CondMeta, [[{do, Clauses}]]}, S) ->
-  [{'->', Meta, [[Condition], Body]} = H | T] = lists:reverse(Clauses),
+  [{'->', Meta, [[Condition], _]} = H | T] = lists:reverse(Clauses),
 
-  Case =
-    case Condition of
-      X when is_atom(X) and (X /= false) and (X /= nil) ->
-        build_cond_clauses(T, Body, Meta);
-      _ ->
-        Error = {{'.', Meta, [erlang, error]}, [], [cond_clause]},
-        build_cond_clauses([H | T], Error, Meta)
+  FirstMeta =
+    if
+      is_atom(Condition), Condition /= false, Condition /= nil -> ?generated(Meta);
+      true -> Meta
     end,
+
+  Error = {{'.', Meta, [erlang, error]}, [], [cond_clause]},
+  Case = build_cond_clauses([H | T], Error, FirstMeta),
   translate(replace_case_meta(CondMeta, Case), S);
 
 %% Case
 
 translate({'case', Meta, [Expr, Opts]}, S) ->
-  ShouldExportVars = proplists:get_value(export_vars, Meta, true),
-  translate_case(ShouldExportVars, Meta, Expr, Opts, S);
+  translate_case(Meta, Expr, Opts, S);
 
 %% Try
 
@@ -142,7 +146,7 @@ translate({'try', Meta, [Opts]}, S) ->
   end,
 
   Else = elixir_erl_clauses:get_clauses(else, Opts, match),
-  {TElse, SE} = elixir_erl_clauses:clauses(Meta, Else, mergec(S, SA)),
+  {TElse, SE} = elixir_erl_clauses:clauses(Else, mergec(S, SA)),
   {{'try', ?ann(Meta), unblock(TDo), TElse, TCatch, TAfter}, mergec(S, SE)};
 
 %% Receive
@@ -152,11 +156,11 @@ translate({'receive', Meta, [Opts]}, S) ->
 
   case lists:keyfind('after', 1, Opts) of
     false ->
-      {TClauses, SC} = elixir_erl_clauses:clauses(Meta, Do, S),
+      {TClauses, SC} = elixir_erl_clauses:clauses(Do, S),
       {{'receive', ?ann(Meta), TClauses}, SC};
     _ ->
       After = elixir_erl_clauses:get_clauses('after', Opts, expr),
-      {TClauses, SC} = elixir_erl_clauses:clauses(Meta, Do ++ After, S),
+      {TClauses, SC} = elixir_erl_clauses:clauses(Do ++ After, S),
       {FClauses, TAfter} = elixir_utils:split_last(TClauses),
       {_, _, [FExpr], _, FAfter} = TAfter,
       {{'receive', ?ann(Meta), FClauses, FExpr, FAfter}, SC}
@@ -175,17 +179,16 @@ translate({with, Meta, [_ | _] = Args}, S) ->
 
 %% Variables
 
-translate({'^', Meta, [{Name, VarMeta, Kind}]}, #elixir_erl{context=match, file=File} = S) when is_atom(Name), is_atom(Kind) ->
-  Tuple = {Name, var_kind(VarMeta, Kind)},
-  {ok, {Value, _Counter, Safe}} = maps:find(Tuple, S#elixir_erl.backup_vars),
-  elixir_erl_var:warn_unsafe_var(VarMeta, File, Name, Safe),
+translate({'^', Meta, [{Name, VarMeta, Kind}]}, #elixir_erl{context=match} = S) when is_atom(Name), is_atom(Kind) ->
+  Tuple = {Name, elixir_utils:var_context(VarMeta, Kind)},
+  {ok, {_Counter, Value}} = maps:find(Tuple, S#elixir_erl.backup_vars),
 
   PAnn = ?ann(?generated(Meta)),
   PVar = {var, PAnn, Value},
 
   case S#elixir_erl.extra of
     pin_guard ->
-      {TVar, TS} = elixir_erl_var:translate(VarMeta, Name, var_kind(VarMeta, Kind), S),
+      {TVar, TS} = elixir_erl_var:translate(VarMeta, Name, elixir_utils:var_context(VarMeta, Kind), S),
       Guard = {op, PAnn, '=:=', PVar, TVar},
       {TVar, TS#elixir_erl{extra_guards=[Guard | TS#elixir_erl.extra_guards]}};
     _ ->
@@ -196,7 +199,7 @@ translate({'_', Meta, Kind}, #elixir_erl{context=match} = S) when is_atom(Kind) 
   {{var, ?ann(Meta), '_'}, S};
 
 translate({Name, Meta, Kind}, S) when is_atom(Name), is_atom(Kind) ->
-  elixir_erl_var:translate(Meta, Name, var_kind(Meta, Kind), S);
+  elixir_erl_var:translate(Meta, Name, elixir_utils:var_context(Meta, Kind), S);
 
 %% Local calls
 
@@ -225,8 +228,8 @@ translate({{'.', _, [Left, Right]}, Meta, []}, S)
       [TVar]},
     {clause, Generated,
       [TVar],
-      [[elixir_erl:remote(Generated, erlang, is_map, [TVar])]],
-      [elixir_erl:remote(Ann, erlang, error, [TError])]},
+      [[?remote(Generated, erlang, is_map, [TVar])]],
+      [?remote(Ann, erlang, error, [TError])]},
     {clause, Generated,
       [TVar],
       [],
@@ -262,14 +265,11 @@ translate(Other, S) ->
 
 %% Helpers
 
-translate_case(true, Meta, Expr, Opts, S) ->
+translate_case(Meta, Expr, Opts, S) ->
   Clauses = elixir_erl_clauses:get_clauses(do, Opts, match),
   {TExpr, SE} = translate(Expr, S),
-  {TClauses, SC} = elixir_erl_clauses:clauses(Meta, Clauses, SE),
-  {{'case', ?ann(Meta), TExpr, TClauses}, SC};
-translate_case(false, Meta, Expr, Opts, S) ->
-  {Case, SC} = translate_case(true, Meta, Expr, Opts, S),
-  {Case, elixir_erl_var:mergec(S, SC)}.
+  {TClauses, SC} = elixir_erl_clauses:clauses(Clauses, SE),
+  {{'case', ?ann(Meta), TExpr, TClauses}, SC}.
 
 translate_list([{'|', _, [_, _]=Args}], Fun, Acc, List) ->
   {[TLeft, TRight], TAcc} = lists:mapfoldl(Fun, Acc, Args),
@@ -284,12 +284,6 @@ build_list([H | T], Acc) ->
   build_list(T, {cons, 0, H, Acc});
 build_list([], Acc) ->
   Acc.
-
-var_kind(Meta, Kind) ->
-  case lists:keyfind(counter, 1, Meta) of
-    {counter, Counter} -> Counter;
-    false -> Kind
-  end.
 
 %% Pack a list of expressions from a block.
 unblock({'block', _, Exprs}) -> Exprs;
@@ -387,6 +381,11 @@ translate_with_else(Meta, [], S) ->
   {VarName, _, SC} = elixir_erl_var:build('_', S),
   Var = {var, Ann, VarName},
   {{clause, Ann, [Var], [], [Var]}, SC};
+translate_with_else(Meta, [{else, [{'->', _, [[{Var, VarMeta, Kind}], Clause]}]}], S) when is_atom(Var), is_atom(Kind) ->
+  Ctx = elixir_utils:var_context(VarMeta, Kind),
+  {ElseVarErl, SV} = elixir_erl_var:assign(Meta, Var, Ctx, S),
+  {TranslatedClause, SC} = elixir_erl_pass:translate(Clause, SV),
+  {{clause, Meta, [ElseVarErl], [], [TranslatedClause]}, SC};
 translate_with_else(Meta, [{else, Else}], S) ->
   Generated = ?generated(Meta),
   ElseVarEx = {else, Generated, ?var_context},
@@ -396,10 +395,30 @@ translate_with_else(Meta, [{else, Else}], S) ->
   RaiseExpr = {{'.', Generated, [erlang, error]}, Generated, [{with_clause, RaiseVar}]},
   RaiseClause = {'->', Generated, [[RaiseVar], RaiseExpr]},
 
-  GeneratedElse = [{'->', ?generated(ElseMeta), ElseArgs} || {'->', ElseMeta, ElseArgs} <- Else],
-  Case = {'case', [{export_vars, false} | Generated], [ElseVarEx, [{do, GeneratedElse ++ [RaiseClause]}]]},
+  GeneratedElse = [build_generated_clause(Generated, ElseClause) || ElseClause <- Else],
+
+  Case = {'case', Generated, [ElseVarEx, [{do, GeneratedElse ++ [RaiseClause]}]]},
   {TranslatedCase, SC} = elixir_erl_pass:translate(Case, SV),
   {{clause, ?ann(Generated), [ElseVarErl], [], [TranslatedCase]}, SC}.
+
+build_generated_clause(Generated, {'->', _, [Args, Clause]}) ->
+  NewArgs = [build_generated_clause_arg(Generated, Arg) || Arg <- Args],
+  {'->', Generated, [NewArgs, Clause]}.
+
+build_generated_clause_arg(Generated, Arg) ->
+  {Expr, Guards} = elixir_utils:extract_guards(Arg),
+  NewGuards = [build_generated_guard(Generated, Guard) || Guard <- Guards],
+  concat_guards(Generated, Expr, NewGuards).
+
+build_generated_guard(Generated, {{'.', _, _} = Call, _, Args}) ->
+  {Call, Generated, [build_generated_guard(Generated, Arg) || Arg <- Args]};
+build_generated_guard(_, Expr) ->
+  Expr.
+
+concat_guards(_Meta, Expr, []) ->
+  Expr;
+concat_guards(Meta, Expr, [Guard | Tail]) ->
+  {'when', Meta, [Expr, concat_guards(Meta, Guard, Tail)]}.
 
 translate_with_do([{'<-', Meta, [Left, Expr]} | Rest], Do, Else, S) ->
   {Args, Guards} = elixir_utils:extract_guards(Left),
@@ -446,7 +465,7 @@ translate_struct(Meta, Name, {'%{}', _, [{'|', _, [Update, Assocs]}]}, S) ->
 
   {{'case', Generated, TUpdate, [
     {clause, Ann, [Match], [], [TAssocs]},
-    {clause, Generated, [Var], [], [elixir_erl:remote(Ann, erlang, error, [Error])]}
+    {clause, Generated, [Var], [], [?remote(Ann, erlang, error, [Error])]}
   ]}, TS};
 translate_struct(Meta, Name, {'%{}', _, Assocs}, S) ->
   translate_map(Meta, Assocs ++ [{'__struct__', Name}], none, S).
@@ -509,12 +528,8 @@ build_bitstr(Fun, T, Meta, S, Acc, H, default, Types) when is_binary(H) ->
   build_bitstr(Fun, T, Meta, S, [Element | Acc]);
 
 build_bitstr(Fun, T, Meta, S, Acc, H, Size, Types) ->
-  case Fun(H, S) of
-    {{bin, _, Elements}, NS} when S#elixir_erl.context == match ->
-      build_bitstr(Fun, T, Meta, NS, lists:reverse(Elements, Acc));
-    {Expr, NS} ->
-      build_bitstr(Fun, T, Meta, NS, [{bin_element, ?ann(Meta), Expr, Size, Types} | Acc])
-  end.
+  {Expr, NS} = Fun(H, S),
+  build_bitstr(Fun, T, Meta, NS, [{bin_element, ?ann(Meta), Expr, Size, Types} | Acc]).
 
 requires_utf_conversion([bitstring | _]) -> false;
 requires_utf_conversion([binary | _]) -> false;
@@ -544,7 +559,7 @@ extract_bit_type({Other, _, []}, Acc) ->
 translate_remote('Elixir.Access' = Mod, get, Meta, [Container, Value], S) ->
   Ann = ?ann(Meta),
   {TArgs, SA} = translate_args([Container, Value, nil], S),
-  {elixir_erl:remote(Ann, Mod, get, TArgs), SA};
+  {?remote(Ann, Mod, get, TArgs), SA};
 translate_remote('Elixir.String.Chars', to_string, Meta, [Arg], S) ->
   case is_always_string(Arg) of
     true ->
@@ -555,8 +570,8 @@ translate_remote('Elixir.String.Chars', to_string, Meta, [Arg], S) ->
 
       Generated = ?ann(?generated(Meta)),
       Var = {var, Generated, VarName},
-      Guard = elixir_erl:remote(Generated, erlang, is_binary, [Var]),
-      Slow = elixir_erl:remote(Generated, 'Elixir.String.Chars', to_string, [Var]),
+      Guard = ?remote(Generated, erlang, is_binary, [Var]),
+      Slow = ?remote(Generated, 'Elixir.String.Chars', to_string, [Var]),
       Fast = Var,
 
       {{'case', Generated, TArg, [
@@ -564,6 +579,37 @@ translate_remote('Elixir.String.Chars', to_string, Meta, [Arg], S) ->
         {clause, Generated, [Var], [], [Slow]}
       ]}, VS}
   end;
+translate_remote(maps, put, Meta, [Key, Value, Map], S) ->
+  Ann = ?ann(Meta),
+  {TExpr, ES} =
+    case translate_args([Key, Value, Map], S) of
+      {[TKey, TValue, {map, _, InnerMap, Pairs}], TS} ->
+        {{map, Ann, InnerMap, Pairs ++ [{map_field_assoc, Ann, TKey, TValue}]}, TS};
+
+      {[TKey, TValue, {map, _, Pairs}], TS} ->
+        {{map, Ann, Pairs ++ [{map_field_assoc, Ann, TKey, TValue}]}, TS};
+
+      {[TKey, TValue, TMap], TS} ->
+        {{map, Ann, TMap, [{map_field_assoc, Ann, TKey, TValue}]}, TS}
+    end,
+  {TExpr, mergev(S, ES)};
+translate_remote(maps, merge, Meta, [Map1, Map2], S) ->
+  Ann = ?ann(Meta),
+  {TExpr, ES} =
+    case translate_args([Map1, Map2], S) of
+      {[{map, _, Pairs1}, {map, _, Pairs2}], TS} ->
+        {{map, Ann, Pairs1 ++ Pairs2}, TS};
+
+      {[{map, _, InnerMap1, Pairs1}, {map, _, Pairs2}], TS} ->
+        {{map, Ann, InnerMap1, Pairs1 ++ Pairs2}, TS};
+
+      {[TMap1, {map, _, Pairs2}], TS} ->
+        {{map, Ann, TMap1, Pairs2}, TS};
+
+      {[TMap1, TMap2], TS} ->
+        {{call, Ann, {remote, Ann, {atom, Ann, maps}, {atom, Ann, merge}}, [TMap1, TMap2]}, TS}
+    end,
+  {TExpr, mergev(S, ES)};
 translate_remote(Left, Right, Meta, Args, S) ->
   {TLeft, SL} = translate(Left, S),
   {TArgs, SA} = translate_args(Args, mergec(S, SL)),
@@ -574,7 +620,7 @@ translate_remote(Left, Right, Meta, Args, S) ->
   SC = mergev(SL, SA),
 
   %% Rewrite Erlang function calls as operators so they
-  %% work on guards, matches and so on.
+  %% work in guards, matches and so on.
   case (Left == erlang) andalso elixir_utils:guard_op(Right, Arity) of
     true ->
       case TArgs of
@@ -604,7 +650,7 @@ generate_struct_name_guard([{map_field_exact, Ann, {atom, _, '__struct__'} = Key
   Generated = erl_anno:set_generated(true, Ann),
   ModuleVar = {var, Generated, ModuleVarName},
   Match = {match, Generated, ModuleVar, Var},
-  Guard = elixir_erl:remote(Generated, erlang, is_atom, [ModuleVar]),
+  Guard = ?remote(Generated, erlang, is_atom, [ModuleVar]),
   S2 = S1#elixir_erl{extra_guards=[Guard | S1#elixir_erl.extra_guards]},
   {lists:reverse(Acc, [{map_field_exact, Ann, Key, Match} | Rest]), S2};
 generate_struct_name_guard([Field | Rest], Acc, S) ->

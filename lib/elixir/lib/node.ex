@@ -16,8 +16,7 @@ defmodule Node do
   This functionality starts the `:net_kernel` and other
   related processes.
   """
-  @spec start(node, :longnames | :shortnames, non_neg_integer) ::
-             {:ok, pid} | {:error, term}
+  @spec start(node, :longnames | :shortnames, non_neg_integer) :: {:ok, pid} | {:error, term}
   def start(name, type \\ :longnames, tick_time \\ 15000) do
     :net_kernel.start([name, type, tick_time])
   end
@@ -60,6 +59,8 @@ defmodule Node do
   the local node.
 
   Same as `list(:visible)`.
+
+  Inlined by the compiler.
   """
   @spec list :: [t]
   def list do
@@ -73,8 +74,10 @@ defmodule Node do
   satisfying the disjunction(s) of the list elements.
 
   For more information, see `:erlang.nodes/1`.
+
+  Inlined by the compiler.
   """
-  @typep state :: :visible | :hidden | :connected | :this | :known
+  @type state :: :visible | :hidden | :connected | :this | :known
   @spec list(state | [state]) :: [t]
   def list(args) do
     :erlang.nodes(args)
@@ -87,7 +90,7 @@ defmodule Node do
   If `flag` is `false`, monitoring is turned off.
 
   For more information, see `:erlang.monitor_node/2`.
-  
+
   For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/3`.
   """
   @spec monitor(t, boolean) :: true
@@ -100,7 +103,7 @@ defmodule Node do
   option to be given, namely `:allow_passive_connect`.
 
   For more information, see `:erlang.monitor_node/3`.
-  
+
   For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/3`.
   """
   @spec monitor(t, boolean, [:allow_passive_connect]) :: true
@@ -175,7 +178,7 @@ defmodule Node do
 
   Inlined by the compiler.
   """
-  @spec spawn(t, (() -> any), Process.spawn_opts) :: pid | {pid, reference}
+  @spec spawn(t, (() -> any), Process.spawn_opts()) :: pid | {pid, reference}
   def spawn(node, fun, opts) do
     :erlang.spawn_opt(node, fun, opts)
   end
@@ -205,7 +208,7 @@ defmodule Node do
 
   Inlined by the compiler.
   """
-  @spec spawn(t, module, atom, [any], Process.spawn_opts) :: pid | {pid, reference}
+  @spec spawn(t, module, atom, [any], Process.spawn_opts()) :: pid | {pid, reference}
   def spawn(node, module, fun, args, opts) do
     :erlang.spawn_opt(node, module, fun, args, opts)
   end
@@ -247,7 +250,8 @@ defmodule Node do
 
   This function will raise `FunctionClauseError` if the given `node` is not alive.
   """
-  def set_cookie(node \\ Node.self, cookie) when is_atom(cookie) do
+  @spec set_cookie(t, atom) :: true
+  def set_cookie(node \\ Node.self(), cookie) when is_atom(cookie) do
     :erlang.set_cookie(node, cookie)
   end
 
@@ -256,6 +260,7 @@ defmodule Node do
 
   Returns the cookie if the node is alive, otherwise `:nocookie`.
   """
+  @spec get_cookie() :: atom
   def get_cookie() do
     :erlang.get_cookie()
   end

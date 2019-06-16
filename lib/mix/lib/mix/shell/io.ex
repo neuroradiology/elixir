@@ -12,37 +12,27 @@ defmodule Mix.Shell.IO do
   was not printed yet.
   """
   def print_app do
-    if name = Mix.Shell.printable_app_name do
-      IO.puts "==> #{name}"
+    if name = Mix.Shell.printable_app_name() do
+      IO.puts("==> #{name}")
     end
+
+    :ok
   end
 
   @doc """
-  Executes the given command and prints its output
-  to stdout as it comes.
-  """
-  def cmd(command, opts \\ []) do
-    print_app? = Keyword.get(opts, :print_app, true)
-    Mix.Shell.cmd(command, opts, fn data ->
-      if print_app?, do: print_app()
-      IO.write(data)
-    end)
-  end
-
-  @doc """
-  Prints the given message to the shell followed by a newline.
+  Prints the given ANSI message to the shell followed by a newline.
   """
   def info(message) do
     print_app()
-    IO.puts IO.ANSI.format message
+    IO.puts(IO.ANSI.format(message))
   end
 
   @doc """
-  Prints the given error to the shell followed by a newline.
+  Prints the given ANSI error to the shell followed by a newline.
   """
   def error(message) do
     print_app()
-    IO.puts :stderr, IO.ANSI.format(red(message))
+    IO.puts(:stderr, IO.ANSI.format(red(message)))
   end
 
   @doc """
@@ -69,5 +59,18 @@ defmodule Mix.Shell.IO do
 
   defp red(message) do
     [:red, :bright, message]
+  end
+
+  @doc """
+  Executes the given command and prints its output
+  to stdout as it comes.
+  """
+  def cmd(command, opts \\ []) do
+    print_app? = Keyword.get(opts, :print_app, true)
+
+    Mix.Shell.cmd(command, opts, fn data ->
+      if print_app?, do: print_app()
+      IO.write(data)
+    end)
   end
 end

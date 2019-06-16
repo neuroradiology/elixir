@@ -1,98 +1,100 @@
 defmodule Mix.Config do
+  # TODO: Convert them to hard deprecations on v1.12
+
+  @moduledoc deprecated: "Use Config and Config.Reader instead"
   @moduledoc ~S"""
-  Module for defining, reading and merging app configurations.
+  A simple configuration API and functions for managing config files.
+
+  ## Setting configuration
 
   Most commonly, this module is used to define your own configuration:
 
       use Mix.Config
 
-      config :plug,
+      config :root_key,
         key1: "value1",
         key2: "value2"
 
-      import_config "#{Mix.env}.exs"
+      import_config "#{Mix.env()}.exs"
 
-  All `config/*` macros, including `import_config/1`, are used
-  to help define such configuration files.
+  `use Mix.Config` will import the functions `config/2`, `config/3`
+  and `import_config/1` to help you manage your configuration.
 
-  Furthermore, this module provides functions like `read!/1`,
-  `merge/2` and friends which help manipulate configurations
-  in general.
+  ## Evaluating configuration
 
-  Configuration set using `Mix.Config` will set the application env, so
-  that `Application.get_env/3` and other `Application` functions can be used
-  at run or compile time to retrieve or change the configuration.
+  Once a configuration is written to a file, the functions in this
+  module can be used to read and merge said configuration. The `eval!/2`
+  function allows you evaluate a given configuration file and `merge/2`
+  allows to deep merge the results of multiple configurations. Those
+  functions should not be invoked by users writing configurations but
+  rather by library authors.
 
-  For example, the `:key1` value from application `:plug` (see above) can be
-  retrieved with:
+  ## Examples
 
-      "value1" = Application.fetch_env!(:plug, :key1)
+  The most common use of `Mix.Config` is to define application
+  configuration so that `Application.get_env/3` and other `Application`
+  functions can be used to retrieve or further change them.
+
+  Application config files are typically placed in the `config/`
+  directory of your Mix projects. For example, the following config
+
+      # config/config.exs
+      config :my_app, :key, "value"
+
+  will be automatically loaded by Mix and persisted into the
+  `:my_app`'s application environment, which can be accessed in
+  its source code as follows:
+
+      "value" = Application.fetch_env!(:my_app, :key1)
 
   """
-
-  defmodule LoadError do
-    defexception [:file, :error]
-
-    def message(%LoadError{file: file, error: error}) do
-      "could not load config #{Path.relative_to_cwd(file)}\n    " <>
-        "#{Exception.format_banner(:error, error)}"
-    end
-  end
 
   @doc false
   defmacro __using__(_) do
     quote do
       import Mix.Config, only: [config: 2, config: 3, import_config: 1]
-      {:ok, agent} = Mix.Config.Agent.start_link
-      var!(config_agent, Mix.Config) = agent
     end
   end
 
   @doc """
-  Configures the given application.
+  Configures the given `root_key`.
 
   Keyword lists are always deep merged.
 
   ## Examples
 
   The given `opts` are merged into the existing configuration
-  for the given `app`. Conflicting keys are overridden by the
-  ones specified in `opts`. For example, the declaration below:
+  for the given `root_key`. Conflicting keys are overridden by the
+  ones specified in `opts`. For example, the application
+  configuration below
 
-      config :lager,
-        log_level: :warn,
-        mode: :truncate
+      config :logger,
+        level: :warn,
+        backends: [:console]
 
-      config :lager,
-        log_level: :info,
-        threshold: 1024
+      config :logger,
+        level: :info,
+        truncate: 1024
 
-  Will have a final configuration of:
+  will have a final configuration for `:logger` of:
 
-      [log_level: :info, mode: :truncate, threshold: 1024]
-
-  This final configuration can be retrieved at run or compile time:
-
-      Application.get_all_env(:lager)
+      [level: :info, backends: [:console], truncate: 1024]
 
   """
-  defmacro config(app, opts) do
-    quote do
-      Mix.Config.Agent.merge var!(config_agent, Mix.Config), [{unquote(app), unquote(opts)}]
-    end
-  end
+  @doc deprecated: "Use the Config module instead"
+  defdelegate config(root_key, opts), to: Config
 
   @doc """
-  Configures the given key for the given application.
+  Configures the given `key` for the given `root_key`.
 
   Keyword lists are always deep merged.
 
   ## Examples
 
   The given `opts` are merged into the existing values for `key`
-  in the given `app`. Conflicting keys are overridden by the
-  ones specified in `opts`. For example, given the two configurations
-  below:
+  in the given `root_key`. Conflicting keys are overridden by the
+  ones specified in `opts`. For example, the application
+  configuration below
 
       config :ecto, Repo,
         log_level: :warn,
@@ -102,22 +104,14 @@ defmodule Mix.Config do
         log_level: :info,
         pool_size: 10
 
-  the final value of the configuration for the `Repo` key in the `:ecto`
-  application will be:
+  will have a final value of the configuration for the `Repo`
+  key in the `:ecto` application of:
 
       [log_level: :info, pool_size: 10, adapter: Ecto.Adapters.Postgres]
 
-  This final value can be retrieved at runtime or compile time with:
-
-      Application.get_env(:ecto, Repo)
-
   """
-  defmacro config(app, key, opts) do
-    quote do
-      Mix.Config.Agent.merge var!(config_agent, Mix.Config),
-        [{unquote(app), [{unquote(key), unquote(opts)}]}]
-    end
-  end
+  @doc deprecated: "Use the Config module instead"
+  defdelegate config(root_key, key, opts), to: Config
 
   @doc ~S"""
   Imports configuration from the given file or files.
@@ -127,94 +121,103 @@ defmodule Mix.Config do
   the wildcard, no errors are raised. If `path_or_wildcard` is
   not a wildcard but a path to a single file, then that file is
   imported; in case the file doesn't exist, an error is raised.
-  This behaviour is analogous to the one for `read_wildcard!/1`.
 
-  If path/wildcard is a relative path/wildcard, it will be expanded relatively
-  to the directory the current configuration file is in.
+  If path/wildcard is a relative path/wildcard, it will be expanded
+  relatively to the directory the current configuration file is in.
 
   ## Examples
 
   This is often used to emulate configuration across environments:
 
-      import_config "#{Mix.env}.exs"
+      import_config "#{Mix.env()}.exs"
 
   Or to import files from children in umbrella projects:
 
       import_config "../apps/*/config/config.exs"
 
   """
+  @doc deprecated: "Use the Config module instead"
   defmacro import_config(path_or_wildcard) do
-    loaded_paths_quote =
-      unless {:loaded_paths, Mix.Config} in __CALLER__.vars do
-        quote do
-          var!(loaded_paths, Mix.Config) = [__ENV__.file]
-        end
-      end
-
     quote do
-      unquote(loaded_paths_quote)
-      Mix.Config.Agent.merge(
-        var!(config_agent, Mix.Config),
-         Mix.Config.read_wildcard!(Path.expand(unquote(path_or_wildcard), __DIR__), var!(loaded_paths, Mix.Config))
-      )
+      Mix.Config.__import__!(unquote(path_or_wildcard), __DIR__)
     end
+  end
+
+  @doc false
+  def __import__!(path_or_wildcard, dir) do
+    path_or_wildcard = Path.expand(path_or_wildcard, dir)
+
+    paths =
+      if String.contains?(path_or_wildcard, ~w(* ? [ {)) do
+        Path.wildcard(path_or_wildcard)
+      else
+        [path_or_wildcard]
+      end
+
+    for path <- paths do
+      Config.__import__!(path)
+    end
+
+    :ok
+  end
+
+  ## Mix API
+
+  @doc """
+  Evaluates the given configuration file.
+
+  It accepts a list of `imported_paths` that should raise if attempted
+  to be imported again (to avoid recursive imports).
+
+  It returns a tuple with the configuration and the imported paths.
+  """
+  @doc deprecated: "Use Config.Reader.read!/2 instead"
+  def eval!(file, imported_paths \\ []) do
+    Config.__eval__!(file, imported_paths)
   end
 
   @doc """
-  Reads and validates a configuration file.
+  Reads the configuration file.
 
-  `file` is the path to the configuration file to be read. If that file doesn't
-  exist or if there's an error loading it, a `Mix.Config.LoadError` exception
-  will be raised.
+  The same as `eval!/2` but only returns the configuration
+  in the given file, without returning the imported paths.
 
-  `loaded_paths` is a list of configuration files that have been previously
-  read. If `file` exists in `loaded_paths`, a `Mix.Config.LoadError` exception
-  will be raised.
+  It exists for convenience purposes. For example, you could
+  invoke it inside your `mix.exs` to read some external data
+  you decided to move to a configuration file:
+
+      releases: Mix.Config.read!("rel/releases.exs")
+
   """
-  def read!(file, loaded_paths \\ []) do
-    try do
-      if file in loaded_paths do
-        raise ArgumentError, message: "recursive load of #{file} detected"
-      end
-
-      {config, binding} = Code.eval_string File.read!(file), [{{:loaded_paths, Mix.Config}, [file | loaded_paths]}], [file: file, line: 1]
-
-      config = case List.keyfind(binding, {:config_agent, Mix.Config}, 0) do
-        {_, agent} -> get_config_and_stop_agent(agent)
-        nil        -> config
-      end
-
-      validate!(config)
-      config
-    rescue
-      e in [LoadError] -> reraise(e, System.stacktrace)
-      e -> reraise(LoadError, [file: file, error: e], System.stacktrace)
-    end
-  end
-
-  defp get_config_and_stop_agent(agent) do
-    config = Mix.Config.Agent.get(agent)
-    Mix.Config.Agent.stop(agent)
-    config
+  @doc deprecated: "Use Config.Reader.read_imports!/2 instead"
+  @spec read!(Path.t(), [Path.t()]) :: keyword
+  def read!(file, imported_paths \\ []) do
+    Config.__eval__!(file, imported_paths) |> elem(0)
   end
 
   @doc """
-  Reads many configuration files given by wildcard into a single config.
+  Merges two configurations.
 
-  Raises an error if `path` is a concrete filename (with no wildcards)
-  but the corresponding file does not exist; if `path` matches no files,
-  no errors are raised.
+  The configurations are merged together with the values in
+  the second one having higher preference than the first in
+  case of conflicts. In case both values are set to keyword
+  lists, it deep merges them.
 
-  `loaded_paths` is a list of configuration files that have been previously
-  read.
+  ## Examples
+
+      iex> Mix.Config.merge([app: [k: :v1]], [app: [k: :v2]])
+      [app: [k: :v2]]
+
+      iex> Mix.Config.merge([app: [k: [v1: 1, v2: 2]]], [app: [k: [v2: :a, v3: :b]]])
+      [app: [k: [v1: 1, v2: :a, v3: :b]]]
+
+      iex> Mix.Config.merge([app1: []], [app2: []])
+      [app1: [], app2: []]
+
   """
-  def read_wildcard!(path, loaded_paths \\ []) do
-    paths = if String.contains?(path, ~w(* ? [ {))do
-      Path.wildcard(path)
-    else
-      [path]
-    end
-    Enum.reduce(paths, [], &merge(&2, read!(&1, loaded_paths)))
+  @doc deprecated: "Use Config.Reader.merge/2 instead"
+  def merge(config1, config2) do
+    Config.__merge__(config1, config2)
   end
 
   @doc """
@@ -234,19 +237,31 @@ defmodule Mix.Config do
       #=> [:logger, :my_app]
 
   """
+  @doc deprecated: "Use Application.put_all_env/2 instead"
   def persist(config) do
-    for {app, kw} <- config do
-      for {k, v} <- kw do
-        Application.put_env(app, k, v, persistent: true)
-      end
-      app
-    end
+    Application.put_all_env(config, persistent: true)
   end
 
-  @doc """
-  Validates a configuration.
-  """
+  @doc false
+  @deprecated "Use eval!/2 instead"
+  def read_wildcard!(path, loaded_paths \\ []) do
+    paths =
+      if String.contains?(path, ~w(* ? [ {)) do
+        Path.wildcard(path)
+      else
+        [path]
+      end
+
+    Enum.reduce(paths, [], &merge(&2, read!(&1, loaded_paths)))
+  end
+
+  @doc false
+  @deprecated "Manually validate the data instead"
   def validate!(config) do
+    validate!(config, "runtime")
+  end
+
+  defp validate!(config, file) do
     if is_list(config) do
       Enum.all?(config, fn
         {app, value} when is_atom(app) ->
@@ -254,44 +269,19 @@ defmodule Mix.Config do
             true
           else
             raise ArgumentError,
-              "expected config for app #{inspect app} to return keyword list, got: #{inspect value}"
+                  "expected #{Path.relative_to_cwd(file)} config for app #{inspect(app)} " <>
+                    "to return keyword list, got: #{inspect(value)}"
           end
+
         _ ->
           false
       end)
     else
       raise ArgumentError,
-        "expected config file to return keyword list, got: #{inspect config}"
+            "expected #{Path.relative_to_cwd(file)} config to return " <>
+              "keyword list, got: #{inspect(config)}"
     end
-  end
 
-  @doc """
-  Merges two configurations.
-
-  The configuration of each application is merged together
-  with the values in the second one having higher preference
-  than the first in case of conflicts.
-
-  ## Examples
-
-      iex> Mix.Config.merge([app: [k: :v1]], [app: [k: :v2]])
-      [app: [k: :v2]]
-
-      iex> Mix.Config.merge([app1: []], [app2: []])
-      [app1: [], app2: []]
-
-  """
-  def merge(config1, config2) do
-    Keyword.merge(config1, config2, fn _, app1, app2 ->
-      Keyword.merge(app1, app2, &deep_merge/3)
-    end)
-  end
-
-  defp deep_merge(_key, value1, value2) do
-    if Keyword.keyword?(value1) and Keyword.keyword?(value2) do
-      Keyword.merge(value1, value2, &deep_merge/3)
-    else
-      value2
-    end
+    config
   end
 end

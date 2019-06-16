@@ -1,6 +1,15 @@
 defmodule Integer do
   @moduledoc """
   Functions for working with integers.
+
+  Some functions that work on integers are found in `Kernel`:
+
+    * `abs/1`
+    * `div/2`
+    * `max/2`
+    * `min/2`
+    * `rem/2`
+
   """
 
   import Bitwise
@@ -28,9 +37,7 @@ defmodule Integer do
       false
 
   """
-  defmacro is_odd(integer) do
-    quote do: (unquote(integer) &&& 1) == 1
-  end
+  defguard is_odd(integer) when is_integer(integer) and (integer &&& 1) == 1
 
   @doc """
   Determines if an `integer` is even.
@@ -55,9 +62,7 @@ defmodule Integer do
       true
 
   """
-  defmacro is_even(integer) do
-    quote do: (unquote(integer) &&& 1) == 0
-  end
+  defguard is_even(integer) when is_integer(integer) and (integer &&& 1) == 0
 
   @doc """
   Computes the modulo remainder of an integer division.
@@ -76,9 +81,11 @@ defmodule Integer do
       -2
 
   """
+  @doc since: "1.4.0"
   @spec mod(integer, neg_integer | pos_integer) :: integer
   def mod(dividend, divisor) do
     remainder = rem(dividend, divisor)
+
     if remainder * divisor < 0 do
       remainder + divisor
     else
@@ -108,9 +115,10 @@ defmodule Integer do
       -50
 
   """
+  @doc since: "1.4.0"
   @spec floor_div(integer, neg_integer | pos_integer) :: integer
   def floor_div(dividend, divisor) do
-    if (dividend * divisor < 0) and rem(dividend, divisor) != 0 do
+    if dividend * divisor < 0 and rem(dividend, divisor) != 0 do
       div(dividend, divisor) - 1
     else
       div(dividend, divisor)
@@ -141,14 +149,8 @@ defmodule Integer do
     do_digits(integer, base, [])
   end
 
-  defp do_digits(digit, base, []) when abs(digit) < base,
-    do: [digit]
-  defp do_digits(digit, base, []) when digit == -base,
-    do: [-1, 0]
-  defp do_digits(base, base, []),
-    do: [1, 0]
-  defp do_digits(0, _base, acc),
-    do: acc
+  defp do_digits(integer, base, acc) when abs(integer) < base, do: [integer | acc]
+
   defp do_digits(integer, base, acc),
     do: do_digits(div(integer, base), base, [rem(integer, base) | acc])
 
@@ -156,7 +158,7 @@ defmodule Integer do
   Returns the integer represented by the ordered `digits`.
 
   An optional `base` value may be provided representing the radix for the `digits`.
-  This one can be an integer >= 2.
+  Base has to be an integer greater than or equal to `2`.
 
   ## Examples
 
@@ -170,24 +172,16 @@ defmodule Integer do
       0
 
   """
-  @spec undigits([integer], integer) :: integer
+  @spec undigits([integer], pos_integer) :: integer
   def undigits(digits, base \\ 10) when is_list(digits) and is_integer(base) and base >= 2 do
     do_undigits(digits, base, 0)
   end
 
-  defp do_undigits([], _base, 0),
-    do: 0
-  defp do_undigits([digit], base, 0) when is_integer(digit) and digit < base,
-    do: digit
-  defp do_undigits([1, 0], base, 0),
-    do: base
-  defp do_undigits([0 | tail], base, 0),
-    do: do_undigits(tail, base, 0)
+  defp do_undigits([], _base, acc), do: acc
 
-  defp do_undigits([], _base, acc),
-    do: acc
   defp do_undigits([digit | _], base, _) when is_integer(digit) and digit >= base,
-    do: raise ArgumentError, "invalid digit #{digit} in base #{base}"
+    do: raise(ArgumentError, "invalid digit #{digit} in base #{base}")
+
   defp do_undigits([digit | tail], base, acc) when is_integer(digit),
     do: do_undigits(tail, base, acc * base + digit)
 
@@ -202,7 +196,7 @@ defmodule Integer do
 
   Raises an error if `base` is less than 2 or more than 36.
 
-  If you want to convert a string-formatted integer directly to a integer,
+  If you want to convert a string-formatted integer directly to an integer,
   `String.to_integer/1` or `String.to_integer/2` can be used instead.
 
   ## Examples
@@ -235,14 +229,15 @@ defmodule Integer do
   @spec parse(binary, 2..36) :: {integer, binary} | :error
   def parse(binary, base \\ 10)
 
-  def parse(_binary, base) when not base in 2..36 do
-    raise ArgumentError, "invalid base #{inspect base}"
+  def parse(_binary, base) when base not in 2..36 do
+    raise ArgumentError, "invalid base #{inspect(base)}"
   end
 
   def parse(binary, base) do
     case count_digits(binary, base) do
       0 ->
         :error
+
       count ->
         {digits, rem} = :erlang.split_binary(binary, count)
         {:erlang.binary_to_integer(digits, base), rem}
@@ -262,17 +257,21 @@ defmodule Integer do
 
   digits = [{?0..?9, -?0}, {?A..?Z, 10 - ?A}, {?a..?z, 10 - ?a}]
 
-  for {chars, diff} <- digits, char <- chars do
+  for {chars, diff} <- digits,
+      char <- chars do
     digit = char + diff
 
     defp count_digits_nosign(<<unquote(char), rest::binary>>, base, count)
-        when base > unquote(digit) do
+         when base > unquote(digit) do
       count_digits_nosign(rest, base, count + 1)
     end
   end
 
   defp count_digits_nosign(<<_::binary>>, _, count), do: count
 
+  # TODO: Remove Integer.to_string/1 once the minimum supported version is
+  #       Erlang/OTP 22, since it is covered by the now BIF Integer.to_string/2.
+  #       Please reapply commit 2622fd6b0aa419a983a899a1fbdb5deefba3d85d.
   @doc """
   Returns a binary which corresponds to the text representation
   of `integer`.
@@ -294,7 +293,7 @@ defmodule Integer do
       "123"
 
   """
-  @spec to_string(integer) :: String.t
+  @spec to_string(integer) :: String.t()
   def to_string(integer) do
     :erlang.integer_to_binary(integer)
   end
@@ -315,15 +314,18 @@ defmodule Integer do
       iex> Integer.to_string(-100, 16)
       "-64"
 
-      iex> Integer.to_string(882681651, 36)
+      iex> Integer.to_string(882_681_651, 36)
       "ELIXIR"
 
   """
-  @spec to_string(integer, 2..36) :: String.t
+  @spec to_string(integer, 2..36) :: String.t()
   def to_string(integer, base) do
     :erlang.integer_to_binary(integer, base)
   end
 
+  # TODO: Remove Integer.to_charlist/1 once the minimum supported version is
+  #       Erlang/OTP 22, since it is covered by the now BIF Integer.to_charlist/2.
+  #       Please reapply commit 2622fd6b0aa419a983a899a1fbdb5deefba3d85d.
   @doc """
   Returns a charlist which corresponds to the text representation of the given `integer`.
 
@@ -364,7 +366,7 @@ defmodule Integer do
       iex> Integer.to_charlist(-100, 16)
       '-64'
 
-      iex> Integer.to_charlist(882681651, 36)
+      iex> Integer.to_charlist(882_681_651, 36)
       'ELIXIR'
 
   """
@@ -402,8 +404,8 @@ defmodule Integer do
       0
 
   """
-  @spec gcd(0, 0) :: 0
-  @spec gcd(integer, integer) :: pos_integer
+  @doc since: "1.5.0"
+  @spec gcd(integer, integer) :: non_neg_integer
   def gcd(integer1, integer2) when is_integer(integer1) and is_integer(integer2) do
     gcd_positive(abs(integer1), abs(integer2))
   end
@@ -412,15 +414,11 @@ defmodule Integer do
   defp gcd_positive(integer1, 0), do: integer1
   defp gcd_positive(integer1, integer2), do: gcd_positive(integer2, rem(integer1, integer2))
 
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
   @doc false
-  @spec to_char_list(integer) :: charlist
+  @deprecated "Use Integer.to_charlist/1 instead"
   def to_char_list(integer), do: Integer.to_charlist(integer)
 
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
   @doc false
-  @spec to_char_list(integer, 2..36) :: charlist
+  @deprecated "Use Integer.to_charlist/2 instead"
   def to_char_list(integer, base), do: Integer.to_charlist(integer, base)
 end

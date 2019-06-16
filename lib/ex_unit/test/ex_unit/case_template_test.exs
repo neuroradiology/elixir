@@ -1,4 +1,4 @@
-Code.require_file "../test_helper.exs", __DIR__
+Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule ExUnit.SampleCase do
   use ExUnit.CaseTemplate
@@ -53,7 +53,7 @@ defmodule ExUnit.CaseTemplateTest do
     assert context[:setup] == 2
   end
 
-  test "runs both templates setup all", context do
+  test "runs both templates setup_all", context do
     assert context[:setup_all] == 2
   end
 

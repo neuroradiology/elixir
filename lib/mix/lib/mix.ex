@@ -8,7 +8,7 @@ defmodule Mix do
   The foundation of Mix is a project. A project can be defined by using
   `Mix.Project` in a module, usually placed in a file named `mix.exs`:
 
-      defmodule MyApp.Mixfile do
+      defmodule MyApp.MixProject do
         use Mix.Project
 
         def project do
@@ -48,11 +48,13 @@ defmodule Mix do
         use Mix.Task
 
         def run(_) do
-          Mix.shell.info "hello"
+          Mix.shell().info("Hello world")
         end
       end
 
   The task can now be invoked with `mix hello`.
+
+  See the `Mix.Task` behaviour for detailed documentation on Mix tasks.
 
   ## Dependencies
 
@@ -63,7 +65,7 @@ defmodule Mix do
   to your project configuration. We often extract the list of dependencies
   into its own function:
 
-      defmodule MyApp.Mixfile do
+      defmodule MyApp.MixProject do
         use Mix.Project
 
         def project do
@@ -86,9 +88,9 @@ defmodule Mix do
 
   ## Environments
 
-  Mix supports different environments. Environments allow developers to prepare
-  and organize their project specifically for different scenarios. By default,
-  Mix provides three environments:
+  Mix supports different environments. Environments allow developers
+  to prepare and organize their project specifically for different
+  scenarios. By default, Mix provides three environments:
 
     * `:dev` - the default environment
     * `:test` - the environment `mix test` runs on
@@ -99,16 +101,33 @@ defmodule Mix do
 
       $ MIX_ENV=prod mix run server.exs
 
+  You can also specify that certain dependencies are available only for
+  certain environments:
+
+      {:some_test_dependency, "~> 1.0", only: :test}
+
+  The environment can be read via `Mix.env/0`.
+
+  ## Targets
+
+  Besides environments, Mix supports targets. Targets are useful when a
+  project needs to compile to different architectures and some of the
+  dependencies are only available to some of them. By default, the target
+  is `:host` but it can be set via the `MIX_TARGET` environment variable.
+  The target can be read via `Mix.target/0`.
+
+  This feature is considered experimental and may change in future releases.
+
   ## Aliases
 
   Aliases are shortcuts or tasks specific to the current project.
 
-  In the `Mix.Task` section, we have defined a task that would be
+  In the "Mix.Task" section, we have defined a task that would be
   available to everyone using our project as a dependency. What if
   we wanted the task to only be available for our project? Just
   define an alias:
 
-      defmodule MyApp.Mixfile do
+      defmodule MyApp.MixProject do
         use Mix.Project
 
         def project do
@@ -127,23 +146,23 @@ defmodule Mix do
         end
 
         defp hello(_) do
-          Mix.shell.info "Hello world"
+          Mix.shell().info("Hello world")
         end
       end
 
   In the example above, we have defined two aliases. One is `mix c`
   which is a shortcut for `mix compile`. The other is named
   `mix hello`, which is the equivalent to the `Mix.Tasks.Hello`
-  we have defined in the `Mix.Task` section.
+  we have defined in the "Mix.Task" section.
 
   Aliases may also be lists, specifying multiple tasks to be run
   consecutively:
 
-      [all: [&hello/1, "deps.get --only #{Mix.env}", "compile"]]
+      [all: [&hello/1, "deps.get --only #{Mix.env()}", "compile"]]
 
   In the example above, we have defined an alias named `mix all`,
-  that prints hello, then fetches dependencies specific to the
-  current environment and compiles it.
+  that prints "Hello world", then fetches dependencies specific to the
+  current environment, and compiles the project.
 
   Arguments given to the alias will be appended to the arguments
   of the last task in the list, if the last task is a function
@@ -156,10 +175,57 @@ defmodule Mix do
       [clean: ["clean", &clean_extra/1]]
 
   Where `&clean_extra/1` would be a function in your `mix.exs`
-  with extra clean up logic.
+  with extra cleanup logic.
 
-  Note aliases do not show up on `mix help`.
-  Aliases defined in the current project do not affect its dependencies and aliases defined in dependencies are not accessible from the current project.
+  Aliases defined in the current project do not affect its dependencies and
+  aliases defined in dependencies are not accessible from the current project.
+
+  Aliases can be used very powerfully to also run Elixir scripts and
+  shell commands, for example:
+
+      # priv/hello1.exs
+      IO.puts("Hello One")
+
+      # priv/hello2.exs
+      IO.puts("Hello Two")
+
+      # priv/world.sh
+      #!/bin/sh
+      echo "world!"
+
+      # mix.exs
+      defp aliases do
+        [
+          some_alias: ["hex.info", "run priv/hello1.exs", "cmd priv/world.sh"]
+        ]
+      end
+
+  In the example above we have created the alias `some_alias` that will run the
+  task `mix hex.info`, then `mix run` to run an Elixir script, then `mix cmd` to
+  execute a command line shell script. This shows how powerful aliases mixed with
+  Mix tasks can be.
+
+  Mix tasks are designed to run only once. This prevents the same task to be
+  executed multiple times. For example, if there are several tasks depending on
+  `mix compile`, the code will be compiled once. Tasks can be executed again if
+  they are explicitly reenabled using `Mix.Task.reenable/1`:
+
+      another_alias: [
+        "format --check-formatted priv/hello1.exs",
+        "cmd priv/world.sh",
+        fn _ -> Mix.Task.reenable("format") end,
+        "format --check-formatted priv/hello2.exs"
+      ]
+
+  The following tasks are automatically reenabled: `mix cmd`, `mix do`,
+  `mix loadconfig`, `mix profile.cprof`, `mix profile.eprof`, `mix profile.fprof`,
+  `mix run`, and `mix xref`.
+
+  It is worth mentioning that some tasks, such as in the case of the `format`
+  command in the example above, can accept multiple files so it could be rewritten
+  as:
+
+      another_alias: ["format --check-formatted priv/hello1.exs priv/hello2.exs"]
 
   ## Environment variables
 
@@ -168,14 +234,19 @@ defmodule Mix do
   Mix responds to the following variables:
 
     * `MIX_ARCHIVES` - specifies the directory into which the archives should be installed
+    * `MIX_BUILD_PATH` - sets the project build_path config
     * `MIX_DEBUG` - outputs debug information about each task before running it
     * `MIX_ENV` - specifies which environment should be used. See [Environments](#module-environments)
+    * `MIX_TARGET` - specifies which target should be used. See [Targets](#module-targets)
     * `MIX_EXS` - changes the full path to the `mix.exs` file
-    * `MIX_HOME` - path to mix's home directory, stores configuration files and scripts used by mix
+    * `MIX_HOME` - path to Mix's home directory, stores configuration files and scripts used by Mix
     * `MIX_PATH` - appends extra code paths
     * `MIX_QUIET` - does not print information messages to the terminal
-    * `MIX_REBAR` - path to rebar command that overrides the one mix installs
-    * `MIX_REBAR3` - path to rebar3 command that overrides the one mix installs
+    * `MIX_REBAR` - path to rebar command that overrides the one Mix installs
+    * `MIX_REBAR3` - path to rebar3 command that overrides the one Mix installs
+
+  Mix also falls back to the `XDG_DATA_HOME` and `XDG_CONFIG_HOME`
+  environment variables when storing its contents and configuration.
 
   Environment variables that are not meant to hold a value (and act basically as
   flags) should be set to either `1` or `true`, for example:
@@ -200,7 +271,7 @@ defmodule Mix do
   end
 
   @doc """
-  Returns the Mix environment.
+  Returns the current Mix environment.
 
   This function should not be used at runtime in application code (as opposed
   to infrastructure and build code like Mix tasks). Mix is a build tool and may
@@ -208,9 +279,10 @@ defmodule Mix do
 
   To differentiate the program behavior depending on the environment, it is
   recommended to use application environment through `Application.get_env/3`.
-  Proper configuration can be set in `Mix.Config` files, often per-environment
-  (see `Mix.Config.import_config/1` for more information).
+  Proper configuration can be set in config files, often per-environment
+  (see the `Config` module for more information).
   """
+  @spec env() :: atom()
   def env do
     # env is not available on bootstrapping, so set a :dev default
     Mix.State.get(:env, :dev)
@@ -225,8 +297,29 @@ defmodule Mix do
   This function should not be used at runtime in application code
   (see `env/0` for more information).
   """
+  @spec env(atom()) :: :ok
   def env(env) when is_atom(env) do
     Mix.State.put(:env, env)
+  end
+
+  @doc """
+  Returns the Mix target.
+  """
+  @spec target() :: atom()
+  def target do
+    # target is not available on bootstrapping, so set a :host default
+    Mix.State.get(:target, :host)
+  end
+
+  @doc """
+  Changes the current Mix target to `target`.
+
+  Be careful when invoking this function as any project
+  configuration won't be reloaded.
+  """
+  @spec target(atom()) :: :ok
+  def target(target) when is_atom(target) do
+    Mix.State.put(:target, target)
   end
 
   @doc """
@@ -236,10 +329,11 @@ defmodule Mix do
   append new compilers to Mix:
 
       def project do
-        [compilers: Mix.compilers ++ [:foo, :bar]]
+        [compilers: Mix.compilers() ++ [:foo, :bar]]
       end
 
   """
+  @spec compilers() :: [atom()]
   def compilers do
     [:yecc, :leex, :erlang, :elixir, :xref, :app]
   end
@@ -255,6 +349,7 @@ defmodule Mix do
 
   By default, this returns `Mix.Shell.IO`.
   """
+  @spec shell() :: module
   def shell do
     Mix.State.get(:shell, Mix.Shell.IO)
   end
@@ -265,13 +360,15 @@ defmodule Mix do
   After calling this function, `shell` becomes the shell that is returned by
   `shell/0`.
   """
+  @spec shell(module) :: :ok
   def shell(shell) do
     Mix.State.put(:shell, shell)
   end
 
   @doc """
-  Returns true if Mix is in debug mode.
+  Returns `true` if Mix is in debug mode, `false` otherwise.
   """
+  @spec debug?() :: boolean()
   def debug? do
     Mix.State.get(:debug, false)
   end
@@ -279,6 +376,7 @@ defmodule Mix do
   @doc """
   Sets Mix debug mode.
   """
+  @spec debug(boolean()) :: :ok
   def debug(debug) when is_boolean(debug) do
     Mix.State.put(:debug, debug)
   end
@@ -288,6 +386,6 @@ defmodule Mix do
   """
   @spec raise(binary) :: no_return
   def raise(message) when is_binary(message) do
-    Kernel.raise Mix.Error, mix: true, message: message
+    Kernel.raise(Mix.Error, mix: true, message: message)
   end
 end

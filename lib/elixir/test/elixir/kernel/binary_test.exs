@@ -1,44 +1,50 @@
-Code.require_file "../test_helper.exs", __DIR__
+Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule Kernel.BinaryTest do
   use ExUnit.Case, async: true
 
   test "heredoc" do
     assert 7 == __ENV__.line
-    assert "foo\nbar\n" == """
-foo
-bar
-"""
 
-    assert 13 == __ENV__.line
+    assert "foo\nbar\n" == """
+           foo
+           bar
+           """
+
+    assert 14 == __ENV__.line
+
     assert "foo\nbar \"\"\"\n" == """
-foo
-bar \"""
-"""
+           foo
+           bar \"""
+           """
   end
 
   test "aligned heredoc" do
     assert "foo\nbar\n" == """
-    foo
-    bar
-    """
+           foo
+           bar
+           """
   end
 
   test "heredoc with interpolation" do
-    assert "29\n" == """
-    #{__ENV__.line}
-    """
+    assert "31\n" == """
+           #{__ENV__.line}
+           """
 
-    assert "\n34\n" == """
+    assert "\n36\n" == """
 
-    #{__ENV__.line}
-    """
+           #{__ENV__.line}
+           """
   end
 
   test "heredoc in call" do
-    assert "foo\nbar" == Kernel.<>("""
-    foo
-    """, "bar")
+    assert "foo\nbar" ==
+             Kernel.<>(
+               """
+               foo
+               """,
+               "bar"
+             )
   end
 
   test "UTF-8" do
@@ -67,10 +73,6 @@ bar \"""
     <<x::binary-size(size)>> <> _ = "foobar"
     assert x == "foo"
 
-    size = 16
-    <<x::size(size)>> <> _ = "foobar"
-    assert x == 26223
-
     <<x::6*4-binary>> <> _ = "foobar"
     assert x == "foo"
 
@@ -80,20 +82,55 @@ bar \"""
     <<x::24-bits>> <> _ = "foobar"
     assert x == "foo"
 
-    assert_raise MatchError, fn ->
-      Code.eval_string(~s{<<x::binary-size(3)-unit(4)>> <> _ = "foobar"})
+    <<x::utf8>> <> _ = "foobar"
+    assert x == ?f
+  end
+
+  test "string concatenation outside match" do
+    x = "bar"
+    assert "foobar" = "foo" <> x
+    assert "barfoo" = x <> "foo"
+  end
+
+  test "invalid string concatenation arguments" do
+    assert_raise ArgumentError, ~r"expected binary argument in <> operator but got: :bar", fn ->
+      Code.eval_string(~s["foo" <> :bar])
     end
 
-    assert_raise MatchError, fn ->
-      Code.eval_string(~s{<<x::integer-size(4)>> <> _ = "foobar"})
+    assert_raise ArgumentError, ~r"expected binary argument in <> operator but got: 1", fn ->
+      Code.eval_string(~s["foo" <> 1])
+    end
+
+    message = ~r"left argument of <> operator inside a match"
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s[a <> "b" = "ab"])
+    end
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s["a" <> b <> "c" = "abc"])
+    end
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s[
+        a = "a"
+        ^a <> "b" = "ab"
+      ])
+    end
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s[
+        b = "b"
+        "a" <> ^b <> "c" = "abc"
+      ])
     end
   end
 
   test "hex" do
     assert "\x76" == "v"
     assert "\u00FF" == "ÿ"
-    assert "\u{A}"== "\n"
-    assert "\u{E9}"== "é"
+    assert "\u{A}" == "\n"
+    assert "\u{E9}" == "é"
     assert "\u{10F}" == <<196, 143>>
     assert "\u{10FF}" == <<225, 131, 191>>
     assert "\u{10FFF}" == <<240, 144, 191, 191>>
@@ -114,7 +151,7 @@ bar \"""
 
   test "pattern match" do
     s = 16
-    assert <<_a, _b :: size(s)>> = "foo"
+    assert <<_a, _b::size(s)>> = "foo"
   end
 
   test "pattern match with splice" do
@@ -129,7 +166,7 @@ bar \"""
 
   test "literal" do
     assert <<106, 111, 115, 195, 169>> == <<"josé">>
-    assert <<106, 111, 115, 195, 169>> == <<"#{:"josé"}">>
+    assert <<106, 111, 115, 195, 169>> == <<"#{:josé}">>
     assert <<106, 111, 115, 195, 169>> == <<"josé"::binary>>
     assert <<106, 111, 115, 195, 169>> == <<"josé"::bits>>
     assert <<106, 111, 115, 195, 169>> == <<"josé"::bitstring>>
@@ -142,15 +179,19 @@ bar \"""
   end
 
   test "literal errors" do
-    assert_raise CompileError, fn ->
+    message = ~r"conflicting type specification for bit field"
+
+    assert_raise CompileError, message, fn ->
       Code.eval_string(~s[<<"foo"::integer>>])
     end
 
-    assert_raise CompileError, fn ->
+    assert_raise CompileError, message, fn ->
       Code.eval_string(~s[<<"foo"::float>>])
     end
 
-    assert_raise CompileError, fn ->
+    message = ~r"invalid literal 'foo'"
+
+    assert_raise CompileError, message, fn ->
       Code.eval_string(~s[<<'foo'::binary>>])
     end
 
@@ -174,10 +215,13 @@ bar \"""
   test "bitsyntax translation" do
     refb = "sample"
     sec_data = "another"
-    <<byte_size(refb)::size(1)-big-signed-integer-unit(8),
+
+    <<
+      byte_size(refb)::size(1)-big-signed-integer-unit(8),
       refb::binary,
       byte_size(sec_data)::1*16-big-signed-integer,
-      sec_data::binary>>
+      sec_data::binary
+    >>
   end
 
   test "bitsyntax size shortcut" do
@@ -193,22 +237,25 @@ bar \"""
 
   defmacrop signed_16 do
     quote do
-      big-signed-integer-unit(16)
+      big - signed - integer - unit(16)
     end
   end
 
   defmacrop refb_spec do
     quote do
-      1*8-big-signed-integer
+      1 * 8 - big - signed - integer
     end
   end
 
   test "bitsyntax macro" do
     refb = "sample"
     sec_data = "another"
-    <<byte_size(refb)::refb_spec,
+
+    <<
+      byte_size(refb)::refb_spec,
       refb::binary,
       byte_size(sec_data)::size(1)-signed_16,
-      sec_data::binary>>
+      sec_data::binary
+    >>
   end
 end

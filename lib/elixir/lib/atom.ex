@@ -16,7 +16,7 @@ defmodule Atom do
       "foo"
 
   """
-  @spec to_string(atom) :: String.t
+  @spec to_string(atom) :: String.t()
   def to_string(atom) do
     :erlang.atom_to_binary(atom, :utf8)
   end
@@ -37,9 +37,8 @@ defmodule Atom do
     :erlang.atom_to_list(atom)
   end
 
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
   @doc false
+  @deprecated "Use Atom.to_charlist/1 instead"
   @spec to_char_list(atom) :: charlist
   def to_char_list(atom), do: Atom.to_charlist(atom)
 end

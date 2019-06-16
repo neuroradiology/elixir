@@ -6,42 +6,41 @@
 %% Anonymous functions
 
 expand(Meta, Clauses, E) when is_list(Clauses) ->
-  Transformer = fun(Clause) ->
-    {EClause, _} = elixir_clauses:clause(Meta, fn, fun elixir_clauses:head/2, Clause, E),
-    EClause
+  Transformer = fun({_, _, [Left, _Right]} = Clause, Acc) ->
+    case lists:any(fun is_invalid_arg/1, Left) of
+      true ->
+        form_error(Meta, E, ?MODULE, defaults_in_args);
+      false ->
+        {EClause, EAcc} = elixir_clauses:clause(Meta, fn, fun elixir_clauses:head/2, Clause, Acc),
+        {EClause, elixir_env:merge_and_check_unused_vars(Acc, EAcc)}
+    end
   end,
 
-  EClauses = lists:map(Transformer, Clauses),
+  {EClauses, EE} = lists:mapfoldl(Transformer, E, Clauses),
   EArities = [fn_arity(Args) || {'->', _, [Args, _]} <- EClauses],
 
   case lists:usort(EArities) of
     [_] ->
-      {{fn, Meta, EClauses}, E};
+      {{fn, Meta, EClauses}, EE};
     _ ->
-      form_error(Meta, ?key(E, file), ?MODULE, clauses_with_different_arities)
+      form_error(Meta, E, ?MODULE, clauses_with_different_arities)
   end.
+
+is_invalid_arg({'\\\\', _, _}) -> true;
+is_invalid_arg(_) -> false.
 
 fn_arity([{'when', _, Args}]) -> length(Args) - 1;
 fn_arity(Args) -> length(Args).
 
 %% Capture
 
-capture(Meta, {'/', _, [{{'.', _, [_, F]} = Dot, RequireMeta, []}, A]}, E) when is_atom(F), is_integer(A) ->
+capture(Meta, {'/', _, [{{'.', _, [_, F]} = Dot, _, []}, A]}, E) when is_atom(F), is_integer(A) ->
   Args = args_from_arity(Meta, A, E),
-  capture_require(Meta, {Dot, RequireMeta, Args}, E, true);
+  capture_require(Meta, {Dot, Meta, Args}, E, true);
 
 capture(Meta, {'/', _, [{F, _, C}, A]}, E) when is_atom(F), is_integer(A), is_atom(C) ->
   Args = args_from_arity(Meta, A, E),
-  ImportMeta =
-    case lists:keyfind(import_fa, 1, Meta) of
-      {import_fa, {Receiver, Context}} ->
-        lists:keystore(context, 1,
-          lists:keystore(import, 1, Meta, {import, Receiver}),
-          {context, Context}
-        );
-      false -> Meta
-    end,
-  capture_import(Meta, {F, ImportMeta, Args}, E, true);
+  capture_import(Meta, {F, Meta, Args}, E, true);
 
 capture(Meta, {{'.', _, [_, Fun]}, _, Args} = Expr, E) when is_atom(Fun), is_list(Args) ->
   capture_require(Meta, Expr, E, is_sequential_and_not_empty(Args));
@@ -53,7 +52,7 @@ capture(Meta, {'__block__', _, [Expr]}, E) ->
   capture(Meta, Expr, E);
 
 capture(Meta, {'__block__', _, _} = Expr, E) ->
-  form_error(Meta, ?key(E, file), ?MODULE, {block_expr_in_capture, Expr});
+  form_error(Meta, E, ?MODULE, {block_expr_in_capture, Expr});
 
 capture(Meta, {Atom, _, Args} = Expr, E) when is_atom(Atom), is_list(Args) ->
   capture_import(Meta, Expr, E, is_sequential_and_not_empty(Args));
@@ -65,7 +64,7 @@ capture(Meta, List, E) when is_list(List) ->
   capture_expr(Meta, List, E, is_sequential_and_not_empty(List));
 
 capture(Meta, Integer, E) when is_integer(Integer) ->
-  form_error(Meta, ?key(E, file), ?MODULE, {capture_arg_outside_of_capture, Integer});
+  form_error(Meta, E, ?MODULE, {capture_arg_outside_of_capture, Integer});
 
 capture(Meta, Arg, E) ->
   invalid_capture(Meta, Arg, E).
@@ -96,8 +95,8 @@ capture_require(Meta, {{'.', DotMeta, [Left, Right]}, RequireMeta, Args}, E, Seq
 
 handle_capture(false, Meta, Expr, E, Sequential) ->
   capture_expr(Meta, Expr, E, Sequential);
-handle_capture(LocalOrRemote, _Meta, _Expr, _E, _Sequential) ->
-  LocalOrRemote.
+handle_capture(LocalOrRemote, _Meta, _Expr, E, _Sequential) ->
+  {LocalOrRemote, E}.
 
 capture_expr(Meta, Expr, E, Sequential) ->
   capture_expr(Meta, Expr, E, [], Sequential).
@@ -112,12 +111,12 @@ capture_expr(Meta, Expr, E, Escaped, Sequential) ->
   end.
 
 invalid_capture(Meta, Arg, E) ->
-  form_error(Meta, ?key(E, file), ?MODULE, {invalid_args_for_capture, Arg}).
+  form_error(Meta, E, ?MODULE, {invalid_args_for_capture, Arg}).
 
 validate(Meta, [{Pos, Var} | T], Pos, E) ->
   [Var | validate(Meta, T, Pos + 1, E)];
 validate(Meta, [{Pos, _} | _], Expected, E) ->
-  form_error(Meta, ?key(E, file), ?MODULE, {capture_arg_without_predecessor, Pos, Expected});
+  form_error(Meta, E, ?MODULE, {capture_arg_without_predecessor, Pos, Expected});
 validate(_Meta, [], _Pos, _E) ->
   [].
 
@@ -125,9 +124,9 @@ escape({'&', _, [Pos]}, _E, Dict) when is_integer(Pos), Pos > 0 ->
   Var = {list_to_atom([$x | integer_to_list(Pos)]), [], ?var_context},
   {Var, orddict:store(Pos, Var, Dict)};
 escape({'&', Meta, [Pos]}, E, _Dict) when is_integer(Pos) ->
-  form_error(Meta, ?key(E, file), ?MODULE, {unallowed_capture_arg, Pos});
+  form_error(Meta, E, ?MODULE, {unallowed_capture_arg, Pos});
 escape({'&', Meta, _} = Arg, E, _Dict) ->
-  form_error(Meta, ?key(E, file), ?MODULE, {nested_capture, Arg});
+  form_error(Meta, E, ?MODULE, {nested_capture, Arg});
 escape({Left, Meta, Right}, E, Dict0) ->
   {TLeft, Dict1}  = escape(Left, E, Dict0),
   {TRight, Dict2} = escape(Right, E, Dict1),
@@ -144,7 +143,7 @@ escape(Other, _E, Dict) ->
 args_from_arity(_Meta, A, _E) when is_integer(A), A >= 0, A =< 255 ->
   [{'&', [], [X]} || X <- lists:seq(1, A)];
 args_from_arity(Meta, A, E) ->
-  form_error(Meta, ?key(E, file), ?MODULE, {invalid_arity_for_capture, A}).
+  form_error(Meta, E, ?MODULE, {invalid_arity_for_capture, A}).
 
 is_sequential_and_not_empty([])   -> false;
 is_sequential_and_not_empty(List) -> is_sequential(List, 1).
@@ -155,6 +154,8 @@ is_sequential(_, _Int) -> false.
 
 format_error(clauses_with_different_arities) ->
   "cannot mix clauses with different arities in anonymous functions";
+format_error(defaults_in_args) ->
+  "anonymous functions cannot have optional arguments";
 format_error({block_expr_in_capture, Expr}) ->
   io_lib:format("invalid args for &, block expressions are not allowed, got: ~ts",
                 ['Elixir.Macro':to_string(Expr)]);

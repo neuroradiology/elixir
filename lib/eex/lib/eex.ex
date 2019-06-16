@@ -1,6 +1,7 @@
 defmodule EEx.SyntaxError do
   defexception [:message, :file, :line]
 
+  @impl true
   def message(exception) do
     "#{exception.file}:#{exception.line}: #{exception.message}"
   end
@@ -11,7 +12,7 @@ defmodule EEx do
   EEx stands for Embedded Elixir. It allows you to embed
   Elixir code inside a string in a robust way.
 
-      iex> EEx.eval_string "foo <%= bar %>", [bar: "baz"]
+      iex> EEx.eval_string("foo <%= bar %>", bar: "baz")
       "foo baz"
 
   ## API
@@ -42,7 +43,8 @@ defmodule EEx do
     * `:file` - the file to be used in the template. Defaults to the given
       file the template is read from or to "nofile" when compiling from a string.
     * `:engine` - the EEx engine to be used for compilation.
-    * `:trim` - trims whitespace left/right of quotation tags
+    * `:trim` - trims whitespace left/right of quotation tags. If a quotation
+      tag appears on its own in a given line, line endings are also removed.
 
   ## Engine
 
@@ -83,7 +85,7 @@ defmodule EEx do
   An example is the `@` macro which allows easy data access
   in a template:
 
-      iex> EEx.eval_string "<%= @foo %>", assigns: [foo: 1]
+      iex> EEx.eval_string("<%= @foo %>", assigns: [foo: 1])
       "1"
 
   In other words, `<%= @foo %>` translates to:
@@ -104,7 +106,7 @@ defmodule EEx do
 
       iex> defmodule Sample do
       ...>   require EEx
-      ...>   EEx.function_from_string :def, :sample, "<%= a + b %>", [:a, :b]
+      ...>   EEx.function_from_string(:def, :sample, "<%= a + b %>", [:a, :b])
       ...> end
       iex> Sample.sample(1, 2)
       "3"
@@ -112,13 +114,13 @@ defmodule EEx do
   """
   defmacro function_from_string(kind, name, source, args \\ [], options \\ []) do
     quote bind_quoted: binding() do
-      info = Keyword.merge [file: __ENV__.file, line: __ENV__.line], options
-      args = Enum.map args, fn arg -> {arg, [line: info[:line]], nil} end
+      info = Keyword.merge([file: __ENV__.file, line: __ENV__.line], options)
+      args = Enum.map(args, fn arg -> {arg, [line: info[:line]], nil} end)
       compiled = EEx.compile_string(source, info)
 
       case kind do
-        :def  -> def(unquote(name)(unquote_splicing(args)), do: unquote(compiled))
-        :defp -> defp(unquote(name)(unquote_splicing(args)), do: unquote(compiled))
+        :def -> def unquote(name)(unquote_splicing(args)), do: unquote(compiled)
+        :defp -> defp unquote(name)(unquote_splicing(args)), do: unquote(compiled)
       end
     end
   end
@@ -140,24 +142,25 @@ defmodule EEx do
       # sample.ex
       defmodule Sample do
         require EEx
-        EEx.function_from_file :def, :sample, "sample.eex", [:a, :b]
+        EEx.function_from_file(:def, :sample, "sample.eex", [:a, :b])
       end
 
       # iex
-      Sample.sample(1, 2) #=> "3"
+      Sample.sample(1, 2)
+      #=> "3"
 
   """
   defmacro function_from_file(kind, name, file, args \\ [], options \\ []) do
     quote bind_quoted: binding() do
-      info = Keyword.merge options, [file: file, line: 1]
-      args = Enum.map args, fn arg -> {arg, [line: 1], nil} end
+      info = Keyword.merge(options, file: file, line: 1)
+      args = Enum.map(args, fn arg -> {arg, [line: 1], nil} end)
       compiled = EEx.compile_file(file, info)
 
       @external_resource file
       @file file
       case kind do
-        :def  -> def(unquote(name)(unquote_splicing(args)), do: unquote(compiled))
-        :defp -> defp(unquote(name)(unquote_splicing(args)), do: unquote(compiled))
+        :def -> def unquote(name)(unquote_splicing(args)), do: unquote(compiled)
+        :defp -> defp unquote(name)(unquote_splicing(args)), do: unquote(compiled)
       end
     end
   end
@@ -166,7 +169,7 @@ defmodule EEx do
   Gets a string `source` and generate a quoted expression
   that can be evaluated by Elixir or compiled to a function.
   """
-  @spec compile_string(String.t, keyword) :: Macro.t | no_return
+  @spec compile_string(String.t(), keyword) :: Macro.t()
   def compile_string(source, options \\ []) when is_binary(source) and is_list(options) do
     EEx.Compiler.compile(source, options)
   end
@@ -175,9 +178,9 @@ defmodule EEx do
   Gets a `filename` and generate a quoted expression
   that can be evaluated by Elixir or compiled to a function.
   """
-  @spec compile_file(String.t, keyword) :: Macro.t | no_return
+  @spec compile_file(String.t(), keyword) :: Macro.t()
   def compile_file(filename, options \\ []) when is_binary(filename) and is_list(options) do
-    options = Keyword.merge options, [file: filename, line: 1]
+    options = Keyword.merge(options, file: filename, line: 1)
     compile_string(File.read!(filename), options)
   end
 
@@ -186,11 +189,11 @@ defmodule EEx do
 
   ## Examples
 
-      iex> EEx.eval_string "foo <%= bar %>", [bar: "baz"]
+      iex> EEx.eval_string("foo <%= bar %>", bar: "baz")
       "foo baz"
 
   """
-  @spec eval_string(String.t, keyword, keyword) :: any
+  @spec eval_string(String.t(), keyword, keyword) :: any
   def eval_string(source, bindings \\ [], options \\ [])
       when is_binary(source) and is_list(bindings) and is_list(options) do
     compiled = compile_string(source, options)
@@ -206,13 +209,14 @@ defmodule EEx do
       foo <%= bar %>
 
       # iex
-      EEx.eval_file "sample.eex", [bar: "baz"] #=> "foo baz"
+      EEx.eval_file("sample.eex", bar: "baz")
+      #=> "foo baz"
 
   """
-  @spec eval_file(String.t, keyword, keyword) :: any
+  @spec eval_file(String.t(), keyword, keyword) :: any
   def eval_file(filename, bindings \\ [], options \\ [])
       when is_binary(filename) and is_list(bindings) and is_list(options) do
-    options  = Keyword.put options, :file, filename
+    options = Keyword.put(options, :file, filename)
     compiled = compile_file(filename, options)
     do_eval(compiled, bindings, options)
   end

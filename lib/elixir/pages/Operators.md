@@ -14,34 +14,35 @@ Operator                                                                        
 `*` `/`                                                                                  | Left to right
 `+` `-`                                                                                  | Left to right
 `++` `--` `..` `<>`                                                                      | Right to left
+`^^^`                                                                                    | Left to right
 `in` `not in`                                                                            | Left to right
-`\|>` `<<<` `>>>` `~>>` `<<~` `~>` `<~` `<~>` `<\|>`                                     | Left to right
+`\|>` `<<<` `>>>` `<<~` `~>>` `<~` `~>` `<~>` `<\|>`                                     | Left to right
 `<` `>` `<=` `>=`                                                                        | Left to right
 `==` `!=` `=~` `===` `!==`                                                               | Left to right
 `&&` `&&&` `and`                                                                         | Left to right
 `\|\|` `\|\|\|` `or`                                                                     | Left to right
 `=`                                                                                      | Right to left
-`=>`                                                                                     | Right to left
+`&`                                                                                      | Unary
+`=>` (valid syntax only inside `%{}`)                                                    | Right to left
 `\|`                                                                                     | Right to left
 `::`                                                                                     | Right to left
 `when`                                                                                   | Right to left
-`<-`, `\\`                                                                               | Left to right
-`&`                                                                                      | Unary
+`<-` `\\`                                                                                | Left to right
 
 ## Comparison operators
 
 Elixir provides the following built-in comparison operators:
 
-  * `==` - equality
-  * `===` - strict equality
-  * `!=` - inequality
-  * `!==` - strict inequality
-  * `>` - greater than
-  * `<` - less than
-  * `>=` - greater than or equal
-  * `<=` - less than or equal
+  * [`==`](`==/2`) - equality
+  * [`===`](`===/2`) - strict equality
+  * [`!=`](`!=/2`) - inequality
+  * [`!==`](`!==/2`) - strict inequality
+  * [`<`](`</2`) - less than
+  * [`>`](`>/2`) - greater than
+  * [`<=`](`<=/2`) - less than or equal
+  * [`>=`](`>=/2`) - greater than or equal
 
-The only difference between `==` and `===` is that `===` is stricter when it comes to comparing integers and floats:
+The only difference between [`==`](`==/2`) and [`===`](`===/2`) is that [`===`](`===/2`) is strict when it comes to comparing integers and floats:
 
 ```elixir
 iex> 1 == 1.0
@@ -50,7 +51,7 @@ iex> 1 === 1.0
 false
 ```
 
-`!=` and `!==` act as the negation of `==` and `===`, respectively.
+[`!=`](`!=/2`) and [`!==`](`!==/2`) act as the negation of [`==`](`==/2`) and [`===`](`===/2`), respectively.
 
 ### Term ordering
 
@@ -61,19 +62,20 @@ iex> 1 < :an_atom
 true
 ```
 
-The reason we can compare different data types is pragmatism. Sorting algorithms don’t need to worry about different data types in order to sort. For reference, the overall sorting order is defined below:
+The reason we can compare different data types is pragmatism. Sorting algorithms don't need to worry about different data types in order to sort. For reference, the overall sorting order is defined below:
 
 ```
 number < atom < reference < function < port < pid < tuple < map < list < bitstring
 ```
 
-When comparing two numbers of different types (a number is either an integer or a float), a conversion to the type with greater precision will always occur, unless the comparison operator used is either `===` or `!==`. A float will be considered more precise than an integer, unless the float is greater/less than +/-9007199254740992.0, at which point all the significant figures of the float are to the left of the decimal point. This behavior exists so that the comparison of large numbers remains transitive.
+When comparing two numbers of different types (a number being either an integer or a float), a conversion to the type with greater precision will always occur, unless the comparison operator used is either [`===`](`===/2`) or [`!==`](`!==/2`). A float will be considered more precise than an integer, unless the float is greater/less than +/-9007199254740992.0 respectively, at which point all the significant figures of the float are to the left of the decimal point. This behavior exists so that the comparison of large numbers remains transitive.
 
 The collection types are compared using the following rules:
 
-* Tuples are compared by size then element by element.
-* Maps are compared by size then by keys in ascending term order then by values in key order. In the specific case of maps' key ordering, integers are always considered to be less than floats.
+* Tuples are compared by size, then element by element.
+* Maps are compared by size, then by keys in ascending term order, then by values in key order. In the specific case of maps' key ordering, integers are always considered to be less than floats.
 * Lists are compared element by element.
+* Bitstrings are compared byte by byte, incomplete bytes are compared bit by bit.
 
 ## Custom and overridden operators
 
@@ -110,16 +112,16 @@ The following is a table of all the operators that Elixir is capable of parsing,
   * `&&&`
   * `<<<`
   * `>>>`
-  * `~>>`
   * `<<~`
-  * `~>`
+  * `~>>`
   * `<~`
+  * `~>`
   * `<~>`
   * `<|>`
   * `^^^`
   * `~~~`
 
-The following operators are used by the `Bitwise` module when imported: `&&&`, `^^^`, `<<<`, `>>>`, `|||`, `~~~`. See the documentation for `Bitwise` for more information.
+The following operators are used by the `Bitwise` module when imported: [`&&&`](`Bitwise.&&&/2`), [`^^^`](`Bitwise.^^^/2`), [`<<<`](`Bitwise.<<</2`), [`>>>`](`Bitwise.>>>/2`), [`|||`](`Bitwise.|||/2`), [`~~~`](`Bitwise.~~~/1`). See the documentation for `Bitwise` for more information.
 
 ### Redefining existing operators
 

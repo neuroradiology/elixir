@@ -8,12 +8,12 @@ defmodule Port do
   ## Example
 
       iex> port = Port.open({:spawn, "cat"}, [:binary])
-      iex> send port, {self(), {:command, "hello"}}
-      iex> send port, {self(), {:command, "world"}}
+      iex> send(port, {self(), {:command, "hello"}})
+      iex> send(port, {self(), {:command, "world"}})
       iex> flush()
       {#Port<0.1444>, {:data, "hello"}}
       {#Port<0.1444>, {:data, "world"}}
-      iex> send port, {self(), :close}
+      iex> send(port, {self(), :close})
       :ok
       iex> flush()
       {#Port<0.1464>, :closed}
@@ -84,16 +84,16 @@ defmodule Port do
   The `:spawn` tuple receives a binary that is going to be executed as a
   full invocation. For example, we can use it to invoke "echo hello" directly:
 
-      iex> port = Port.open({:spawn, "echo oops"}, [:binary])
+      iex> port = Port.open({:spawn, "echo hello"}, [:binary])
       iex> flush()
-      {#Port<0.1444>, {:data, "oops\n"}}
+      {#Port<0.1444>, {:data, "hello\n"}}
 
   `:spawn` will retrieve the program name from the argument and traverse your
-  OS `$PATH` environment variable looking for a matching program.
+  operating system `$PATH` environment variable looking for a matching program.
 
   Although the above is handy, it means it is impossible to invoke an executable
   that has whitespaces on its name or in any of its arguments. For those reasons,
-  most times it is preferrable to execute `:spawn_executable`.
+  most times it is preferable to execute `:spawn_executable`.
 
   ### spawn_executable
 
@@ -117,7 +117,7 @@ defmodule Port do
   reimplementing core part of the Runtime System, such as the `:user` and
   `:shell` processes.
 
-  ## Zombie processes
+  ## Zombie operating system processes
 
   A port can be closed via the `close/1` function or by sending a `{pid, :close}`
   message. However, if the VM crashes, a long-running program started by the port
@@ -127,35 +127,39 @@ defmodule Port do
   While most UNIX command line tools will exit once its communication channels
   are closed, not all command line applications will do so. While we encourage
   graceful termination by detecting if stdin/stdout has been closed, we do not
-  always have control over how 3rd party software terminates. In those cases,
+  always have control over how third-party software terminates. In those cases,
   you can wrap the application in a script that checks for stdin. Here is such
-  script in bash:
+  script in Bash:
 
-      #!/bin/sh
-      "$@"
+      #!/bin/bash
+      "$@" &
       pid=$!
       while read line ; do
         :
       done
       kill -KILL $pid
 
-
   Now instead of:
 
-      Port.open({:spawn_executable, "/path/to/program"},
-                [args: ["a", "b", "c"]])
+      Port.open(
+        {:spawn_executable, "/path/to/program"},
+        args: ["a", "b", "c"]
+      )
 
   You may invoke:
 
-      Port.open({:spawn_executable, "/path/to/wrapper"},
-                [args: ["/path/to/program", "a", "b", "c"]])
+      Port.open(
+        {:spawn_executable, "/path/to/wrapper"},
+        args: ["/path/to/program", "a", "b", "c"]
+      )
 
   """
 
-  @type name :: {:spawn, charlist | binary} |
-                {:spawn_driver, charlist | binary} |
-                {:spawn_executable, charlist | atom} |
-                {:fd, non_neg_integer, non_neg_integer}
+  @type name ::
+          {:spawn, charlist | binary}
+          | {:spawn_driver, charlist | binary}
+          | {:spawn_executable, charlist | atom}
+          | {:fd, non_neg_integer, non_neg_integer}
 
   @doc """
   Opens a port given a tuple `name` and a list of `options`.
@@ -177,8 +181,8 @@ defmodule Port do
   Inlined by the compiler.
   """
   @spec open(name, list) :: port
-  def open(name, settings) do
-    :erlang.open_port(name, settings)
+  def open(name, options) do
+    :erlang.open_port(name, options)
   end
 
   @doc """
@@ -222,8 +226,9 @@ defmodule Port do
 
   For more information, see `:erlang.port_info/1`.
   """
+  @spec info(port) :: keyword | nil
   def info(port) do
-    nillify :erlang.port_info(port)
+    nillify(:erlang.port_info(port))
   end
 
   @doc """
@@ -236,14 +241,55 @@ defmodule Port do
 
   def info(port, :registered_name) do
     case :erlang.port_info(port, :registered_name) do
+      :undefined -> nil
       [] -> {:registered_name, []}
-      other -> nillify(other)
+      other -> other
     end
   end
 
   def info(port, item) do
-    nillify :erlang.port_info(port, item)
+    nillify(:erlang.port_info(port, item))
   end
+
+  @doc """
+  Starts monitoring the given `port` from the calling process.
+
+  Once the monitored port process dies, a message is delivered to the
+  monitoring process in the shape of:
+
+      {:DOWN, ref, :port, object, reason}
+
+  where:
+
+    * `ref` is a monitor reference returned by this function;
+    * `object` is either the `port` being monitored (when monitoring by port ID)
+    or `{name, node}` (when monitoring by a port name);
+    * `reason` is the exit reason.
+
+  See `:erlang.monitor/2` for more information.
+
+  Inlined by the compiler.
+  """
+  @doc since: "1.6.0"
+  @spec monitor(port | {name, node} | name) :: reference when name: atom
+  def monitor(port) do
+    :erlang.monitor(:port, port)
+  end
+
+  @doc """
+  Demonitors the monitor identified by the given `reference`.
+
+  If `monitor_ref` is a reference which the calling process
+  obtained by calling `monitor/1`, that monitoring is turned off.
+  If the monitoring is already turned off, nothing happens.
+
+  See `:erlang.demonitor/2` for more information.
+
+  Inlined by the compiler.
+  """
+  @doc since: "1.6.0"
+  @spec demonitor(reference, options :: [:flush | :info]) :: boolean
+  defdelegate demonitor(monitor_ref, options \\ []), to: :erlang
 
   @doc """
   Returns a list of all ports in the current node.
@@ -252,10 +298,10 @@ defmodule Port do
   """
   @spec list :: [port]
   def list do
-    :erlang.ports
+    :erlang.ports()
   end
 
   @compile {:inline, nillify: 1}
   defp nillify(:undefined), do: nil
-  defp nillify(other),      do: other
+  defp nillify(other), do: other
 end

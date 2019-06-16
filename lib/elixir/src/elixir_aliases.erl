@@ -6,7 +6,7 @@
 inspect(Atom) when is_atom(Atom) ->
   case elixir_config:get(bootstrap) of
     true  -> atom_to_binary(Atom, utf8);
-    false -> 'Elixir.Inspect.Atom':inspect(Atom)
+    false -> 'Elixir.Code.Identifier':inspect_as_atom(Atom)
   end.
 
 %% Store an alias in the given scope
@@ -22,7 +22,7 @@ store_alias(New, Old, Aliases) ->
 
 store_macro_alias(Meta, New, Old, Aliases) ->
   case lists:keyfind(counter, 1, Meta) of
-    {counter, Counter} when is_integer(Counter) ->
+    {counter, Counter} ->
       lists:keystore(New, 1, Aliases, {New, {Counter, Old}});
     false ->
       Aliases
@@ -33,7 +33,7 @@ remove_alias(Atom, Aliases) ->
 
 remove_macro_alias(Meta, Atom, Aliases) ->
   case lists:keyfind(counter, 1, Meta) of
-    {counter, Counter} when is_integer(Counter) ->
+    {counter, _Counter} ->
       lists:keydelete(Atom, 1, Aliases);
     false ->
       Aliases
@@ -88,7 +88,7 @@ expand({'__aliases__', _Meta, List}, _Aliases, _LexicalTracker) ->
 ensure_loaded(_Meta, 'Elixir.Kernel', _E) -> ok;
 ensure_loaded(Meta, Ref, E) ->
   try
-    Ref:module_info(compile)
+    Ref:module_info(module)
   catch
     error:undef ->
       Kind = case lists:member(Ref, ?key(E, context_modules)) of
@@ -99,7 +99,7 @@ ensure_loaded(Meta, Ref, E) ->
           end;
         false -> unloaded_module
       end,
-      elixir_errors:form_error(Meta, ?key(E, file), ?MODULE, {Kind, Ref})
+      elixir_errors:form_error(Meta, E, ?MODULE, {Kind, Ref})
   end.
 
 %% Receives an atom and returns the last bit as an alias.
@@ -157,7 +157,7 @@ format_error({unloaded_module, Module}) ->
 format_error({scheduled_module, Module}) ->
   io_lib:format(
     "module ~ts is not loaded but was defined. This happens when you depend on "
-    "a module in the same context it is defined. For example:\n"
+    "a module in the same context in which it is defined. For example:\n"
     "\n"
     "    defmodule MyApp do\n"
     "      defmodule Mod do\n"
@@ -176,7 +176,7 @@ format_error({scheduled_module, Module}) ->
     "    end\n"
     "\n"
     "If the module is defined at the top-level and you are trying to "
-    "use it at the top-level, such is not supported by Elixir",
+    "use it at the top-level, this is not supported by Elixir",
     [inspect(Module)]);
 
 format_error({circular_module, Module}) ->
@@ -191,8 +191,8 @@ format_error({circular_module, Module}) ->
     "      end\n"
     "    end\n"
     "\n"
-    "In the example above, the new Supervisor conflicts with Elixir's. "
-    "This may be fixed by using the fully qualified name on definition:\n"
+    "In the example above, the new Supervisor conflicts with Elixir's Supervisor. "
+    "This may be fixed by using the fully qualified name in the definition:\n"
     "\n"
     "    defmodule MyApp.Supervisor do\n"
     "      use Supervisor\n"

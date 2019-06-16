@@ -21,12 +21,14 @@ defmodule Mix.Tasks.Profile.Cprof do
       mix profile.cprof -e "[1, 2, 3] |> Enum.reverse |> Enum.map(&Integer.to_string/1)"
       mix profile.cprof my_script.exs arg1 arg2 arg3
 
+  This task is automatically reenabled, so you can profile multiple times
+  in the same Mix invocation.
+
   ## Command line options
 
     * `--matching` - only profile calls matching the given `Module.function/arity` pattern
     * `--limit` - filters out any results with a call count less than the limit
     * `--module` - filters out any results not pertaining to the given module
-    * `--config`, `-c` - loads the given configuration file
     * `--eval`, `-e` - evaluate the given code
     * `--require`, `-r` - requires pattern before running the command
     * `--parallel`, `-p` - makes all requires parallel
@@ -89,34 +91,82 @@ defmodule Mix.Tasks.Profile.Cprof do
   (for example, 2147483647 in a 32-bit host).
   """
 
-  @switches [parallel: :boolean, require: :keep, eval: :keep, config: :keep, matching: :string,
-             halt: :boolean, compile: :boolean, deps_check: :boolean, limit: :integer,
-             module: :string, start: :boolean, archives_check: :boolean, warmup: :boolean,
-             elixir_version_check: :boolean, parallel_require: :keep]
+  @switches [
+    parallel: :boolean,
+    require: :keep,
+    eval: :keep,
+    config: :keep,
+    matching: :string,
+    halt: :boolean,
+    compile: :boolean,
+    deps_check: :boolean,
+    limit: :integer,
+    module: :string,
+    start: :boolean,
+    archives_check: :boolean,
+    warmup: :boolean,
+    elixir_version_check: :boolean,
+    parallel_require: :keep
+  ]
 
-  @spec run(OptionParser.argv) :: :ok
+  @aliases [r: :require, p: :parallel, e: :eval, c: :config]
+
+  @impl true
   def run(args) do
-    {opts, head} = OptionParser.parse_head!(args,
-      aliases: [r: :require, p: :parallel, e: :eval, c: :config],
-      strict: @switches)
-    Mix.Tasks.Run.run(["--no-mixexs" | args], opts, head,
-                      &profile_code(&1, opts),
-                      &profile_code(File.read!(&1), opts))
+    {opts, head} = OptionParser.parse_head!(args, aliases: @aliases, strict: @switches)
+    Mix.Task.reenable("profile.cprof")
+
+    Mix.Tasks.Run.run(
+      ["--no-mix-exs" | args],
+      opts,
+      head,
+      &profile_code(&1, opts),
+      &profile_code(File.read!(&1), opts)
+    )
   end
 
   defp profile_code(code_string, opts) do
+    opts = Enum.map(opts, &parse_opt/1)
+
     content =
       quote do
-        unquote(__MODULE__).profile(fn ->
-          unquote(Code.string_to_quoted!(code_string))
-        end, unquote(opts))
+        unquote(__MODULE__).profile(
+          fn ->
+            unquote(Code.string_to_quoted!(code_string))
+          end,
+          unquote(Macro.escape(opts))
+        )
       end
+
     # Use compile_quoted since it leaves less noise than eval_quoted
     Code.compile_quoted(content)
   end
 
-  @doc false
-  def profile(fun, opts) do
+  defp parse_opt({:matching, matching}) do
+    case Mix.Utils.parse_mfa(matching) do
+      {:ok, [m, f, a]} -> {:matching, {m, f, a}}
+      {:ok, [m, f]} -> {:matching, {m, f, :_}}
+      {:ok, [m]} -> {:matching, {m, :_, :_}}
+      :error -> Mix.raise("Invalid matching pattern: #{matching}")
+    end
+  end
+
+  defp parse_opt({:module, module}), do: {:module, string_to_existing_module(module)}
+  defp parse_opt(other), do: other
+
+  @doc """
+  Allows to programmatically run the `cprof` profiler on expression in `fun`.
+
+  ## Options
+
+    * `:matching` - only profile calls matching the given pattern in form of
+      `{module, function, arity}`, where each element may be replaced by `:_`
+      to allow any value
+    * `:limit` - filters out any results with a call count less than the limit
+    * `:module` - filters out any results not pertaining to the given module
+
+  """
+  def profile(fun, opts \\ []) when is_function(fun, 0) do
     fun
     |> profile_and_analyse(opts)
     |> print_output
@@ -126,40 +176,38 @@ defmodule Mix.Tasks.Profile.Cprof do
 
   defp profile_and_analyse(fun, opts) do
     if Keyword.get(opts, :warmup, true) do
-      IO.puts "Warmup..."
+      IO.puts("Warmup...")
       fun.()
     end
 
-    num_matched_functions = case Keyword.get(opts, :matching) do
-      nil ->
-        :cprof.start()
-      matching ->
-        case Mix.Utils.parse_mfa(matching) do
-          {:ok, args} -> apply(:cprof, :start, args)
-          :error -> Mix.raise "Invalid matching pattern: #{matching}"
-        end
-    end
+    num_matched_functions =
+      case Keyword.fetch(opts, :matching) do
+        {:ok, matching} -> :cprof.start(matching)
+        :error -> :cprof.start()
+      end
 
     apply(fun, [])
 
     :cprof.pause()
 
-    limit  = Keyword.get(opts, :limit)
+    limit = Keyword.get(opts, :limit)
     module = Keyword.get(opts, :module)
 
-    analysis_result = case {limit, module} do
-      {nil, nil} ->
-        :cprof.analyse()
-      {limit, nil} ->
-        :cprof.analyse(limit)
-      {limit, module} ->
-        module = string_to_existing_module(module)
-        if limit do
-          :cprof.analyse(module, limit)
-        else
-          :cprof.analyse(module)
-        end
-    end
+    analysis_result =
+      case {limit, module} do
+        {nil, nil} ->
+          :cprof.analyse()
+
+        {limit, nil} ->
+          :cprof.analyse(limit)
+
+        {limit, module} ->
+          if limit do
+            :cprof.analyse(module, limit)
+          else
+            :cprof.analyse(module)
+          end
+      end
 
     {num_matched_functions, analysis_result}
   end
@@ -179,20 +227,21 @@ defmodule Mix.Tasks.Profile.Cprof do
   end
 
   defp print_number_of_matched_functions(num_matched_functions) do
-    IO.puts "Profile done over #{num_matched_functions} matching functions"
+    IO.puts("Profile done over #{num_matched_functions} matching functions")
   end
 
   defp print_total_row(all_call_count) do
-    IO.puts ""
+    IO.puts("")
     print_row(["s", "s", "s"], ["", "CNT", ""])
     print_row(["s", "B", "s"], ["Total", all_call_count, ""])
   end
 
   defp print_analysis_result({module, total_module_count, module_fun_list}) do
     module
-    |> Atom.to_string
+    |> Atom.to_string()
     |> module_name_for_printing()
     |> print_module(total_module_count, "", "<--")
+
     Enum.each(module_fun_list, &print_function(&1, "  "))
   end
 
@@ -216,10 +265,10 @@ defmodule Mix.Tasks.Profile.Cprof do
   @columns [-60, 12, 5]
   defp print_row(formats, data) do
     Stream.zip(@columns, formats)
-    |> Stream.map(fn({width, format}) -> "~#{width}#{format}" end)
-    |> Enum.join
+    |> Stream.map(fn {width, format} -> "~#{width}#{format}" end)
+    |> Enum.join()
     |> :io.format(data)
 
-    IO.puts ""
+    IO.puts("")
   end
 end

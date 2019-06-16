@@ -23,8 +23,8 @@ defmodule IEx.Helpers do
   There are many other helpers available, here are some examples:
 
     * `b/1`            - prints callbacks info and docs for a given module
-    * `c/1`            - compiles a file into the current directory
-    * `c/2`            - compiles a file to the given path
+    * `c/1`            - compiles a file
+    * `c/2`            - compiles a file and writes bytecode to the given path
     * `cd/1`           - changes the current directory
     * `clear/0`        - clears the screen
     * `exports/1`      - shows all exports (functions + macros) in a module
@@ -38,6 +38,10 @@ defmodule IEx.Helpers do
     * `open/1`         - opens the source for the given module or function in your editor
     * `pid/1`          - creates a PID from a string
     * `pid/3`          - creates a PID with the 3 integer arguments passed
+    * `port/1`         - creates a port from a string
+    * `port/2`         - creates a port with the 2 non-negative integers passed
+    * `ref/1`          - creates a reference from a string
+    * `ref/4`          - creates a reference with the 4 integer arguments passed
     * `pwd/0`          - prints the current working directory
     * `r/1`            - recompiles the given module's source file
     * `recompile/0`    - recompiles the current project
@@ -55,7 +59,7 @@ defmodule IEx.Helpers do
 
       iex> exports(IEx.Helpers)
 
-  This module also include helpers for debugging purposes, see
+  This module also includes helpers for debugging purposes, see
   `IEx.break!/4` for more information.
 
   To learn more about IEx as a whole, type `h(IEx)`.
@@ -78,10 +82,15 @@ defmodule IEx.Helpers do
 
   This function is meant to be used for development and
   debugging purposes. Do not depend on it in production code.
+
+  ## Options
+
+    * `:force` - when `true`, forces the application to recompile
+
   """
-  def recompile do
+  def recompile(options \\ []) do
     if mix_started?() do
-      config = Mix.Project.config
+      config = Mix.Project.config()
       consolidation = Mix.Project.consolidation_path(config)
       reenable_tasks(config)
 
@@ -89,7 +98,10 @@ defmodule IEx.Helpers do
       Code.delete_path(consolidation)
       purge_protocols(consolidation)
 
-      result = Mix.Task.run("compile")
+      force? = Keyword.get(options, :force, false)
+      arguments = if force?, do: ["--force"], else: []
+
+      {result, _} = Mix.Task.run("compile", arguments)
 
       # Reenable consolidation and allow them to be loaded.
       Code.prepend_path(consolidation)
@@ -97,32 +109,32 @@ defmodule IEx.Helpers do
 
       result
     else
-      IO.puts IEx.color(:eval_error, "Mix is not running. Please start IEx with: iex -S mix")
+      IO.puts(IEx.color(:eval_error, "Mix is not running. Please start IEx with: iex -S mix"))
       :error
     end
   end
 
   defp mix_started? do
-    List.keyfind(Application.started_applications, :mix, 0) != nil
+    List.keyfind(Application.started_applications(), :mix, 0) != nil
   end
 
   defp reenable_tasks(config) do
     Mix.Task.reenable("compile")
     Mix.Task.reenable("compile.all")
     Mix.Task.reenable("compile.protocols")
-    compilers = config[:compilers] || Mix.compilers
-    Enum.each compilers, &Mix.Task.reenable("compile.#{&1}")
+    compilers = config[:compilers] || Mix.compilers()
+    Enum.each(compilers, &Mix.Task.reenable("compile.#{&1}"))
   end
 
   defp purge_protocols(path) do
     case File.ls(path) do
       {:ok, beams} ->
-        for beam <- beams do
-          module = beam |> Path.rootname |> String.to_atom
+        Enum.each(beams, fn beam ->
+          module = beam |> Path.rootname() |> String.to_atom()
           :code.purge(module)
           :code.delete(module)
-        end
-        :ok
+        end)
+
       {:error, _} ->
         :ok
     end
@@ -132,8 +144,9 @@ defmodule IEx.Helpers do
   Compiles the given files.
 
   It expects a list of files to compile and an optional path to write
-  the compiled code to (defaults to the current directory). When compiling
-  one file, there is no need to wrap it in a list.
+  the compiled code to. By default files are in-memory compiled.
+  To write compiled files to the current directory, an empty string
+  can be given.
 
   It returns the names of the compiled modules.
 
@@ -141,8 +154,14 @@ defmodule IEx.Helpers do
 
   ## Examples
 
+  In the example below, we pass a directory to where the `c/2` function will
+  write the compiled `.beam` files to. This directory is typically named "ebin"
+  in Erlang/Elixir systems:
+
       iex> c(["foo.ex", "bar.ex"], "ebin")
       [Foo, Bar]
+
+  When compiling one file, there is no need to wrap it in a list:
 
       iex> c("baz.ex")
       [Baz]
@@ -163,20 +182,23 @@ defmodule IEx.Helpers do
 
     {erls, exs} = Enum.split_with(found, &String.ends_with?(&1, ".erl"))
 
-    erl_modules = Enum.map(erls, fn(source) ->
-      {module, binary} = compile_erlang(source)
-      unless path == :in_memory do
-        base = source |> Path.basename |> Path.rootname
-        File.write!(Path.join(path, base <> ".beam"), binary)
-      end
-      module
-    end)
+    erl_modules =
+      Enum.map(erls, fn source ->
+        {module, binary} = compile_erlang(source)
 
-    ex_modules = try do
-      compile_elixir(exs, path)
-    catch
-      _, _ -> raise CompileError
-    end
+        if path != :in_memory do
+          base = source |> Path.basename() |> Path.rootname()
+          File.write!(Path.join(path, base <> ".beam"), binary)
+        end
+
+        module
+      end)
+
+    ex_modules =
+      case compile_elixir(exs, path) do
+        {:ok, modules, _} -> modules
+        {:error, _, _} -> raise CompileError
+      end
 
     erl_modules ++ ex_modules
   end
@@ -189,11 +211,12 @@ defmodule IEx.Helpers do
   unavailable on Windows machines.
   """
   def clear() do
-    if IO.ANSI.enabled? do
-      IO.write [IO.ANSI.home, IO.ANSI.clear]
+    if IO.ANSI.enabled?() do
+      IO.write([IO.ANSI.home(), IO.ANSI.clear()])
     else
-      IO.puts "Cannot clear the screen because ANSI escape codes are not enabled on this shell"
+      IO.puts("Cannot clear the screen because ANSI escape codes are not enabled on this shell")
     end
+
     dont_display_result()
   end
 
@@ -212,17 +235,18 @@ defmodule IEx.Helpers do
   """
   def open() do
     case Process.get(:iex_whereami) do
-      {file, line} ->
+      {file, line, _} ->
         IEx.Introspection.open({file, line})
+
       _ ->
-        IO.puts IEx.color(:eval_error, "Pry session is not currently enabled")
+        IO.puts(IEx.color(:eval_error, "Pry session is not currently enabled"))
     end
 
     dont_display_result()
   end
 
   @doc """
-  Opens the given module, module/function/arity or `{file, line}`.
+  Opens the given `module`, `module.function/arity`, or `{file, line}`.
 
   This function uses the `ELIXIR_EDITOR` environment variable
   and falls back to `EDITOR` if the former is not available.
@@ -233,10 +257,16 @@ defmodule IEx.Helpers do
 
       subl path/to/file:line
 
-  Custom editors are supported by using the __FILE__ and __LINE__
-  notations. For example, vi/vim users can set `ELIXIR_EDITOR` to:
+  It is important that you choose an editor command that does
+  not block nor that attempts to run an editor directly in the
+  terminal. Command-line based editors likely need extra
+  configuration so they open up the given file and line in a
+  separate window.
 
-      ELIXIR_EDITOR="vi +__LINE__ __FILE__"
+  Custom editors are supported by using the `__FILE__` and
+  `__LINE__` notations, for example:
+
+      ELIXIR_EDITOR="my_editor +__LINE__ __FILE__"
 
   and Elixir will properly interpolate values.
 
@@ -244,19 +274,19 @@ defmodule IEx.Helpers do
   `ELIXIR_EDITOR` can be set "echo" if you prefer to display the
   location rather than opening it.
 
-  Keep in mind the location may not exist when opening
-  precompiled source code, such as Elixir itself.
+  Keep in mind the location may not exist when opening precompiled
+  source code.
 
   ## Examples
 
-      iex> open MyApp
-      iex> open MyApp.fun/2
-      iex> open {"path/to/file", 1}
+      iex> open(MyApp)
+      iex> open(MyApp.fun/2)
+      iex> open({"path/to/file", 1})
 
   """
   defmacro open(term) do
     quote do
-      IEx.Introspection.open(unquote(IEx.Introspection.decompose(term)))
+      IEx.Introspection.open(unquote(IEx.Introspection.decompose(term, __CALLER__)))
     end
   end
 
@@ -269,23 +299,23 @@ defmodule IEx.Helpers do
 
   @doc """
   Prints the documentation for the given module
-  or for the given function/arity pair.
+  or for the given `function/arity` pair.
 
   ## Examples
 
       iex> h(Enum)
 
-  It also accepts functions in the format `fun/arity`
-  and `module.fun/arity`, for example:
+  It also accepts functions in the format `function/arity`
+  and `module.function/arity`, for example:
 
-      iex> h receive/1
-      iex> h Enum.all?/2
-      iex> h Enum.all?
+      iex> h(receive/1)
+      iex> h(Enum.all?/2)
+      iex> h(Enum.all?)
 
   """
   defmacro h(term) do
     quote do
-      IEx.Introspection.h(unquote(IEx.Introspection.decompose(term)))
+      IEx.Introspection.h(unquote(IEx.Introspection.decompose(term, __CALLER__)))
     end
   end
 
@@ -300,10 +330,11 @@ defmodule IEx.Helpers do
       iex> b(Mix.Task.run/1)
       iex> b(Mix.Task.run)
       iex> b(GenServer)
+
   """
   defmacro b(term) do
     quote do
-      IEx.Introspection.b(unquote(IEx.Introspection.decompose(term)))
+      IEx.Introspection.b(unquote(IEx.Introspection.decompose(term, __CALLER__)))
     end
   end
 
@@ -328,25 +359,7 @@ defmodule IEx.Helpers do
   """
   defmacro t(term) do
     quote do
-      IEx.Introspection.t(unquote(IEx.Introspection.decompose(term)))
-    end
-  end
-
-  @doc """
-  Prints the specs for the given module or for the given function/arity pair.
-
-  ## Examples
-
-      iex> s(Enum)
-      iex> s(Enum.all?)
-      iex> s(Enum.all?/2)
-      iex> s(is_atom)
-      iex> s(is_atom/1)
-
-  """
-  defmacro s(term) do
-    quote do
-      IEx.Introspection.s(unquote(IEx.Introspection.decompose(term)))
+      IEx.Introspection.t(unquote(IEx.Introspection.decompose(term, __CALLER__)))
     end
   end
 
@@ -374,7 +387,7 @@ defmodule IEx.Helpers do
 
   """
   def v(n \\ -1) do
-    IEx.History.nth(history(), n) |> elem(2)
+    IEx.History.nth(history(), n) |> elem(1)
   end
 
   @doc """
@@ -404,22 +417,23 @@ defmodule IEx.Helpers do
 
   defp do_r(module) do
     unless Code.ensure_loaded?(module) do
-      raise ArgumentError, "could not load nor find module: #{inspect module}"
+      raise ArgumentError, "could not load nor find module: #{inspect(module)}"
     end
 
     source = source(module)
+
     cond do
       source == nil ->
-        raise ArgumentError, "could not find source for module: #{inspect module}"
+        raise ArgumentError, "could not find source for module: #{inspect(module)}"
 
       not File.exists?(source) ->
-        raise ArgumentError, "could not find source (#{source}) for module: #{inspect module}"
+        raise ArgumentError, "could not find source (#{source}) for module: #{inspect(module)}"
 
       String.ends_with?(source, ".erl") ->
         [compile_erlang(source) |> elem(0)]
 
       true ->
-        Enum.map(Code.load_file(source), fn {name, _} -> name end)
+        Enum.map(Code.compile_file(source), fn {name, _} -> name end)
     end
   end
 
@@ -428,7 +442,7 @@ defmodule IEx.Helpers do
   old version was properly purged before).
 
   This function is useful when you know the bytecode for module
-  has been updated in the filesystem and you want to tell the VM
+  has been updated in the file system and you want to tell the VM
   to load it.
   """
   def l(module) when is_atom(module) do
@@ -459,15 +473,13 @@ defmodule IEx.Helpers do
 
   """
   def i(term \\ v(-1)) do
-    info =
-      ["Term": inspect(term)] ++
-      IEx.Info.info(term) ++
-      ["Implemented protocols": all_implemented_protocols_for_term(term)]
+    implemented_protocols = [{"Implemented protocols", all_implemented_protocols_for_term(term)}]
+    info = [{"Term", inspect(term)}] ++ IEx.Info.info(term) ++ implemented_protocols
 
     for {subject, info} <- info do
       info = info |> to_string() |> String.trim() |> String.replace("\n", "\n  ")
-      IO.puts IEx.color(:eval_result, to_string(subject))
-      IO.puts IEx.color(:eval_info, "  #{info}")
+      IO.puts(IEx.color(:eval_result, to_string(subject)))
+      IO.puts(IEx.color(:eval_info, "  #{info}"))
     end
 
     dont_display_result()
@@ -480,15 +492,17 @@ defmodule IEx.Helpers do
     :code.get_path()
     |> Protocol.extract_protocols()
     |> Enum.uniq()
-    |> Enum.reject(fn(protocol) -> is_nil(protocol.impl_for(term)) end)
+    |> Enum.reject(fn protocol -> is_nil(protocol.impl_for(term)) end)
+    |> Enum.sort()
     |> Enum.map_join(", ", &inspect/1)
   end
 
-  @runtime_info_topics [:system, :memory, :limits, :applications]
+  @runtime_info_topics [:system, :memory, :allocators, :limits, :applications]
   @doc """
-  Prints vm/runtime information such as versions, memory usage and statistics.
+  Prints VM/runtime information such as versions, memory usage and statistics.
   Additional topics are available via `runtime_info/1`.
   """
+  @doc since: "1.5.0"
   def runtime_info(), do: runtime_info([:system, :memory, :limits])
 
   @doc """
@@ -497,120 +511,180 @@ defmodule IEx.Helpers do
   """
   def runtime_info(topic) when is_atom(topic) and topic in @runtime_info_topics do
     topic
-    |> List.wrap
+    |> List.wrap()
     |> runtime_info
   end
+
   def runtime_info(topics) when is_list(topics) do
     topics
-    |> Enum.uniq
+    |> Enum.uniq()
     |> print_runtime_info
   end
 
   defp print_runtime_info(topics) do
     Enum.each(topics, &print_runtime_info_topic/1)
-    IO.puts ""
+    IO.puts("")
     print_topic_info(topics)
-    IO.puts ""
+    IO.puts("")
     dont_display_result()
   end
 
   defp print_topic_info(topics) when is_list(topics) do
-    IO.write pad_key("Showing topics")
-    IO.puts inspect(topics)
-    IO.write pad_key("Additional topics")
-    IO.puts inspect(@runtime_info_topics -- topics)
-    IO.puts ""
-    IO.puts "To view a specific topic call runtime_info(topic)"
+    IO.write(pad_key("Showing topics"))
+    IO.puts(inspect(topics))
+    IO.write(pad_key("Additional topics"))
+    IO.puts(inspect(@runtime_info_topics -- topics))
+    IO.puts("")
+    IO.puts("To view a specific topic call runtime_info(topic)")
   end
 
   defp print_runtime_info_topic(:system) do
     print_pane("System and architecture")
 
-    print_entry("Elixir version", System.version)
-    print_entry("OTP version", :erlang.system_info(:otp_release))
+    print_entry("Elixir version", System.version())
+    print_entry("Erlang/OTP version", :erlang.system_info(:otp_release))
     print_entry("ERTS version", :erlang.system_info(:version))
     print_entry("Compiled for", :erlang.system_info(:system_architecture))
     print_entry("Schedulers", :erlang.system_info(:schedulers))
     print_entry("Schedulers online", :erlang.system_info(:schedulers_online))
   end
+
   defp print_runtime_info_topic(:memory) do
     print_pane("Memory")
-    print_memory("Total", :total, :MB)
+    print_memory("Total", :total)
     print_memory("Atoms", :atom)
     print_memory("Binaries", :binary)
     print_memory("Code", :code)
     print_memory("ETS", :ets)
     print_memory("Processes", :processes)
   end
+
+  defp print_runtime_info_topic(:allocators) do
+    print_pane("Allocators")
+
+    areas = :erlang.system_info(:allocated_areas)
+
+    print_allocator(areas, "Atom Space", :atom_space)
+    print_allocator(areas, "Atom Table", :atom_table)
+    print_allocator(areas, "BIF Timer", :bif_timer)
+    print_allocator(areas, "Bits Bufs Size", :bits_bufs_size)
+    print_allocator(areas, "Dist Table", :dist_table)
+    print_allocator(areas, "ETS Misc", :ets_misc)
+    print_allocator(areas, "Export List", :export_list)
+    print_allocator(areas, "Export Table", :export_table)
+    print_allocator(areas, "Function Table", :fun_table)
+    print_allocator(areas, "Loaded Code", :loaded_code)
+    print_allocator(areas, "Module Refs", :module_refs)
+    print_allocator(areas, "Module Table", :module_table)
+    print_allocator(areas, "Node Table", :node_table)
+    print_allocator(areas, "Port Table", :port_table)
+    print_allocator(areas, "Process Table", :process_table)
+    print_allocator(areas, "Register Table", :register_table)
+    print_allocator(areas, "Static", :static)
+    print_allocator(areas, "System Misc", :sys_misc)
+  end
+
   defp print_runtime_info_topic(:limits) do
     print_pane("Statistics / limits")
     print_uptime()
     print_entry("Run queue", :erlang.statistics(:run_queue))
-    if :erlang.system_info(:otp_release) >= '20' do
-      print_percentage("Atoms", :atom_count, :atom_limit)
-    end
+
+    print_percentage("Atoms", :atom_count, :atom_limit)
     print_percentage("ETS", :ets_count, :ets_limit)
     print_percentage("Ports", :port_count, :port_limit)
     print_percentage("Processes", :process_count, :process_limit)
   end
+
   defp print_runtime_info_topic(:applications) do
     print_pane("Loaded OTP Applications")
-
     started = Application.started_applications()
+    loaded = Application.loaded_applications()
 
-    Application.loaded_applications()
-    |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.each(fn {app, _, version} = loaded ->
-      IO.write pad_key(app)
-      IO.write String.pad_trailing("#{version}", 20)
-      if loaded in started do
-        IO.write "(started)"
+    for {app, _, version} = entry <- Enum.sort(loaded) do
+      IO.write(pad_key(app))
+      IO.write(String.pad_trailing("#{version}", 20))
+
+      if entry in started do
+        IO.write("(started)")
       end
-      IO.puts ""
-    end)
+
+      IO.puts("")
+    end
+
+    :ok
   end
 
   defp print_pane(msg) do
-    IO.puts IEx.color(:eval_result, ["\n## ", msg, " \n"])
+    IO.puts(IEx.color(:eval_result, ["\n## ", msg, " \n"]))
   end
 
   defp print_entry(_key, nil), do: :ok
-  defp print_entry(key, value), do: IO.puts "#{pad_key(key)}#{value}"
+  defp print_entry(key, value), do: IO.puts("#{pad_key(key)}#{value}")
 
   defp print_uptime() do
-    IO.write pad_key("Uptime")
+    IO.write(pad_key("Uptime"))
     :c.uptime()
   end
 
   defp print_percentage(key, min, max) do
     min = get_stat(min)
     max = get_stat(max)
-    percentage = trunc((min / max) * 100)
-    IO.puts "#{pad_key(key)}#{min} / #{max} (#{percentage}% used)"
+    percentage = trunc(min / max * 100)
+    IO.puts("#{pad_key(key)}#{min} / #{max} (#{percentage}% used)")
   end
 
   defp get_stat(:ets_count), do: length(:ets.all())
   defp get_stat(other), do: :erlang.system_info(other)
 
-  defp print_memory(key, memory, unit \\ :kB) do
-    value =
-      memory
-      |> :erlang.memory()
-      |> div(memory_unit(unit))
-      |> round()
-    IO.puts "#{pad_key(key)}#{value} #{unit}"
+  defp print_memory(key, memory) do
+    value = :erlang.memory(memory)
+    IO.puts("#{pad_key(key)}#{format_bytes(value)}")
   end
 
+  defp print_allocator(allocated_areas, key, probe) do
+    case List.keyfind(allocated_areas, probe, 0) do
+      {_, allocated, used} ->
+        IO.puts("#{pad_key(key)}#{format_bytes(allocated)} (#{format_bytes(used)} used)")
+
+      {_, allocated} ->
+        IO.puts("#{pad_key(key)}#{format_bytes(allocated)}")
+
+      _ ->
+        IO.puts("#{pad_key(key)}N/A")
+    end
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) do
+    cond do
+      bytes >= memory_unit(:GB) -> format_bytes(bytes, :GB)
+      bytes >= memory_unit(:MB) -> format_bytes(bytes, :MB)
+      bytes >= memory_unit(:KB) -> format_bytes(bytes, :KB)
+      true -> format_bytes(bytes, :B)
+    end
+  end
+
+  defp format_bytes(bytes, unit) when is_integer(bytes) and unit in [:GB, :MB, :KB] do
+    value =
+      bytes
+      |> div(memory_unit(unit))
+      |> round()
+
+    "#{value} #{unit}"
+  end
+
+  defp format_bytes(bytes, :B) when is_integer(bytes), do: "#{bytes} B"
+
+  defp memory_unit(:GB), do: 1024 * 1024 * 1024
   defp memory_unit(:MB), do: 1024 * 1024
-  defp memory_unit(:kB), do: 1024
+  defp memory_unit(:KB), do: 1024
 
   defp pad_key(key), do: String.pad_trailing("#{key}:", 20, " ")
 
   @doc """
-  Flushes all messages sent to the shell and prints them out.
+  Clears out all messages sent to the shell's inbox and prints them out.
   """
   def flush do
-    do_flush(IEx.inspect_opts)
+    do_flush(IEx.inspect_opts())
   end
 
   defp do_flush(inspect_opts) do
@@ -636,7 +710,7 @@ defmodule IEx.Helpers do
   Prints the current working directory.
   """
   def pwd do
-    IO.puts IEx.color(:eval_info, System.cwd!)
+    IO.puts(IEx.color(:eval_info, File.cwd!()))
     dont_display_result()
   end
 
@@ -645,22 +719,28 @@ defmodule IEx.Helpers do
   """
   def cd(directory) when is_binary(directory) do
     case File.cd(expand_home(directory)) do
-      :ok -> pwd()
+      :ok ->
+        pwd()
+
       {:error, :enoent} ->
-        IO.puts IEx.color(:eval_error, "No directory #{directory}")
+        IO.puts(IEx.color(:eval_error, "No directory #{directory}"))
     end
+
     dont_display_result()
   end
 
   @doc """
   Prints a list of all the functions and macros exported by the given module.
   """
+  @doc since: "1.5.0"
   def exports(module \\ Kernel) do
     exports = IEx.Autocomplete.exports(module)
+
     list =
       Enum.map(exports, fn {name, arity} ->
         Atom.to_string(name) <> "/" <> Integer.to_string(arity)
       end)
+
     print_table(list)
     dont_display_result()
   end
@@ -672,30 +752,35 @@ defmodule IEx.Helpers do
   """
   def ls(path \\ ".") when is_binary(path) do
     path = expand_home(path)
+
     case File.ls(path) do
       {:ok, items} ->
         sorted_items = Enum.sort(items)
-        printer = fn(item, width) ->
+
+        printer = fn item, width ->
           format_item(Path.join(path, item), String.pad_trailing(item, width))
         end
+
         print_table(sorted_items, printer)
 
       {:error, :enoent} ->
-        IO.puts IEx.color(:eval_error, "No such file or directory #{path}")
+        IO.puts(IEx.color(:eval_error, "No such file or directory #{path}"))
 
       {:error, :enotdir} ->
-        IO.puts IEx.color(:eval_info, Path.absname(path))
+        IO.puts(IEx.color(:eval_info, Path.absname(path)))
     end
+
     dont_display_result()
   end
 
   defp expand_home(<<?~, rest::binary>>) do
-    System.user_home! <> rest
+    System.user_home!() <> rest
   end
 
   defp expand_home(other), do: other
 
   defp print_table(list, printer \\ &String.pad_trailing/2)
+
   defp print_table([], _printer) do
     :ok
   end
@@ -709,19 +794,20 @@ defmodule IEx.Helpers do
   end
 
   defp print_table(list, printer, offset) do
-    Enum.reduce(list, 0, fn(item, len) ->
+    Enum.reduce(list, 0, fn item, len ->
       len =
         if len >= 80 do
-          IO.puts ""
+          IO.puts("")
           0
         else
           len
         end
-      IO.write printer.(item, offset)
+
+      IO.write(printer.(item, offset))
       len + offset
     end)
 
-    IO.puts ""
+    IO.puts("")
   end
 
   defp maxlength(list) do
@@ -732,8 +818,10 @@ defmodule IEx.Helpers do
     case File.stat(path) do
       {:ok, %File.Stat{type: :device}} ->
         IEx.color(:ls_device, representation)
+
       {:ok, %File.Stat{type: :directory}} ->
         IEx.color(:ls_directory, representation)
+
       _ ->
         representation
     end
@@ -743,9 +831,10 @@ defmodule IEx.Helpers do
   Respawns the current shell by starting a new shell process.
   """
   def respawn do
-    if whereis = IEx.Server.whereis do
-      send whereis, {:respawn, self()}
+    if iex_server = Process.get(:iex_server) do
+      send(iex_server, {:respawn, self()})
     end
+
     dont_display_result()
   end
 
@@ -753,8 +842,8 @@ defmodule IEx.Helpers do
   Continues execution of the current process.
 
   This is usually called by sessions started with `IEx.pry/0`
-  or `IEx.break!/4`. This allows the current to execute until
-  the next breakpoint, which will automatically yield control
+  or `IEx.break!/4`. This allows the current process to execute
+  until the next breakpoint, which will automatically yield control
   back to IEx without requesting permission to pry.
 
   If the running process terminates, a new IEx session is
@@ -764,16 +853,19 @@ defmodule IEx.Helpers do
   control of the shell. If you would rather start a new shell,
   use `respawn/0` instead.
   """
+  @doc since: "1.5.0"
   def continue do
-    if whereis = IEx.Server.whereis do
-      send whereis, {:continue, self()}
+    if iex_server = Process.get(:iex_server) do
+      send(iex_server, {:continue, self()})
     end
+
     dont_display_result()
   end
 
   @doc """
   Macro-based shortcut for `IEx.break!/4`.
   """
+  @doc since: "1.5.0"
   defmacro break!(ast, stops \\ 1) do
     quote do
       require IEx
@@ -788,67 +880,85 @@ defmodule IEx.Helpers do
   See `IEx.break!/4` for a complete description of breakpoints
   in IEx.
   """
+  @doc since: "1.5.0"
   defdelegate break!(module, function, arity, stops \\ 1), to: IEx
 
   @doc """
   Prints all breakpoints to the terminal.
   """
+  @doc since: "1.5.0"
   def breaks do
     breaks(IEx.Pry.breaks())
   end
 
   defp breaks([]) do
-    IO.puts IEx.color(:eval_info, "No breakpoints set")
+    IO.puts(IEx.color(:eval_info, "No breakpoints set"))
     dont_display_result()
   end
 
   defp breaks(breaks) do
     entries =
       for {id, module, {function, arity}, stops} <- breaks do
-        {Integer.to_string(id),
-         Exception.format_mfa(module, function, arity),
-         Integer.to_string(stops)}
+        {
+          Integer.to_string(id),
+          Exception.format_mfa(module, function, arity),
+          Integer.to_string(stops)
+        }
       end
 
     entries = [{"ID", "Module.function/arity", "Pending stops"} | entries]
 
     {id_max, mfa_max, stops_max} =
       Enum.reduce(entries, {0, 0, 0}, fn {id, mfa, stops}, {id_max, mfa_max, stops_max} ->
-        {max(byte_size(id), id_max),
-         max(byte_size(mfa), mfa_max),
-         max(byte_size(stops), stops_max)}
+        {
+          max(byte_size(id), id_max),
+          max(byte_size(mfa), mfa_max),
+          max(byte_size(stops), stops_max)
+        }
       end)
 
     [header | entries] = entries
 
-    IO.puts ""
+    IO.puts("")
     print_break(header, id_max, mfa_max)
-    IO.puts [String.duplicate("-", id_max + 2), ?\s,
-             String.duplicate("-", mfa_max + 2), ?\s,
-             String.duplicate("-", stops_max + 2)]
+
+    IO.puts([
+      String.duplicate("-", id_max + 2),
+      ?\s,
+      String.duplicate("-", mfa_max + 2),
+      ?\s,
+      String.duplicate("-", stops_max + 2)
+    ])
+
     Enum.each(entries, &print_break(&1, id_max, mfa_max))
-    IO.puts ""
+    IO.puts("")
 
     dont_display_result()
   end
 
   defp print_break({id, mfa, stops}, id_max, mfa_max) do
-    IO.puts [?\s, String.pad_trailing(id, id_max + 2),
-             ?\s, String.pad_trailing(mfa, mfa_max + 2),
-             ?\s, stops]
+    IO.puts([
+      ?\s,
+      String.pad_trailing(id, id_max + 2),
+      ?\s,
+      String.pad_trailing(mfa, mfa_max + 2),
+      ?\s,
+      stops
+    ])
   end
 
   @doc """
   Sets the number of pending stops in the breakpoint
-  with the given id to zero.
+  with the given `id` to zero.
 
-  Returns `:ok` if there is such breakpoint id. `:not_found`
+  Returns `:ok` if there is such breakpoint ID. `:not_found`
   otherwise.
 
   Note the module remains "instrumented" on reset. If you would
   like to effectively remove all breakpoints and instrumentation
   code from a module, use `remove_breaks/1` instead.
   """
+  @doc since: "1.5.0"
   defdelegate reset_break(id), to: IEx.Pry
 
   @doc """
@@ -863,20 +973,23 @@ defmodule IEx.Helpers do
   like to effectively remove all breakpoints and instrumentation
   code from a module, use `remove_breaks/1` instead.
   """
+  @doc since: "1.5.0"
   defdelegate reset_break(module, function, arity), to: IEx.Pry
 
   @doc """
   Removes all breakpoints and instrumentation from `module`.
   """
+  @doc since: "1.5.0"
   defdelegate remove_breaks(module), to: IEx.Pry
 
   @doc """
   Removes all breakpoints and instrumentation from all modules.
   """
+  @doc since: "1.5.0"
   defdelegate remove_breaks(), to: IEx.Pry
 
   @doc """
-  Prints the current location in a pry session.
+  Prints the current location and stacktrace in a pry session.
 
   It expects a `radius` which chooses how many lines before and after
   the current line we should print. By default the `radius` is of two
@@ -886,9 +999,11 @@ defmodule IEx.Helpers do
 
       77:
       78:   def recompile do
-      79:     require IEx; IEx.pry
+      79:     require IEx; IEx.pry()
       80:     if mix_started?() do
       81:       config = Mix.Project.config
+
+      (IEx.Helpers) lib/iex/lib/iex/helpers.ex:78: IEx.Helpers.recompile/0
 
   This command only works inside a pry session started manually
   via `IEx.pry/0` or a breakpoint set via `IEx.break!/4`. Calling
@@ -897,18 +1012,29 @@ defmodule IEx.Helpers do
   Keep in mind the `whereami/1` location may not exist when prying
   precompiled source code, such as Elixir itself.
   """
+  @doc since: "1.5.0"
   def whereami(radius \\ 2) do
     case Process.get(:iex_whereami) do
-      {file, line} ->
-        IO.puts IEx.color(:eval_info, ["Location: ", Path.relative_to_cwd(file), ":", Integer.to_string(line)])
+      {file, line, stacktrace} ->
+        msg = ["Location: ", Path.relative_to_cwd(file), ":", Integer.to_string(line)]
+        IO.puts(IEx.color(:eval_info, msg))
+
         case IEx.Pry.whereami(file, line, radius) do
           {:ok, lines} ->
-            IO.write [?\n, lines, ?\n]
+            IO.write([?\n, lines, ?\n])
+
           :error ->
-            IO.puts IEx.color(:eval_error, "Could not extract source snippet. Location is not available.")
+            msg = "Could not extract source snippet. Location is not available."
+            IO.puts(IEx.color(:eval_error, msg))
         end
+
+        case stacktrace do
+          nil -> :ok
+          stacktrace -> IO.write([Exception.format_stacktrace(stacktrace), ?\n])
+        end
+
       _ ->
-        IO.puts IEx.color(:eval_error, "Pry session is not currently enabled")
+        IO.puts(IEx.color(:eval_error, "Pry session is not currently enabled"))
     end
 
     dont_display_result()
@@ -923,8 +1049,8 @@ defmodule IEx.Helpers do
   expanded:
 
       # This raises a File.Error if ~/.iex.exs doesn't exist.
-      if ("~/.iex.exs" |> Path.expand |> File.exists?) do
-        import_file "~/.iex.exs"
+      if "~/.iex.exs" |> Path.expand() |> File.exists?() do
+        import_file("~/.iex.exs")
       end
 
   This macro addresses this issue by checking if the file exists or not
@@ -942,15 +1068,22 @@ defmodule IEx.Helpers do
     path = Path.expand(path)
 
     if not optional? or File.exists?(path) do
-      path |> File.read! |> Code.string_to_quoted!(file: path)
+      path |> File.read!() |> Code.string_to_quoted!(file: path)
     end
   end
 
   @doc """
-  Evaluates the contents of the file at `path` as if it were directly typed into
+  Injects the contents of the file at `path` as if it was typed into
   the shell.
 
-  `path` has to be a literal string. `path` is automatically expanded via
+  This would be the equivalent of getting all of the file contents and
+  packing it all into a single line in IEx and executing it.
+
+  By default, the contents of a `.iex.exs` file in the same directory
+  as you are starting IEx are automatically imported. See the section
+  for ".iex.exs" in the `IEx` module docs for more information.
+
+  `path` has to be a literal string and is automatically expanded via
   `Path.expand/1`.
 
   ## Examples
@@ -959,12 +1092,13 @@ defmodule IEx.Helpers do
       value = 13
 
       # in the shell
-      iex(1)> import_file "~/file.exs"
+      iex(1)> import_file("~/file.exs")
       13
       iex(2)> value
       13
 
   """
+  @doc since: "1.4.0"
   defmacro import_file(path) when is_binary(path) do
     import_file_if_available(path, false)
   end
@@ -974,8 +1108,8 @@ defmodule IEx.Helpers do
   end
 
   @doc false
+  @deprecated "Use import_file_if_available/1 instead"
   defmacro import_file(path, opts) when is_binary(path) and is_list(opts) do
-    IO.warn "import_file/2 is deprecated, please use import_file_if_available/1 instead"
     import_file_if_available(path, Keyword.get(opts, :optional, false))
   end
 
@@ -988,7 +1122,7 @@ defmodule IEx.Helpers do
   ## Example
 
       # In ~/.iex.exs
-      import_if_available Ecto.Query
+      import_if_available(Ecto.Query)
 
   """
   defmacro import_if_available(quoted_module, opts \\ []) do
@@ -1001,17 +1135,42 @@ defmodule IEx.Helpers do
     end
   end
 
-  defp compile_elixir(exs, :in_memory), do: Kernel.ParallelCompiler.files(exs)
-  defp compile_elixir(exs, path), do: Kernel.ParallelCompiler.files_to_path(exs, path)
+  @doc """
+  Calls `use/2` with the given arguments, but only if the module is available.
+
+  This lets you use the module in `.iex.exs` files (including `~/.iex.exs`) without
+  getting compile errors if you open a console where the module is not available.
+
+  ## Example
+
+      # In ~/.iex.exs
+      use_if_available(Phoenix.HTML)
+
+  """
+  @doc since: "1.7.0"
+  defmacro use_if_available(quoted_module, opts \\ []) do
+    module = Macro.expand(quoted_module, __CALLER__)
+
+    if Code.ensure_loaded?(module) do
+      quote do
+        use unquote(quoted_module), unquote(opts)
+      end
+    end
+  end
+
+  defp compile_elixir(exs, :in_memory), do: Kernel.ParallelCompiler.compile(exs)
+  defp compile_elixir(exs, path), do: Kernel.ParallelCompiler.compile_to_path(exs, path)
 
   # Compiles and loads an Erlang source file, returns {module, binary}
   defp compile_erlang(source) do
-    source = Path.relative_to_cwd(source) |> String.to_charlist
+    source = Path.relative_to_cwd(source) |> String.to_charlist()
+
     case :compile.file(source, [:binary, :report]) do
       {:ok, module, binary} ->
         :code.purge(module)
         {:module, module} = :code.load_binary(module, source, binary)
         {module, binary}
+
       _ ->
         raise CompileError
     end
@@ -1044,13 +1203,81 @@ defmodule IEx.Helpers do
       #PID<0.64.2048>
 
   """
-  def pid(x, y, z) when is_integer(x) and x >= 0 and
-                        is_integer(y) and y >= 0 and
-                        is_integer(z) and z >= 0 do
+  def pid(x, y, z)
+      when is_integer(x) and x >= 0 and is_integer(y) and y >= 0 and is_integer(z) and z >= 0 do
     :erlang.list_to_pid(
-      '<' ++ Integer.to_charlist(x) ++ '.' ++
-             Integer.to_charlist(y) ++ '.' ++
-             Integer.to_charlist(z) ++ '>'
+      '<' ++
+        Integer.to_charlist(x) ++
+        '.' ++ Integer.to_charlist(y) ++ '.' ++ Integer.to_charlist(z) ++ '>'
+    )
+  end
+
+  @doc """
+  Creates a Port from `string`.
+
+  ## Examples
+
+      iex> port("0.4")
+      #Port<0.4>
+
+  """
+  @doc since: "1.8.0"
+  def port(string) when is_binary(string) do
+    :erlang.list_to_port('#Port<#{string}>')
+  end
+
+  @doc """
+  Creates a Port from two non-negative integers.
+
+  ## Examples
+
+      iex> port(0, 8080)
+      #Port<0.8080>
+      iex> port(0, 443)
+      #Port<0.443>
+
+  """
+  @doc since: "1.8.0"
+  def port(major, minor)
+      when is_integer(major) and major >= 0 and is_integer(minor) and minor >= 0 do
+    :erlang.list_to_port(
+      '#Port<' ++ Integer.to_charlist(major) ++ '.' ++ Integer.to_charlist(minor) ++ '>'
+    )
+  end
+
+  @doc """
+  Creates a Reference from `string`.
+
+  ## Examples
+
+      iex> ref("0.1.2.3")
+      #Reference<0.1.2.3>
+
+  """
+  @doc since: "1.6.0"
+  def ref(string) when is_binary(string) do
+    :erlang.list_to_ref('#Ref<#{string}>')
+  end
+
+  @doc """
+  Creates a Reference from its 4 non-negative integers components.
+
+  ## Examples
+
+      iex> ref(0, 1, 2, 3)
+      #Reference<0.1.2.3>
+
+  """
+  @doc since: "1.6.0"
+  def ref(w, x, y, z)
+      when is_integer(w) and w >= 0 and is_integer(x) and x >= 0 and is_integer(y) and y >= 0 and
+             is_integer(z) and z >= 0 do
+    :erlang.list_to_ref(
+      '#Ref<' ++
+        Integer.to_charlist(w) ++
+        '.' ++
+        Integer.to_charlist(x) ++
+        '.' ++ Integer.to_charlist(y) ++ '.' ++ Integer.to_charlist(z) ++ '>'
     )
   end
 
@@ -1068,14 +1295,17 @@ defmodule IEx.Helpers do
   ## Examples
 
       iex> nl(HelloWorld)
-      {:ok, [{:node1@easthost, :loaded, HelloWorld},
-             {:node1@westhost, :loaded, HelloWorld}]}
+      {:ok,
+       [
+         {:node1@easthost, :loaded, HelloWorld},
+         {:node1@westhost, :loaded, HelloWorld}
+       ]}
 
       iex> nl(NoSuchModuleExists)
       {:error, :nofile}
 
   """
-  def nl(nodes \\ Node.list, module) when is_list(nodes) and is_atom(module) do
+  def nl(nodes \\ Node.list(), module) when is_list(nodes) and is_atom(module) do
     case :code.get_object_code(module) do
       {^module, bin, beam_path} ->
         results =
@@ -1087,8 +1317,11 @@ defmodule IEx.Helpers do
               unexpected -> {node, :error, unexpected}
             end
           end
+
         {:ok, results}
-      _otherwise -> {:error, :nofile}
+
+      _otherwise ->
+        {:error, :nofile}
     end
   end
 end

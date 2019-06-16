@@ -1,6 +1,6 @@
 # Typespecs
 
-Elixir comes with a notation for declaring types and specifications. Elixir is a dynamically typed language, and as such, type specifications are never used by the compiler to optimize or modify code. Still, using type specifications is useful because
+Elixir comes with a notation for declaring types and specifications. Elixir is a dynamically typed language, and as such, type specifications are never used by the compiler to optimize or modify code. Still, using type specifications is useful because:
 
   * they provide documentation (for example, tools such as [ExDoc](https://github.com/elixir-lang/ex_doc) show type specifications in the documentation)
   * they're used by tools such as [Dialyzer](http://www.erlang.org/doc/man/dialyzer.html), that can analyze code with typespec to find type inconsistencies and possible bugs
@@ -14,20 +14,41 @@ Type specifications (sometimes referred to as *typespecs*) are defined in differ
   * `@callback`
   * `@macrocallback`
 
-See the "Defining a type" and "Defining a specification" sub-sections below for more information on defining types and typespecs.
+See the "User-defined types" and "Defining a specification" sub-sections below for more information on defining types and typespecs.
+
+## A simple example
+
+    defmodule StringHelpers do
+      @type word() :: String.t()
+
+      @spec long_word?(word()) :: boolean()
+      def long_word?(word) when is_binary(word) do
+        String.length(word) > 8
+      end
+    end
+
+In the example above, this happens:
+
+  * we declare a new type (`word()`) that is equivalent to the string type (`String.t()`);
+
+  * we specify that the `long_word?/1` function takes an argument of type `word()` and
+    returns a boolean (`boolean()`), that is, either `true` or `false`.
 
 ## Types and their syntax
 
-The syntax Elixir provides for type specifications is similar to [the one in Erlang](http://www.erlang.org/doc/reference_manual/typespec.html). Most of the built-in types provided in Erlang (for example, `pid()`) are expressed in the same way: `pid()` (or simply `pid`). Parametrized types (such as `list(integer)`) are supported as well and so are remote types (such as `Enum.t`). Integers and atom literals are allowed as types (e.g., `1`, `:atom`, or `false`). All other types are built out of unions of predefined types. Some shorthands are allowed, such as `[...]`, `<<>>`, and `{...}`.
+The syntax Elixir provides for type specifications is similar to [the one in Erlang](http://www.erlang.org/doc/reference_manual/typespec.html). Most of the built-in types provided in Erlang (for example, `pid()`) are expressed in the same way: `pid()` (or simply `pid`). Parameterized types (such as `list(integer)`) are supported as well and so are remote types (such as `Enum.t`). Integers and atom literals are allowed as types (e.g., `1`, `:atom`, or `false`). All other types are built out of unions of predefined types. Some shorthands are allowed, such as `[...]`, `<<>>`, and `{...}`.
+
+The notation to represent the union of types is the pipe `|`. For example, the typespec `type :: atom() | pid() | tuple()` creates a type `type` that can be either an `atom`, a `pid`, or a `tuple`. This is usually called a [sum type](https://en.wikipedia.org/wiki/Tagged_union) in other languages
 
 ### Basic types
 
-    type :: any()                   # the top type, the set of all terms
+    type ::
+          any()                     # the top type, the set of all terms
           | none()                  # the bottom type, contains no terms
           | atom()
           | map()                   # any map
           | pid()                   # process identifier
-          | port()
+          | port()                  # port identifier
           | reference()
           | struct()                # any struct
           | tuple()                 # tuple of any size
@@ -47,7 +68,7 @@ The syntax Elixir provides for type specifications is similar to [the one in Erl
           | nonempty_maybe_improper_list(type1, type2)  # non-empty proper or improper list
 
           | Literals                # Described in section "Literals"
-          | Builtin                 # Described in section "Built-in types"
+          | BuiltIn                 # Described in section "Built-in types"
           | Remotes                 # Described in section "Remote types"
           | UserDefined             # Described in section "User-defined types"
 
@@ -56,7 +77,7 @@ The syntax Elixir provides for type specifications is similar to [the one in Erl
 The following literals are also supported in typespecs:
 
     type ::                               ## Atoms
-            :atom                         # atoms: :foo, :bar, ...
+          :atom                           # atoms: :foo, :bar, ...
           | true | false | nil            # special atom literals
 
                                           ## Bitstrings
@@ -65,10 +86,10 @@ The following literals are also supported in typespecs:
           | <<_::_*unit>>                 # unit is an integer from 1 to 256
           | <<_::size, _::_*unit>>
 
-                                          ## Functions
-          | (... -> type)                 # any arity, returns type
-          | (() -> type)                  # 0-arity, returns type
+                                          ## (Anonymous) Functions
+          | (-> type)                     # 0-arity, returns type
           | (type1, type2 -> type)        # 2-arity, returns type
+          | (... -> type)                 # any arity, returns type
 
                                           ## Integers
           | 1                             # integer
@@ -104,7 +125,7 @@ Built-in type           | Defined as
 `as_boolean(t)`         | `t`
 `binary()`              | `<<_::_*8>>`
 `bitstring()`           | `<<_::_*1>>`
-`boolean()`             | `false` \| `true`
+`boolean()`             | `true` \| `false`
 `byte()`                | `0..255`
 `char()`                | `0..0x10FFFF`
 `charlist()`            | `[char()]`
@@ -128,9 +149,11 @@ Built-in type           | Defined as
 `struct()`              | `%{:__struct__ => atom(), optional(atom()) => any()}`
 `timeout()`             | `:infinity` \| `non_neg_integer()`
 
+`as_boolean(t)` exists to signal users that the given value will be treated as a boolean, where `nil` and `false` will be evaluated as `false` and everything else is `true`. For example, `Enum.filter/2` has the following specification: `filter(t, (element -> as_boolean(term))) :: list`.
+
 ### Remote types
 
-Any module is also able to define its own types and the modules in Elixir are no exception. For example, the `Range` module defines a `t/0` type that represents a range: this type can be referred to as `t:Range.t/0`. In a similar fashion, a string is `t:String.t/0`, any enumerable can be `t:Enum.t/0`, and so on.
+Any module is also able to define its own types and the modules in Elixir are no exception. For example, the `Range` module defines a [`t/0`](t:Range.t/0) type that represents a range: this type can be referred to as `t:Range.t/0`. In a similar fashion, a string is `t:String.t/0`, any enumerable can be `t:Enum.t/0`, and so on.
 
 ### Maps
 
@@ -158,11 +181,9 @@ Types can be parameterized by defining variables as parameters; these variables 
 
 ## Defining a specification
 
-    @spec function_name(type1, type2) :: return_type
-    @callback function_name(type1, type2) :: return_type
-    @macrocallback macro_name(type1, type2) :: Macro.t
+A specification for a function can be defined as follows:
 
-Callbacks are used to define the callbacks functions of behaviours (see the ["Behaviours"](behaviours.html) page in the documentation for more information on behaviours).
+    @spec function_name(type1, type2) :: return_type
 
 Guards can be used to restrict type variables given as arguments to the function.
 
@@ -172,7 +193,7 @@ If you want to specify more than one variable, you separate them by a comma.
 
     @spec function(arg1, arg2) :: {arg1, arg2} when arg1: atom, arg2: integer
 
-Type variables with no restriction can also be defined.
+Type variables with no restriction can also be defined using `var`.
 
     @spec function(arg) :: [arg] when arg: var
 
@@ -186,8 +207,59 @@ Specifications can be overloaded just like ordinary functions.
     @spec function(integer) :: atom
     @spec function(atom) :: integer
 
-## Notes
+## Behaviours
 
-Elixir discourages the use of type `t:string/0` as it might be confused with binaries which are referred to as "strings" in Elixir (as opposed to character lists). In order to use the type that is called `t:string/0` in Erlang, one has to use the `t:charlist/0` type which is a synonym for `string`. If you use `string`, you'll get a warning from the compiler.
+Behaviours in Elixir (and Erlang) are a way to separate and abstract the generic part of a component (which becomes the *behaviour module*) from the specific part (which becomes the *callback module*).
 
-If you want to refer to the "string" type (the one operated on by functions in the `String` module), use `t:String.t/0` type instead.
+A behaviour module defines a set of functions and macros (referred to as *callbacks*) that callback modules implementing that behaviour must export. This "interface" identifies the specific part of the component. For example, the `GenServer` behaviour and functions abstract away all the message-passing (sending and receiving) and error reporting that a "server" process will likely want to implement from the specific parts such as the actions that this server process has to perform.
+
+To define a behaviour module, it's enough to define one or more callbacks in that module. To define callbacks, the `@callback` and `@macrocallback` module attributes can be used (for function callbacks and macro callbacks respectively).
+
+    defmodule MyBehaviour do
+      @callback my_fun(arg :: any) :: any
+      @macrocallback my_macro(arg :: any) :: Macro.t
+    end
+
+As seen in the example above, defining a callback is a matter of defining a specification for that callback, made of:
+
+  * the callback name (`my_fun` or `my_macro` in the example)
+  * the arguments that the callback must accept (`arg :: any` in the example)
+  * the *expected* type of the callback return value
+
+### Optional callbacks
+
+Optional callbacks are callbacks that callback modules may implement if they want to, but are not required to. Usually, behaviour modules know if they should call those callbacks based on configuration, or they check if the callbacks are defined with `function_exported?/3` or `macro_exported?/3`.
+
+Optional callbacks can be defined through the `@optional_callbacks` module attribute, which has to be a keyword list with function or macro name as key and arity as value. For example:
+
+    defmodule MyBehaviour do
+      @callback vital_fun() :: any
+      @callback non_vital_fun() :: any
+      @macrocallback non_vital_macro(arg :: any) :: Macro.t
+      @optional_callbacks non_vital_fun: 0, non_vital_macro: 1
+    end
+
+One example of optional callback in Elixir's standard library is `c:GenServer.format_status/2`.
+
+### Implementing behaviours
+
+To specify that a module implements a given behaviour, the `@behaviour` attribute must be used:
+
+    defmodule MyBehaviour do
+      @callback my_fun(arg :: any) :: any
+    end
+
+    defmodule MyCallbackModule do
+      @behaviour MyBehaviour
+      def my_fun(arg), do: arg
+    end
+
+If a callback module that implements a given behaviour doesn't export all the functions and macros defined by that behaviour, the user will be notified through warnings during the compilation process (no errors will happen).
+
+Elixir's standard library contains a few frequently used behaviours such as `GenServer`, `Supervisor`, and `Application`.
+
+## The `string()` type
+
+Elixir discourages the use of the `string()` type. The `string()` type refers to Erlang strings, which are known as "charlists" in Elixir. They do not refer to Elixir strings, which are UTF-8 encoded binaries. To avoid confusion, if you attempt to use the type `string()`, Elixir will emit a warning. You should use `charlist()`, `nonempty_charlist()`, `binary()` or `String.t()` accordingly, or any of the several literal representations for these types.
+
+Note that `String.t()` and `binary()` are equivalent to analysis tools. Although, for those reading the documentation, `String.t()` implies it is a UTF-8 encoded binary.

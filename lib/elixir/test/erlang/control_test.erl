@@ -39,7 +39,7 @@ try_test() ->
 
 try_else_test() ->
   {true, _} = eval("try do\n1\nelse 2 -> false\n1 -> true\nrescue\nErlangError -> nil\nend"),
-  {true, _} = eval("try do\n1\nelse {x, y} -> false\nx -> true\nrescue\nErlangError -> nil\nend"),
+  {true, _} = eval("try do\n1\nelse {_x, _y} -> false\n_x -> true\nrescue\nErlangError -> nil\nend"),
   {true, _} = eval("try do\n{1, 2}\nelse {3, 4} -> false\n_ -> true\nrescue\nErlangError -> nil\nend").
 
 % Receive
@@ -53,7 +53,7 @@ receive_test() ->
 
 case_test() ->
   {true, []} = eval("case 1 do\n2 -> false\n1 -> true\nend"),
-  {true, []} = eval("case 1 do\n{x, y} -> false\nx -> true\nend"),
+  {true, []} = eval("case 1 do\n{_x, _y} -> false\n_x -> true\nend"),
   {true, []} = eval("case {1, 2} do; {3, 4} -> false\n_ -> true\nend").
 
 case_with_do_ambiguity_test() ->
@@ -127,11 +127,6 @@ not_test() ->
   {false, _} = eval("not true"),
   {true, _} = eval("not false"),
   ?assertError(badarg, eval("not 1")).
-
-rearrange_not_left_in_right_test() ->
-  %% TODO: Deprecate "not left in right" rearrangement.
-  {true, _} = eval("not false in []"),
-  {false, _} = eval("not true in [true]").
 
 rearrange_left_not_in_right_test() ->
   {true, _} = eval("false not in []"),
@@ -220,11 +215,88 @@ optimized_oror_test() ->
     {clause, 1, [{var, 1, Var}], [], [{var, 1, Var}]}]
   } = to_erl("is_list([]) || :done").
 
+optimized_and_test() ->
+  {'case',_, _,
+   [{clause, _, [{atom, 0, false}], [], [{atom, 0, false}]},
+    {clause, _, [{atom, 0, true}], [], [{atom, 0, done}]}]
+  } = to_erl("is_list([]) and :done").
+
+optimized_or_test() ->
+  {'case', _, _,
+    [{clause, _, [{atom, 0, false}], [], [{atom, 0, done}]},
+     {clause, _, [{atom, 0, true}], [], [{atom, 0, true}]}]
+  } = to_erl("is_list([]) or :done").
+
 no_after_in_try_test() ->
-  {'try', _, [_], [_], _, []} = to_erl("try do :foo.bar() else _ -> :ok end").
+  {'try', _, [_], [], [_], []} = to_erl("try do :foo.bar() catch _ -> :ok end").
 
 optimized_inspect_interpolation_test() ->
     {bin, _,
      [{bin_element, _,
        {call, _, {remote, _,{atom, _, 'Elixir.Kernel'}, {atom, _, inspect}}, [_]},
        default, [binary]}]} = to_erl("\"#{inspect(1)}\"").
+
+optimized_map_put_test() ->
+  {map, _,
+    [{map_field_assoc, _, {atom, _, a}, {integer, _, 1}},
+     {map_field_assoc, _, {atom, _, b}, {integer, _, 2}}]
+  } = to_erl("Map.put(%{a: 1}, :b, 2)").
+
+optimized_map_put_variable_test() ->
+  {block, _,
+    [_,
+     {map, _, {var, _, _},
+       [{map_field_assoc, _, {atom, _, a}, {integer, _, 1}}]
+     }]
+  } = to_erl("x = %{}; Map.put(x, :a, 1)").
+
+optimized_nested_map_put_variable_test() ->
+  {block, _,
+    [_,
+     {map, _, {var, _, _},
+       [{map_field_assoc, _, {atom, _, a}, {integer, _, 1}},
+        {map_field_assoc, _, {atom, _, b}, {integer, _, 2}}]
+     }]
+  } = to_erl("x = %{}; Map.put(Map.put(x, :a, 1), :b, 2)").
+
+optimized_map_merge_test() ->
+  {map, _,
+    [{map_field_assoc, _, {atom, _, a}, {integer, _, 1}},
+     {map_field_assoc, _, {atom, _, b}, {integer, _, 2}},
+     {map_field_assoc, _, {atom, _, c}, {integer, _, 3}}]
+  } = to_erl("Map.merge(%{a: 1, b: 2}, %{c: 3})").
+
+optimized_map_merge_variable_test() ->
+  {block, _,
+    [_,
+     {map, _, {var, _, _},
+       [{map_field_assoc, _, {atom, _, a}, {integer, _, 1}}]
+     }]
+  } = to_erl("x = %{}; Map.merge(x, %{a: 1})").
+
+optimized_map_update_and_merge_test() ->
+  {block, _,
+    [_,
+     {map, _, {var, _, _},
+       [{map_field_exact, _, {atom, _, a}, {integer, _, 2}},
+        {map_field_assoc, _, {atom, _, b}, {integer, _, 3}}]
+     }]
+  } = to_erl("x = %{a: 1}; Map.merge(%{x | a: 2}, %{b: 3})"),
+  {block, _,
+    [_,
+     {call, _, {remote, _, {atom, _, maps}, {atom, _, merge}},
+       [{map, _,
+          [{map_field_assoc, _, {atom, _, a}, {integer, _, 2}}]},
+        {map, _, {var, _, _},
+          [{map_field_exact, _, {atom, _, b}, {integer, _, 3}}]}]
+     }]
+  } = to_erl("x = %{a: 1}; Map.merge(%{a: 2}, %{x | b: 3})").
+
+optimized_nested_map_merge_variable_test() ->
+  {block, _,
+    [_,
+     {map, _, {var, _, _},
+       [{map_field_assoc, _, {atom, _, a}, {integer, _, 1}},
+        {map_field_assoc, _, {atom, _, b}, {integer, _, 2}}]
+     }]
+  } = to_erl("x = %{}; Map.merge(Map.merge(x, %{a: 1}), %{b: 2})").

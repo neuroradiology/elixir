@@ -1,4 +1,4 @@
-Code.require_file "test_helper.exs", __DIR__
+Code.require_file("test_helper.exs", __DIR__)
 
 defmodule PathTest do
   use ExUnit.Case, async: true
@@ -7,12 +7,12 @@ defmodule PathTest do
 
   import PathHelpers
 
-  if :file.native_name_encoding == :utf8 do
+  if :file.native_name_encoding() == :utf8 do
     test "wildcard with UTF-8" do
       File.mkdir_p(tmp_path("héllò"))
       assert Path.wildcard(tmp_path("héllò")) == [tmp_path("héllò")]
     after
-      File.rm_rf tmp_path("héllò")
+      File.rm_rf(tmp_path("héllò"))
     end
   end
 
@@ -29,92 +29,93 @@ defmodule PathTest do
     assert Path.wildcard(tmp_path("wildcard/**/*"), match_dot: true) == [hello, world]
     assert Path.wildcard(tmp_path("wildcard/?hello/world"), match_dot: true) == [world]
   after
-    File.rm_rf tmp_path("wildcard")
+    File.rm_rf(tmp_path("wildcard"))
   end
 
   test "wildcard/2 raises on null byte" do
     assert_raise ArgumentError, ~r/null byte/, fn -> Path.wildcard("foo\0bar") end
   end
 
-  if windows?() do
-    describe "Windows" do
-      test "relative/1" do
-        assert Path.relative("C:/usr/local/bin") == "usr/local/bin"
-        assert Path.relative("C:\\usr\\local\\bin") == "usr\\local\\bin"
-        assert Path.relative("C:usr\\local\\bin") == "usr\\local\\bin"
+  describe "Windows" do
+    @describetag :windows
 
-        assert Path.relative("/usr/local/bin") == "usr/local/bin"
-        assert Path.relative("usr/local/bin") == "usr/local/bin"
-        assert Path.relative("../usr/local/bin") == "../usr/local/bin"
-      end
+    test "relative/1" do
+      assert Path.relative("C:/usr/local/bin") == "usr/local/bin"
+      assert Path.relative("C:\\usr\\local\\bin") == "usr\\local\\bin"
+      assert Path.relative("C:usr\\local\\bin") == "usr\\local\\bin"
 
-      test "relative_to/2" do
-        assert Path.relative_to("D:/usr/local/foo", "D:/usr/") == "local/foo"
-        assert Path.relative_to("D:/usr/local/foo", "d:/usr/") == "local/foo"
-        assert Path.relative_to("d:/usr/local/foo", "D:/usr/") == "local/foo"
-        assert Path.relative_to("D:/usr/local/foo", "d:/") == "usr/local/foo"
-        assert Path.relative_to("D:/usr/local/foo", "D:/") == "usr/local/foo"
-        assert Path.relative_to("D:/usr/local/foo", "d:") == "D:/usr/local/foo"
-        assert Path.relative_to("D:/usr/local/foo", "D:") == "D:/usr/local/foo"
-      end
-
-      test "type/1" do
-        assert Path.type("C:/usr/local/bin") == :absolute
-        assert Path.type('C:\\usr\\local\\bin') == :absolute
-        assert Path.type("C:usr\\local\\bin") == :volumerelative
-
-        assert Path.type("/usr/local/bin") == :volumerelative
-        assert Path.type('usr/local/bin') == :relative
-        assert Path.type("../usr/local/bin") == :relative
-      end
-
-      test "split/1" do
-        assert Path.split("C:\\foo\\bar") == ["c:/", "foo", "bar"]
-        assert Path.split("C:/foo/bar") == ["c:/", "foo", "bar"]
-      end
+      assert Path.relative("/usr/local/bin") == "usr/local/bin"
+      assert Path.relative("usr/local/bin") == "usr/local/bin"
+      assert Path.relative("../usr/local/bin") == "../usr/local/bin"
     end
-  else
-    describe "Unix" do
-      test "relative/1" do
-        assert Path.relative("/usr/local/bin") == "usr/local/bin"
-        assert Path.relative("usr/local/bin") == "usr/local/bin"
-        assert Path.relative("../usr/local/bin") == "../usr/local/bin"
-        assert Path.relative("/") == "."
-        assert Path.relative('/') == "."
-        assert Path.relative(['/usr', ?/, "local/bin"]) == "usr/local/bin"
-      end
 
-      test "type/1" do
-        assert Path.type("/usr/local/bin") == :absolute
-        assert Path.type("usr/local/bin") == :relative
-        assert Path.type("../usr/local/bin") == :relative
+    test "relative_to/2" do
+      assert Path.relative_to("D:/usr/local/foo", "D:/usr/") == "local/foo"
+      assert Path.relative_to("D:/usr/local/foo", "d:/usr/") == "local/foo"
+      assert Path.relative_to("d:/usr/local/foo", "D:/usr/") == "local/foo"
+      assert Path.relative_to("D:/usr/local/foo", "d:/") == "usr/local/foo"
+      assert Path.relative_to("D:/usr/local/foo", "D:/") == "usr/local/foo"
+      assert Path.relative_to("D:/usr/local/foo", "d:") == "D:/usr/local/foo"
+      assert Path.relative_to("D:/usr/local/foo", "D:") == "D:/usr/local/foo"
+    end
 
-        assert Path.type('/usr/local/bin') == :absolute
-        assert Path.type('usr/local/bin') == :relative
-        assert Path.type('../usr/local/bin') == :relative
+    test "type/1" do
+      assert Path.type("C:/usr/local/bin") == :absolute
+      assert Path.type('C:\\usr\\local\\bin') == :absolute
+      assert Path.type("C:usr\\local\\bin") == :volumerelative
 
-        assert Path.type(['/usr/', 'local/bin']) == :absolute
-        assert Path.type(['usr/', 'local/bin']) == :relative
-        assert Path.type(['../usr', '/local/bin']) == :relative
-      end
+      assert Path.type("/usr/local/bin") == :volumerelative
+      assert Path.type('usr/local/bin') == :relative
+      assert Path.type("../usr/local/bin") == :relative
+    end
+
+    test "split/1" do
+      assert Path.split("C:\\foo\\bar") == ["c:/", "foo", "bar"]
+      assert Path.split("C:/foo/bar") == ["c:/", "foo", "bar"]
+    end
+  end
+
+  describe "Unix" do
+    @describetag :unix
+
+    test "relative/1" do
+      assert Path.relative("/usr/local/bin") == "usr/local/bin"
+      assert Path.relative("usr/local/bin") == "usr/local/bin"
+      assert Path.relative("../usr/local/bin") == "../usr/local/bin"
+      assert Path.relative("/") == "."
+      assert Path.relative('/') == "."
+      assert Path.relative(['/usr', ?/, "local/bin"]) == "usr/local/bin"
+    end
+
+    test "type/1" do
+      assert Path.type("/usr/local/bin") == :absolute
+      assert Path.type("usr/local/bin") == :relative
+      assert Path.type("../usr/local/bin") == :relative
+
+      assert Path.type('/usr/local/bin') == :absolute
+      assert Path.type('usr/local/bin') == :relative
+      assert Path.type('../usr/local/bin') == :relative
+
+      assert Path.type(['/usr/', 'local/bin']) == :absolute
+      assert Path.type(['usr/', 'local/bin']) == :relative
+      assert Path.type(['../usr', '/local/bin']) == :relative
     end
   end
 
   test "relative_to_cwd/1" do
-    assert Path.relative_to_cwd(__ENV__.file) ==
-           Path.relative_to(__ENV__.file, System.cwd!)
+    assert Path.relative_to_cwd(__ENV__.file) == Path.relative_to(__ENV__.file, File.cwd!())
 
     assert Path.relative_to_cwd(to_charlist(__ENV__.file)) ==
-           Path.relative_to(to_charlist(__ENV__.file), to_charlist(System.cwd!))
+             Path.relative_to(to_charlist(__ENV__.file), to_charlist(File.cwd!()))
   end
 
   test "absname/1,2" do
-    assert (Path.absname("/") |> strip_drive_letter_if_windows) == "/"
-    assert (Path.absname("/foo") |> strip_drive_letter_if_windows) == "/foo"
-    assert (Path.absname("/./foo") |> strip_drive_letter_if_windows) == "/foo"
-    assert (Path.absname("/foo/bar") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.absname("/foo/bar/") |> strip_drive_letter_if_windows)  == "/foo/bar"
-    assert (Path.absname("/foo/bar/../bar")  |> strip_drive_letter_if_windows) == "/foo/bar/../bar"
+    assert Path.absname("/") |> strip_drive_letter_if_windows == "/"
+    assert Path.absname("/foo") |> strip_drive_letter_if_windows == "/foo"
+    assert Path.absname("/./foo") |> strip_drive_letter_if_windows == "/foo"
+    assert Path.absname("/foo/bar") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.absname("/foo/bar/") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.absname("/foo/bar/../bar") |> strip_drive_letter_if_windows == "/foo/bar/../bar"
 
     assert Path.absname("bar", "/foo") == "/foo/bar"
     assert Path.absname("bar/", "/foo") == "/foo/bar"
@@ -125,41 +126,47 @@ defmodule PathTest do
   end
 
   test "expand/1,2 with user home" do
-    home = System.user_home! |> Path.absname
+    home = System.user_home!() |> Path.absname()
 
     assert home == Path.expand("~")
     assert home == Path.expand('~')
-    assert is_binary Path.expand("~/foo")
-    assert is_binary Path.expand('~/foo')
+    assert is_binary(Path.expand("~/foo"))
+    assert is_binary(Path.expand('~/foo'))
 
     assert Path.expand("~/file") == Path.join(home, "file")
     assert Path.expand("~/file", "whatever") == Path.join(home, "file")
-    assert Path.expand("file", Path.expand("~")) == Path.expand("~/file")
+    assert Path.expand("file", Path.expand("~")) == Path.join(home, "file")
     assert Path.expand("file", "~") == Path.join(home, "file")
-    assert Path.expand("~file") == Path.join(System.cwd!, "file")
+    assert Path.expand("~file") == Path.join(File.cwd!(), "~file")
   end
 
   test "expand/1,2" do
-    assert (Path.expand("/") |> strip_drive_letter_if_windows) == "/"
-    assert (Path.expand("/foo/../..") |> strip_drive_letter_if_windows) == "/"
-    assert (Path.expand("/foo") |> strip_drive_letter_if_windows) == "/foo"
-    assert (Path.expand("/./foo") |> strip_drive_letter_if_windows) == "/foo"
-    assert (Path.expand("/../foo") |> strip_drive_letter_if_windows) == "/foo"
-    assert (Path.expand("/foo/bar") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.expand("/foo/bar/") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.expand("/foo/bar/.") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.expand("/foo/bar/../bar") |> strip_drive_letter_if_windows) == "/foo/bar"
+    assert Path.expand("/") |> strip_drive_letter_if_windows == "/"
+    assert Path.expand("/foo/../..") |> strip_drive_letter_if_windows == "/"
+    assert Path.expand("/foo") |> strip_drive_letter_if_windows == "/foo"
+    assert Path.expand("/./foo") |> strip_drive_letter_if_windows == "/foo"
+    assert Path.expand("/../foo") |> strip_drive_letter_if_windows == "/foo"
+    assert Path.expand("/foo/bar") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.expand("/foo/bar/") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.expand("/foo/bar/.") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.expand("/foo/bar/../bar") |> strip_drive_letter_if_windows == "/foo/bar"
 
-    assert (Path.expand("bar", "/foo") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.expand("bar/", "/foo") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.expand("bar/.", "/foo") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.expand("bar/../bar", "/foo") |> strip_drive_letter_if_windows) == "/foo/bar"
-    assert (Path.expand("../bar/../bar", "/foo/../foo/../foo") |> strip_drive_letter_if_windows) == "/bar"
+    assert Path.expand("bar", "/foo") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.expand("bar/", "/foo") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.expand("bar/.", "/foo") |> strip_drive_letter_if_windows == "/foo/bar"
+    assert Path.expand("bar/../bar", "/foo") |> strip_drive_letter_if_windows == "/foo/bar"
 
-    assert "/bar" ==
-      (Path.expand(['..', ?/, "bar/../bar"], '/foo/../foo/../foo') |> strip_drive_letter_if_windows)
+    drive_letter =
+      Path.expand("../bar/../bar", "/foo/../foo/../foo") |> strip_drive_letter_if_windows
 
-    assert (Path.expand("/..") |> strip_drive_letter_if_windows) == "/"
+    assert drive_letter == "/bar"
+
+    drive_letter =
+      Path.expand(['..', ?/, "bar/../bar"], '/foo/../foo/../foo') |> strip_drive_letter_if_windows
+
+    assert "/bar" == drive_letter
+
+    assert Path.expand("/..") |> strip_drive_letter_if_windows == "/"
 
     assert Path.expand("bar/../bar", "foo") == Path.expand("foo/bar")
   end
@@ -231,8 +238,8 @@ defmodule PathTest do
     assert Path.join("/foo", "bar") == "/foo/bar"
     assert Path.join("~", "foo") == "~/foo"
 
-    assert Path.join("", "bar")  == "bar"
-    assert Path.join("bar", "")  == "bar"
+    assert Path.join("", "bar") == "bar"
+    assert Path.join("bar", "") == "bar"
     assert Path.join("", "/bar") == "bar"
     assert Path.join("/bar", "") == "/bar"
 
@@ -242,6 +249,7 @@ defmodule PathTest do
     assert Path.join("/foo", "./bar") == "/foo/./bar"
 
     assert Path.join([?/, "foo"], "./bar") == "/foo/./bar"
+    assert Path.join(["/foo", "bar"], ["fiz", "buz"]) == "/foobar/fizbuz"
   end
 
   test "split/1" do

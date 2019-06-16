@@ -1,40 +1,41 @@
 defmodule GraphemesTest do
   def run do
-    IO.puts "Running GraphemeBreakTest.txt"
-    count = run_grapheme_break()
-    IO.puts "Got #{count} failures"
+    IO.puts("Running GraphemeBreakTest.txt")
+    {cases, failures} = run_grapheme_break()
+    IO.puts("Ran #{cases} tests, got #{failures} failures")
   end
 
   defp run_grapheme_break do
     Path.join(__DIR__, "GraphemeBreakTest.txt")
     |> File.stream!()
     |> Stream.filter(&match?("÷" <> _, &1))
-    |> Stream.reject(& &1 =~ "D800")
-    |> Enum.reduce(0, fn line, acc ->
+    |> Stream.reject(&(&1 =~ "D800"))
+    |> Enum.reduce({0, 0}, fn line, {cases, failures} ->
       [string | _] = String.split(line, "#", parts: 2)
       {string, graphemes} = parse_grapheme_break(string)
-      if String.graphemes(string) == graphemes do
-        acc
-      else
-        acc = acc + 1
-        IO.puts """
-        ============== Failure ##{acc} ==============
 
-            String.graphemes(#{inspect string})
+      if String.graphemes(string) == graphemes do
+        {cases + 1, failures}
+      else
+        IO.puts("""
+        ============== Failure ##{failures + 1} ==============
+
+            String.graphemes(#{inspect(string)})
 
         must be:
 
-            #{inspect graphemes}
+            #{inspect(graphemes)}
 
         got:
 
-            #{inspect String.graphemes(string)}
+            #{inspect(String.graphemes(string))}
 
         On line:
 
             #{line}
-        """
-        acc
+        """)
+
+        {cases + 1, failures + 1}
       end
     end)
   end
@@ -52,6 +53,7 @@ defmodule GraphemesTest do
       [left, right] ->
         grapheme = breaks_to_grapheme(left)
         parse_grapheme_break(right, acc_string <> grapheme, [grapheme | acc_list])
+
       [left] ->
         grapheme = breaks_to_grapheme(left)
         {acc_string <> grapheme, Enum.reverse([grapheme | acc_list])}
@@ -65,4 +67,4 @@ defmodule GraphemesTest do
   end
 end
 
-GraphemesTest.run
+GraphemesTest.run()

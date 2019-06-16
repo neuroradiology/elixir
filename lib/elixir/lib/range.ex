@@ -2,8 +2,8 @@ defmodule Range do
   @moduledoc """
   Defines a range.
 
-  A range represents a discrete number of values where
-  the first and last values are integers.
+  A range represents a sequence of one or many,
+  ascending or descending, consecutive integers.
 
   Ranges can be either increasing (`first <= last`) or
   decreasing (`first > last`). Ranges are also always
@@ -36,13 +36,16 @@ defmodule Range do
       iex> Enum.member?(range, 8)
       true
 
+  Such function calls are efficient memory-wise no matter the
+  size of the range. The implementation of the `Enumerable`
+  protocol uses logic based solely on the endpoints and does
+  not materialize the whole list of integers.
   """
 
   defstruct first: nil, last: nil
 
-  @type t :: %Range{first: integer, last: integer}
-  @type t(first, last) :: %Range{first: first, last: last}
-
+  @type t :: %__MODULE__{first: integer, last: integer}
+  @type t(first, last) :: %__MODULE__{first: first, last: last}
 
   @doc """
   Creates a new range.
@@ -54,23 +57,39 @@ defmodule Range do
 
   def new(first, last) do
     raise ArgumentError,
-      "ranges (first..last) expect both sides to be integers, " <>
-      "got: #{inspect first}..#{inspect last}"
+          "ranges (first..last) expect both sides to be integers, " <>
+            "got: #{inspect(first)}..#{inspect(last)}"
   end
 
   @doc """
-  Returns `true` if the given `term` is a valid range.
+  Checks if two ranges are disjoint.
 
   ## Examples
 
-      iex> Range.range?(1..3)
+      iex> Range.disjoint?(1..5, 6..9)
       true
-
-      iex> Range.range?(0)
+      iex> Range.disjoint?(5..1, 6..9)
+      true
+      iex> Range.disjoint?(1..5, 5..9)
+      false
+      iex> Range.disjoint?(1..5, 2..7)
       false
 
   """
-  @spec range?(term) :: boolean
+  @doc since: "1.8.0"
+  @spec disjoint?(t, t) :: boolean
+  def disjoint?(first1..last1 = _range1, first2..last2 = _range2) do
+    {first1, last1} = normalize(first1, last1)
+    {first2, last2} = normalize(first2, last2)
+    last2 < first1 or last1 < first2
+  end
+
+  @compile inline: [normalize: 2]
+  defp normalize(first, last) when first > last, do: {last, first}
+  defp normalize(first, last), do: {first, last}
+
+  @doc false
+  @deprecated "Pattern match on first..last instead"
   def range?(term)
   def range?(first..last) when is_integer(first) and is_integer(last), do: true
   def range?(_), do: false
@@ -81,20 +100,20 @@ defimpl Enumerable, for: Range do
     reduce(first, last, acc, fun, _up? = last >= first)
   end
 
-  defp reduce(_x, _y, {:halt, acc}, _fun, _up?) do
+  defp reduce(_first, _last, {:halt, acc}, _fun, _up?) do
     {:halted, acc}
   end
 
-  defp reduce(x, y, {:suspend, acc}, fun, up?) do
-    {:suspended, acc, &reduce(x, y, &1, fun, up?)}
+  defp reduce(first, last, {:suspend, acc}, fun, up?) do
+    {:suspended, acc, &reduce(first, last, &1, fun, up?)}
   end
 
-  defp reduce(x, y, {:cont, acc}, fun, _up? = true) when x <= y do
-    reduce(x + 1, y, fun.(x, acc), fun, _up? = true)
+  defp reduce(first, last, {:cont, acc}, fun, _up? = true) when first <= last do
+    reduce(first + 1, last, fun.(first, acc), fun, _up? = true)
   end
 
-  defp reduce(x, y, {:cont, acc}, fun, _up? = false) when x >= y do
-    reduce(x - 1, y, fun.(x, acc), fun, _up? = false)
+  defp reduce(first, last, {:cont, acc}, fun, _up? = false) when first >= last do
+    reduce(first - 1, last, fun.(first, acc), fun, _up? = false)
   end
 
   defp reduce(_, _, {:cont, acc}, _fun, _up) do
@@ -120,12 +139,26 @@ defimpl Enumerable, for: Range do
       {:ok, first - last + 1}
     end
   end
+
+  def slice(first..last) do
+    if first <= last do
+      {:ok, last - first + 1, &slice_asc(first + &1, &2)}
+    else
+      {:ok, first - last + 1, &slice_desc(first - &1, &2)}
+    end
+  end
+
+  defp slice_asc(current, 1), do: [current]
+  defp slice_asc(current, remaining), do: [current | slice_asc(current + 1, remaining - 1)]
+
+  defp slice_desc(current, 1), do: [current]
+  defp slice_desc(current, remaining), do: [current | slice_desc(current - 1, remaining - 1)]
 end
 
 defimpl Inspect, for: Range do
   import Inspect.Algebra
 
   def inspect(first..last, opts) do
-    concat [to_doc(first, opts), "..", to_doc(last, opts)]
+    concat([to_doc(first, opts), "..", to_doc(last, opts)])
   end
 end

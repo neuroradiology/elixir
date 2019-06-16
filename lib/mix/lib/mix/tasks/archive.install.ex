@@ -34,8 +34,9 @@ defmodule Mix.Tasks.Archive.Install do
 
       mix some_task
 
-  Note that installing via Git/GitHub/Hex fetches the source of the archive
-  and builds it, while using URL/local path fetches a pre-built archive.
+  Note that installing via Git, GitHub, or Hex fetches the source
+  of the archive and builds it, while using a URL or a local path
+  fetches a pre-built archive.
 
   ## Command line options
 
@@ -51,19 +52,33 @@ defmodule Mix.Tasks.Archive.Install do
     * `--app` - specifies a custom app name to be used for building the archive
       from Git, GitHub, or Hex
 
+    * `--organization` - specifies an organization to use if fetching the package
+      from a private Hex repository
+
+    * `--timeout` - sets a request timeout in milliseconds for fetching
+      archives from URLs. Default is 60 seconds
+
   """
 
   @behaviour Mix.Local.Installer
 
-  @switches [force: :boolean, sha512: :string, submodules: :boolean, app: :string]
-  @spec run(OptionParser.argv) :: boolean
+  @switches [
+    force: :boolean,
+    sha512: :string,
+    submodules: :boolean,
+    app: :string,
+    organization: :string,
+    timeout: :integer
+  ]
+
+  @impl true
   def run(argv) do
     Mix.Local.Installer.install(__MODULE__, argv, @switches)
   end
 
-  # Callbacks
-  def check_install_spec({local_or_url, path_or_url} = _install_spec, _opts) when
-      local_or_url in [:local, :url] do
+  @impl true
+  def check_install_spec({local_or_url, path_or_url} = _install_spec, _opts)
+      when local_or_url in [:local, :url] do
     if Path.extname(path_or_url) == ".ez" do
       :ok
     else
@@ -73,12 +88,13 @@ defmodule Mix.Tasks.Archive.Install do
 
   def check_install_spec(_, _), do: :ok
 
+  @impl true
   def find_previous_versions(src) do
     app =
       src
-      |> Mix.Local.archive_name
+      |> Mix.Local.archive_name()
       |> String.split("-")
-      |> List.first
+      |> List.first()
 
     if app do
       archives(app) ++ archives(app <> "-*")
@@ -87,6 +103,7 @@ defmodule Mix.Tasks.Archive.Install do
     end
   end
 
+  @impl true
   def install(basename, contents, previous) do
     ez_path = Path.join(Mix.Local.path_for(:archive), basename)
     dir_dest = resolve_destination(ez_path, contents)
@@ -94,8 +111,8 @@ defmodule Mix.Tasks.Archive.Install do
     remove_previous_versions(previous)
 
     File.mkdir_p!(dir_dest)
-    {:ok, _} = :zip.extract(contents, [cwd: dir_dest])
-    Mix.shell.info [:green, "* creating ", :reset, Path.relative_to_cwd(dir_dest)]
+    {:ok, _} = :zip.extract(contents, cwd: dir_dest)
+    Mix.shell().info([:green, "* creating ", :reset, Path.relative_to_cwd(dir_dest)])
 
     ebin = Mix.Local.archive_ebin(dir_dest)
     Mix.Local.check_elixir_version_in_ebin(ebin)
@@ -103,9 +120,17 @@ defmodule Mix.Tasks.Archive.Install do
     :ok
   end
 
+  @impl true
   def build(_install_spec, _opts) do
+    src = Mix.Local.name_for(:archive, Mix.Project.config())
+    previous = find_previous_versions(src)
+
+    Enum.each(previous, fn path ->
+      Code.delete_path(Mix.Local.archive_ebin(path))
+    end)
+
     Mix.Task.run("archive.build", [])
-    Mix.Local.name_for(:archive, Mix.Project.config)
+    src
   end
 
   ### Private helpers
@@ -114,23 +139,19 @@ defmodule Mix.Tasks.Archive.Install do
     with {:ok, [_comment, zip_first_file | _]} <- :zip.list_dir(contents),
          {:zip_file, zip_first_path, _, _, _, _} = zip_first_file,
          [zip_root_dir | _] = Path.split(zip_first_path) do
-
       Path.join(Path.dirname(ez_path), zip_root_dir)
     else
       _ ->
-        Mix.raise "Installation failed: invalid archive file"
+        Mix.raise("Installation failed: invalid archive file")
     end
   end
 
   defp archives(name) do
-    # TODO: We can remove the .ez extension on Elixir 2.0 since we always unzip since 1.3
     Mix.Local.path_for(:archive)
-    |> Path.join(name <> "{,*.ez}")
-    |> Path.wildcard
+    |> Path.join(name)
+    |> Path.wildcard()
   end
 
-  defp remove_previous_versions([]),
-    do: :ok
-  defp remove_previous_versions(previous),
-    do: Enum.each(previous, &File.rm_rf!/1)
+  defp remove_previous_versions([]), do: :ok
+  defp remove_previous_versions(previous), do: Enum.each(previous, &File.rm_rf!/1)
 end

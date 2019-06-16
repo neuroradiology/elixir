@@ -16,25 +16,28 @@ defmodule Mix.Tasks.Loadconfig do
   multiple times to load different configs.
   """
 
-  @spec run(OptionParser.argv) :: :ok
+  @impl true
   def run(args) do
-    config = Mix.Project.config
+    config = Mix.Project.config()
 
     cond do
       file = Enum.at(args, 0) ->
-        load file
-      File.regular?(config[:config_path]) or (config[:config_path] != "config/config.exs") ->
-        load config[:config_path]
+        load(file)
+
+      File.regular?(config[:config_path]) or config[:config_path] != "config/config.exs" ->
+        load(config[:config_path])
+
       true ->
         :ok
     end
 
-    Mix.Task.reenable "loadconfig"
+    Mix.Task.reenable("loadconfig")
   end
 
   defp load(file) do
-    apps = Mix.Config.persist Mix.Config.read!(file)
-    Mix.ProjectStack.configured_applications(apps)
+    {config, files} = Config.Reader.read_imports!(file)
+    Application.put_all_env(config, persistent: true)
+    Mix.ProjectStack.loaded_config(Keyword.keys(config), files)
     :ok
   end
 end

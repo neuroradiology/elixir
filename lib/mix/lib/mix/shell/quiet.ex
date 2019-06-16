@@ -15,16 +15,9 @@ defmodule Mix.Shell.Quiet do
   defdelegate print_app, to: Mix.Shell.IO
 
   @doc """
-  Executes the given command quietly without outputting anything.
+  Prints nothing to the shell.
   """
-  def cmd(command, opts \\ []) do
-    Mix.Shell.cmd(command, opts, fn data -> data end)
-  end
-
-  @doc """
-  Writes nothing to the shell.
-  """
-  def info(_message), do: nil
+  def info(_message), do: :ok
 
   @doc """
   Prints the error to the shell followed by a newline.
@@ -45,4 +38,11 @@ defmodule Mix.Shell.Quiet do
   "Yes".
   """
   defdelegate yes?(message), to: Mix.Shell.IO
+
+  @doc """
+  Executes the given command quietly without outputting anything.
+  """
+  def cmd(command, opts \\ []) do
+    Mix.Shell.cmd(command, opts, fn data -> data end)
+  end
 end

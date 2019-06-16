@@ -1,9 +1,11 @@
 defmodule ExUnit.Filters do
+  alias ExUnit.FailuresManifest
+
   @moduledoc """
   Conveniences for parsing and evaluating filters.
   """
 
-  @type t :: list({atom, Regex.t | String.Chars.t} | atom)
+  @type t :: list({atom, Regex.t() | String.Chars.t()} | atom)
 
   @doc """
   Parses filters out of a path.
@@ -12,19 +14,41 @@ defmodule ExUnit.Filters do
   on the command line) includes a line number filter, and if so returns the
   appropriate ExUnit configuration options.
   """
-  @spec parse_path(String.t) :: {String.t, any}
+  @spec parse_path(String.t()) :: {String.t(), Keyword.t()}
   def parse_path(file) do
-    {paths, [line]} = file |> String.split(":") |> Enum.split(-1)
-    case Integer.parse(line) do
-      {_, ""} ->
-        {Enum.join(paths, ":"), exclude: [:test], include: [line: line]}
-      _ ->
-        {file, []}
+    case extract_line_numbers(file) do
+      {path, []} -> {path, []}
+      {path, line_numbers} -> {path, exclude: [:test], include: line_numbers}
+    end
+  end
+
+  defp extract_line_numbers(file) do
+    case String.split(file, ":") do
+      [part] ->
+        {part, []}
+
+      parts ->
+        {reversed_line_numbers, reversed_path_parts} =
+          parts
+          |> Enum.reverse()
+          |> Enum.split_while(&match?({_, ""}, Integer.parse(&1)))
+
+        line_numbers =
+          reversed_line_numbers
+          |> Enum.reverse()
+          |> Enum.map(&{:line, &1})
+
+        path =
+          reversed_path_parts
+          |> Enum.reverse()
+          |> Enum.join(":")
+
+        {path, line_numbers}
     end
   end
 
   @doc """
-  Normalizes include and excludes to remove duplicates
+  Normalizes `include` and `exclude` filters to remove duplicates
   and keep precedence.
 
   ## Examples
@@ -35,12 +59,41 @@ defmodule ExUnit.Filters do
       iex> ExUnit.Filters.normalize([:foo, :bar, :bar], [:foo, :baz])
       {[:foo, :bar], [:baz]}
 
+      iex> ExUnit.Filters.normalize([foo: "true"], [:foo])
+      {[foo: "true"], [:foo]}
+
+      iex> ExUnit.Filters.normalize([:foo], [foo: "true"])
+      {[:foo], []}
+
+      iex> ExUnit.Filters.normalize([foo: "true"], [foo: true])
+      {[foo: "true"], []}
+
+      iex> ExUnit.Filters.normalize([foo: true], [foo: "true"])
+      {[foo: true], []}
+
+      iex> ExUnit.Filters.normalize([foo: 1, foo: 1, foo: 2], [])
+      {[foo: 1, foo: 2], []}
+
+      iex> ExUnit.Filters.normalize([], [foo: 1, foo: 1, foo: 2])
+      {[], [foo: 1, foo: 2]}
+
   """
   @spec normalize(t | nil, t | nil) :: {t, t}
   def normalize(include, exclude) do
-    include = include |> List.wrap |> Enum.uniq
-    exclude = exclude |> List.wrap |> Enum.uniq |> Kernel.--(include)
-    {include, exclude}
+    {include_atoms, include_tags} =
+      include |> List.wrap() |> Enum.uniq() |> Enum.split_with(&is_atom/1)
+
+    {exclude_atoms, exclude_tags} =
+      exclude |> List.wrap() |> Enum.uniq() |> Enum.split_with(&is_atom/1)
+
+    exclude_tags_map = Map.new(exclude_tags)
+
+    exclude_included =
+      for include_tag <- include_tags, key = has_tag(include_tag, exclude_tags_map), do: key
+
+    exclude_tags = exclude_tags |> Keyword.drop(include_atoms) |> Keyword.drop(exclude_included)
+
+    {include_atoms ++ include_tags, (exclude_atoms -- include_atoms) ++ exclude_tags}
   end
 
   @doc """
@@ -52,25 +105,52 @@ defmodule ExUnit.Filters do
       [{:foo, "bar"}, :baz, {:line, "9"}, {:bool, "true"}]
 
   """
-  @spec parse([String.t]) :: t
+  @spec parse([String.t()]) :: t
   def parse(filters) do
-    Enum.map filters, fn filter ->
+    Enum.map(filters, fn filter ->
       case String.split(filter, ":", parts: 2) do
         [key, value] -> {String.to_atom(key), value}
         [key] -> String.to_atom(key)
       end
-    end
+    end)
   end
 
   @doc """
-  Evaluates the `include` and `exclude` filters against the given `tags`.
+  Returns a tuple containing useful information about test failures from the
+  manifest. The tuple contains:
 
-  Some filters, like `:line`, may require the whole test collection to
-  find the closest line, that's why it must also be passed as argument.
+    * A set of files that contain tests that failed the last time they ran.
+      The paths are absolute paths.
+    * A set of test IDs that failed the last time they ran
+
+  """
+  @spec failure_info(Path.t()) :: {MapSet.t(Path.t()), MapSet.t(FailuresManifest.test_id())}
+  def failure_info(manifest_file) do
+    manifest = FailuresManifest.read(manifest_file)
+    {FailuresManifest.files_with_failures(manifest), FailuresManifest.failed_test_ids(manifest)}
+  end
+
+  @doc """
+  Evaluates the `include` and `exclude` filters against the given `tags` to
+  determine if tests should be skipped or excluded.
+
+  Some filters, like `:line`, may require the whole test `collection` to
+  find the closest line, that's why it must also be passed as an argument.
 
   Filters can either be a regular expression or any data structure
-  that implements to `String.Chars`, which is invoked before comparing
-  the filter with the tag value.
+  that implements the `String.Chars` protocol, which is invoked before comparing
+  the filter with the `:tag` value.
+
+  ## Precedence
+
+  Tests are first excluded, then included, and then skipped (if any left).
+
+  If a `:skip` tag is found in `tags`, `{:skipped, message}` is returned if the test
+  has been left after the `exclude` and `include` filters. Otherwise `{:exclude, message}`
+  is returned.
+
+  The only exception to this rule is that `:skip` is found in the `include` filter,
+  `:ok` is returned regardless of whether the test was excluded or not.
 
   ## Examples
 
@@ -78,42 +158,62 @@ defmodule ExUnit.Filters do
       :ok
 
       iex> ExUnit.Filters.eval([foo: "bar"], [:foo], %{foo: "baz"}, [])
-      {:error, "due to foo filter"}
+      {:excluded, "due to foo filter"}
 
   """
-  @spec eval(t, t, map, [ExUnit.Test.t]) :: :ok | {:error, binary}
+  @spec eval(t, t, map, [ExUnit.Test.t()]) ::
+          :ok | {:excluded, String.t()} | {:skipped, String.t()}
   def eval(include, exclude, tags, collection) when is_map(tags) do
-    skip? = not Enum.any?(include, &has_tag(&1, %{skip: true}, collection))
+    excluded = Enum.find_value(exclude, &has_tag(&1, tags, collection))
+    excluded? = excluded != nil
+    included? = Enum.any?(include, &has_tag(&1, tags, collection))
 
-    case Map.fetch(tags, :skip) do
-      {:ok, msg} when is_binary(msg) and skip? ->
-        {:error, msg}
-      {:ok, true} when skip? ->
-        {:error, "due to skip tag"}
-      _ ->
-        excluded = Enum.find_value exclude, &has_tag(&1, tags, collection)
-        if !excluded or Enum.any?(include, &has_tag(&1, tags, collection)) do
+    if included? or not excluded? do
+      skip_tag = %{skip: Map.get(tags, :skip, true)}
+      skip_included_explicitly? = Enum.any?(include, &has_tag(&1, skip_tag, collection))
+
+      case Map.fetch(tags, :skip) do
+        {:ok, msg} when is_binary(msg) and not skip_included_explicitly? ->
+          {:skipped, msg}
+
+        {:ok, true} when not skip_included_explicitly? ->
+          {:skipped, "due to skip tag"}
+
+        _ ->
           :ok
-        else
-          {:error, "due to #{excluded} filter"}
-        end
+      end
+    else
+      {:excluded, "due to #{excluded} filter"}
     end
   end
 
-  defp has_tag({:line, line}, %{line: _} = tags, collection) do
+  defp has_tag({:line, line}, %{line: _, describe_line: describe_line} = tags, collection) do
     line = to_integer(line)
-    tags.line <= line and
-      closest_test_before_line(line, collection).tags.line == tags.line
+
+    cond do
+      describe_line == line ->
+        true
+
+      describe_block?(line, collection) ->
+        false
+
+      true ->
+        tags.line <= line and closest_test_before_line(line, collection).tags.line == tags.line
+    end
   end
 
-  defp has_tag({key, %Regex{} = value}, tags, _collection) when is_atom(key) do
+  defp has_tag(pair, tags, _collection) do
+    has_tag(pair, tags)
+  end
+
+  defp has_tag({key, %Regex{} = value}, tags) when is_atom(key) do
     case Map.fetch(tags, key) do
       {:ok, tag} -> to_string(tag) =~ value and key
       _ -> false
     end
   end
 
-  defp has_tag({key, value}, tags, _collection) when is_atom(key) do
+  defp has_tag({key, value}, tags) when is_atom(key) do
     case Map.fetch(tags, key) do
       {:ok, ^value} -> key
       {:ok, tag} -> compare(to_string(tag), to_string(value)) and key
@@ -121,16 +221,21 @@ defmodule ExUnit.Filters do
     end
   end
 
-  defp has_tag(key, tags, _collection) when is_atom(key),
-    do: Map.has_key?(tags, key) and key
+  defp has_tag(key, tags) when is_atom(key), do: Map.has_key?(tags, key) and key
 
   defp to_integer(integer) when is_integer(integer), do: integer
-  defp to_integer(integer) when is_binary(integer),  do: String.to_integer(integer)
+  defp to_integer(integer) when is_binary(integer), do: String.to_integer(integer)
 
   defp compare("Elixir." <> tag1, tag2), do: compare(tag1, tag2)
   defp compare(tag1, "Elixir." <> tag2), do: compare(tag1, tag2)
   defp compare(tag, tag), do: true
   defp compare(_, _), do: false
+
+  defp describe_block?(line, collection) do
+    Enum.any?(collection, fn %ExUnit.Test{tags: %{describe_line: describe_line}} ->
+      line == describe_line
+    end)
+  end
 
   defp closest_test_before_line(line, collection) do
     Enum.min_by(collection, fn %ExUnit.Test{tags: %{line: test_line}} ->

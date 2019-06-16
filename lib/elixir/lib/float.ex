@@ -3,11 +3,46 @@ import Kernel, except: [round: 1]
 defmodule Float do
   @moduledoc """
   Functions for working with floating-point numbers.
+
+  ## Kernel functions
+
+  There are functions related to floating-point numbers on the `Kernel` module
+  too. Here is a list of them:
+
+    * `Kernel.round/1`: rounds a number to the nearest integer.
+    * `Kernel.trunc/1`: returns the integer part of a number.
+
+  ## Known issues
+
+  There are some very well known problems with floating-point numbers
+  and arithmetics due to the fact most decimal fractions cannot be
+  represented by a floating-point binary and most operations are not exact,
+  but operate on approximations. Those issues are not specific
+  to Elixir, they are a property of floating point representation itself.
+
+  For example, the numbers 0.1 and 0.01 are two of them, what means the result
+  of squaring 0.1 does not give 0.01 neither the closest representable. Here is
+  what happens in this case:
+
+    * The closest representable number to 0.1 is 0.1000000014
+    * The closest representable number to 0.01 is 0.0099999997
+    * Doing 0.1 * 0.1 should return 0.01, but because 0.1 is actually 0.1000000014,
+      the result is 0.010000000000000002, and because this is not the closest
+      representable number to 0.01, you'll get the wrong result for this operation
+
+  There are also other known problems like flooring or rounding numbers. See
+  `round/2` and `floor/2` for more details about them.
+
+  To learn more about floating-point arithmetic visit:
+
+    * [0.30000000000000004.com](http://0.30000000000000004.com/)
+    * [What Every Programmer Should Know About Floating-Point Arithmetic](https://floating-point-gui.de/)
+
   """
 
   import Bitwise
 
-  @power_of_2_to_52 4503599627370496
+  @power_of_2_to_52 4_503_599_627_370_496
   @precision_range 0..15
   @type precision_range :: 0..15
 
@@ -53,37 +88,43 @@ defmodule Float do
     parse_unsigned(binary)
   end
 
-  defp parse_unsigned(<<digit, rest::binary>>) when digit in ?0..?9, do:
-    parse_unsigned(rest, false, false, <<digit>>)
+  defp parse_unsigned(<<digit, rest::binary>>) when digit in ?0..?9,
+    do: parse_unsigned(rest, false, false, <<digit>>)
 
-  defp parse_unsigned(binary) when is_binary(binary), do:
-    :error
+  defp parse_unsigned(binary) when is_binary(binary), do: :error
 
-  defp parse_unsigned(<<digit, rest::binary>>, dot?, e?, acc) when digit in ?0..?9, do:
-    parse_unsigned(rest, dot?, e?, <<acc::binary, digit>>)
+  defp parse_unsigned(<<digit, rest::binary>>, dot?, e?, acc) when digit in ?0..?9,
+    do: parse_unsigned(rest, dot?, e?, <<acc::binary, digit>>)
 
-  defp parse_unsigned(<<?., digit, rest::binary>>, false, false, acc) when digit in ?0..?9, do:
-    parse_unsigned(rest, true, false, <<acc::binary, ?., digit>>)
+  defp parse_unsigned(<<?., digit, rest::binary>>, false, false, acc) when digit in ?0..?9,
+    do: parse_unsigned(rest, true, false, <<acc::binary, ?., digit>>)
 
-  defp parse_unsigned(<<exp_marker, digit, rest::binary>>, dot?, false, acc) when exp_marker in 'eE' and  digit in ?0..?9, do:
-    parse_unsigned(rest, true, true, <<add_dot(acc, dot?)::binary, ?e, digit>>)
+  defp parse_unsigned(<<exp_marker, digit, rest::binary>>, dot?, false, acc)
+       when exp_marker in 'eE' and digit in ?0..?9,
+       do: parse_unsigned(rest, true, true, <<add_dot(acc, dot?)::binary, ?e, digit>>)
 
-  defp parse_unsigned(<<exp_marker, sign, digit, rest::binary>>, dot?, false, acc) when exp_marker in 'eE' and sign in '-+' and digit in ?0..?9, do:
-    parse_unsigned(rest, true, true, <<add_dot(acc, dot?)::binary, ?e, sign, digit>>)
+  defp parse_unsigned(<<exp_marker, sign, digit, rest::binary>>, dot?, false, acc)
+       when exp_marker in 'eE' and sign in '-+' and digit in ?0..?9,
+       do: parse_unsigned(rest, true, true, <<add_dot(acc, dot?)::binary, ?e, sign, digit>>)
 
-  defp parse_unsigned(rest, dot?, _e?, acc), do:
-    {:erlang.binary_to_float(add_dot(acc, dot?)), rest}
+  defp parse_unsigned(rest, dot?, _e?, acc),
+    do: {:erlang.binary_to_float(add_dot(acc, dot?)), rest}
 
-  defp add_dot(acc, true),  do: acc
+  defp add_dot(acc, true), do: acc
   defp add_dot(acc, false), do: acc <> ".0"
 
   @doc """
-  Rounds a float to the largest integer less than or equal to `num`.
+  Rounds a float to the largest number less than or equal to `num`.
 
   `floor/2` also accepts a precision to round a floating-point value down
   to an arbitrary number of fractional digits (between 0 and 15).
   The operation is performed on the binary floating point, without a
   conversion to decimal.
+
+  This function always returns a float. `Kernel.trunc/1` may be used instead to
+  truncate the result to an integer afterwards.
+
+  ## Known issues
 
   The behaviour of `floor/2` for floats can be surprising. For example:
 
@@ -94,9 +135,6 @@ defmodule Float do
   Most decimal fractions cannot be represented as a binary floating point
   and therefore the number above is internally represented as 12.51999999,
   which explains the behaviour above.
-
-  This function always returns a float. `Kernel.trunc/1` may be used instead to
-  truncate the result to an integer afterwards.
 
   ## Examples
 
@@ -110,6 +148,10 @@ defmodule Float do
   """
   @spec floor(float, precision_range) :: float
   def floor(number, precision \\ 0)
+
+  def floor(number, 0) when is_float(number) do
+    :math.floor(number)
+  end
 
   def floor(number, precision) when is_float(number) and precision in @precision_range do
     round(number, precision, :floor)
@@ -154,6 +196,10 @@ defmodule Float do
   @spec ceil(float, precision_range) :: float
   def ceil(number, precision \\ 0)
 
+  def ceil(number, 0) when is_float(number) do
+    :math.ceil(number)
+  end
+
   def ceil(number, precision) when is_float(number) and precision in @precision_range do
     round(number, precision, :ceil)
   end
@@ -172,6 +218,8 @@ defmodule Float do
   This function only accepts floats and always returns a float. Use
   `Kernel.round/1` if you want a function that accepts both floats
   and integers and always returns an integer.
+
+  ## Known issues
 
   The behaviour of `round/2` for floats can be surprising. For example:
 
@@ -208,32 +256,36 @@ defmodule Float do
   # and could be implemented in the future.
   def round(float, precision \\ 0)
 
+  def round(float, 0) when is_float(float) do
+    float |> :erlang.round() |> :erlang.float()
+  end
+
   def round(float, precision) when is_float(float) and precision in @precision_range do
     round(float, precision, :half_up)
   end
 
-  def round(number, precision) when is_float(number) do
+  def round(float, precision) when is_float(float) do
     raise ArgumentError, invalid_precision_message(precision)
   end
 
+  defp round(0.0, _precision, _rounding), do: 0.0
+
   defp round(float, precision, rounding) do
     <<sign::1, exp::11, significant::52-bitstring>> = <<float::float>>
-    {num, count, _} = decompose(significant)
+    {num, count, _} = decompose(significant, 1)
     count = count - exp + 1023
 
     cond do
-      count <= 0 or  # There is no decimal precision
-      (0 == exp and <<0::52>> == significant) -> #zero or minus zero
-        float
-
-      count >= 104 -> # Precision beyond 15 digits
+      # Precision beyond 15 digits
+      count >= 104 ->
         case rounding do
           :ceil when sign === 0 -> 1 / power_of_10(precision)
           :floor when sign === 1 -> -1 / power_of_10(precision)
           _ -> 0.0
         end
 
-      count <= precision -> # We are asking more precision than we have
+      # We are asking more precision than we have
+      count <= precision ->
         float
 
       true ->
@@ -253,16 +305,18 @@ defmodule Float do
         num = rounding(rounding, sign, num, div)
 
         # Convert back to float without loss
-        # http://www.exploringbinary.com/correct-decimal-to-floating-point-using-big-integers/
+        # https://www.exploringbinary.com/correct-decimal-to-floating-point-using-big-integers/
         den = power_of_10(precision)
         boundary = den <<< 52
 
         cond do
           num == 0 ->
             0.0
+
           num >= boundary ->
             {den, exp} = scale_down(num, boundary, 52)
             decimal_to_float(sign, num, den, exp)
+
           true ->
             {num, exp} = scale_up(num, boundary, 52)
             decimal_to_float(sign, num, den, exp)
@@ -275,6 +329,7 @@ defmodule Float do
 
   defp scale_down(num, den, exp) do
     new_den = den <<< 1
+
     if num < new_den do
       {den >>> 52, exp}
     else
@@ -295,29 +350,31 @@ defmodule Float do
       end
 
     tmp = tmp - @power_of_2_to_52
-    <<tmp::float>> = <<sign::1, (exp + 1023)::11, tmp::52>>
+    <<tmp::float>> = <<sign::1, exp + 1023::11, tmp::52>>
     tmp
   end
 
   defp rounding(:floor, 1, _num, div), do: div + 1
   defp rounding(:ceil, 0, _num, div), do: div + 1
+
   defp rounding(:half_up, _sign, num, div) do
     case rem(num, 10) do
       rem when rem < 5 -> div
       rem when rem >= 5 -> div + 1
     end
   end
+
   defp rounding(_, _, _, div), do: div
 
-  Enum.reduce 0..104, 1, fn x, acc ->
+  Enum.reduce(0..104, 1, fn x, acc ->
     defp power_of_10(unquote(x)), do: unquote(acc)
     acc * 10
-  end
+  end)
 
-  Enum.reduce 0..104, 1, fn x, acc ->
+  Enum.reduce(0..104, 1, fn x, acc ->
     defp power_of_5(unquote(x)), do: unquote(acc)
     acc * 5
-  end
+  end)
 
   @doc """
   Returns a pair of integers whose ratio is exactly equal
@@ -325,6 +382,8 @@ defmodule Float do
 
   ## Examples
 
+      iex> Float.ratio(0.0)
+      {0, 1}
       iex> Float.ratio(3.14)
       {7070651414971679, 2251799813685248}
       iex> Float.ratio(-3.14)
@@ -339,40 +398,55 @@ defmodule Float do
       {-16, 1}
 
   """
+  @doc since: "1.4.0"
+  @spec ratio(float) :: {integer, pos_integer}
+  def ratio(0.0), do: {0, 1}
+
   def ratio(float) when is_float(float) do
-    <<sign::1, exp::11, significant::52-bitstring>> = <<float::float>>
-    {num, _, den} = decompose(significant)
-    num = sign(sign, num)
-    case exp - 1023 do
-      exp when exp > 0 ->
-        {den, exp} = shift_right(den, exp)
-        {shift_left(num, exp), den}
-      exp when exp < 0 ->
-        {num, shift_left(den, -exp)}
-      0 ->
-        {num, den}
+    case <<float::float>> do
+      <<sign::1, 0::11, significant::52-bitstring>> ->
+        {num, _, den} = decompose(significant, 0)
+        {sign(sign, num), shift_left(den, 1022)}
+
+      <<sign::1, exp::11, significant::52-bitstring>> ->
+        {num, _, den} = decompose(significant, 1)
+        num = sign(sign, num)
+
+        case exp - 1023 do
+          exp when exp > 0 ->
+            {den, exp} = shift_right(den, exp)
+            {shift_left(num, exp), den}
+
+          exp when exp < 0 ->
+            {num, shift_left(den, -exp)}
+
+          0 ->
+            {num, den}
+        end
     end
   end
 
-  defp decompose(significant) do
-    decompose(significant, 1, 0, 2, 1, 1)
+  defp decompose(significant, initial) do
+    decompose(significant, 1, 0, 2, 1, initial)
   end
 
   defp decompose(<<1::1, bits::bitstring>>, count, last_count, power, _last_power, acc) do
     decompose(bits, count + 1, count, power <<< 1, power, shift_left(acc, count - last_count) + 1)
   end
+
   defp decompose(<<0::1, bits::bitstring>>, count, last_count, power, last_power, acc) do
     decompose(bits, count + 1, last_count, power <<< 1, last_power, acc)
   end
+
   defp decompose(<<>>, _count, last_count, _power, last_power, acc) do
     {acc, last_count, last_power}
   end
 
+  @compile {:inline, sign: 2, shift_left: 2}
   defp sign(0, num), do: num
   defp sign(1, num), do: -num
 
-  defp shift_left(num, 0), do: num
-  defp shift_left(num, times), do: shift_left(num <<< 1, times - 1)
+  defp shift_left(num, times), do: num <<< times
 
   defp shift_right(num, 0), do: {num, 0}
   defp shift_right(1, times), do: {1, times}
@@ -413,36 +487,33 @@ defmodule Float do
       "7.0"
 
   """
-  @spec to_string(float) :: String.t
+  @spec to_string(float) :: String.t()
   def to_string(float) when is_float(float) do
     IO.iodata_to_binary(:io_lib_format.fwrite_g(float))
   end
 
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
   @doc false
+  @deprecated "Use Float.to_charlist/1 instead"
   def to_char_list(float), do: Float.to_charlist(float)
 
   @doc false
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
+  @deprecated "Use :erlang.float_to_list/2 instead"
   def to_char_list(float, options) do
     :erlang.float_to_list(float, expand_compact(options))
   end
 
   @doc false
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
+  @deprecated "Use :erlang.float_to_binary/2 instead"
   def to_string(float, options) do
     :erlang.float_to_binary(float, expand_compact(options))
   end
 
   defp invalid_precision_message(precision) do
-    "precision #{precision} is out of valid range of #{inspect @precision_range}"
+    "precision #{precision} is out of valid range of #{inspect(@precision_range)}"
   end
 
   defp expand_compact([{:compact, false} | t]), do: expand_compact(t)
-  defp expand_compact([{:compact, true} | t]),  do: [:compact | expand_compact(t)]
-  defp expand_compact([h | t]),                 do: [h | expand_compact(t)]
-  defp expand_compact([]),                      do: []
+  defp expand_compact([{:compact, true} | t]), do: [:compact | expand_compact(t)]
+  defp expand_compact([h | t]), do: [h | expand_compact(t)]
+  defp expand_compact([]), do: []
 end

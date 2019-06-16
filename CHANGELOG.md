@@ -1,37 +1,27 @@
-# Changelog for Elixir v1.6
+# Changelog for Elixir v1.10
 
-## v1.6.0-dev
+## v1.10.0-dev
 
 ### 1. Enhancements
 
-#### EEx
-
-  * [EEx] Allow markers "/" and "|" to be used in a custom EEx engine
-
-#### Elixir
-
-  * [Inspect] Add `:strict` and `:flex` modes to `Inspect.Algebra`
-  * [Stream] Add `Stream.intersperse/2`
-  * [String] Update to Unicode 10
-
-#### Mix
-
-  * [mix compile] Create behavior for Mix compiler tasks
-
 ### 2. Bug fixes
 
-#### Elixir
+### 3. Soft-deprecations (no warnings emitted)
 
-  * [Kernel] Validate variable struct name is atom when used in pattern matching
-
-### 3. Soft deprecations (no warnings emitted)
-
-### 4. Deprecations
+### 4. Hard-deprecations
 
 #### Elixir
 
-  * [Enum] `Enum.partition/2` is deprecated in favor of `Enum.split_with/2`
+  * [Code] `Code.load_file/2` has been deprecated in favor of `Code.require_file/2` or `Code.compile_file/2`
+  * [Code] `Code.loaded_files/0` and `Code.unload_file/1`  have been deprecated in favor of `Code.required_files/0` and `Code.unrequire_file/1` respectively
+  * [String] `String.normalize/2` has been deprecated in favor of `:unicode.characters_to_nfc_binary/1` or `:unicode.characters_to_nfd_binary/1` which ship as part of Erlang/OTP 20+
+  * [Supervisor] The `Supervisor.Spec` module and its functions have been deprecated in favor of the new Supervisor child specification
+  * [Supervisor] The `:simple_one_for_one` strategy in `Supervisor` has been deprecated in favor of `DynamicSupervisor`
 
-## v1.5
+#### Logger
 
-The CHANGELOG for v1.5 releases can be found [in the v1.5 branch](https://github.com/elixir-lang/elixir/blob/v1.5/CHANGELOG.md).
+  * [Logger] `:compile_time_purge_level` application environment configuration has been deprecated in favor of the more general `:compile_time_purge_matching` config
+
+## v1.9
+
+The CHANGELOG for v1.9 releases can be found [in the v1.9 branch](https://github.com/elixir-lang/elixir/blob/v1.9/CHANGELOG.md).

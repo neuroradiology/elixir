@@ -1,17 +1,17 @@
-defmodule ExUnit.Mixfile do
+defmodule ExUnit.MixProject do
   use Mix.Project
 
   def project do
     [
       app: :ex_unit,
-      version: System.version,
+      version: System.version(),
       build_per_environment: false
     ]
   end
 
   def application do
     [
-      registered: [ExUnit.Server],
+      registered: [ExUnit.CaptureServer, ExUnit.OnExitHandler, ExUnit.Server, ExUnit.Supervisor],
       mod: {ExUnit, []},
       env: [
         # Calculated on demand
@@ -21,16 +21,18 @@ defmodule ExUnit.Mixfile do
         assert_receive_timeout: 100,
         autorun: true,
         capture_log: false,
-        case_load_timeout: 60_000,
+        module_load_timeout: 60000,
         colors: [],
         exclude: [],
         formatters: [ExUnit.CLIFormatter],
         include: [],
+        max_failures: :infinity,
         refute_receive_timeout: 100,
         slowest: 0,
         stacktrace_depth: 20,
-        timeout: 60_000,
-        trace: false
+        timeout: 60000,
+        trace: false,
+        after_suite: []
       ]
     ]
   end

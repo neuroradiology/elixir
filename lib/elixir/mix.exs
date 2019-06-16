@@ -1,10 +1,10 @@
-defmodule Elixir.Mixfile do
+defmodule Elixir.MixProject do
   use Mix.Project
 
   def project do
     [
       app: :elixir,
-      version: System.version,
+      version: System.version(),
       build_per_environment: false
     ]
   end

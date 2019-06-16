@@ -17,11 +17,15 @@ defmodule Calendar do
   """
 
   @type year :: integer
-  @type month :: integer
-  @type day :: integer
-  @type hour :: integer
-  @type minute :: integer
-  @type second :: integer
+  @type month :: pos_integer
+  @type day :: pos_integer
+  @type week :: pos_integer
+  @type day_of_week :: non_neg_integer
+  @type era :: non_neg_integer
+
+  @type hour :: non_neg_integer
+  @type minute :: non_neg_integer
+  @type second :: non_neg_integer
 
   @typedoc """
   The internal time format is used when converting between calendars.
@@ -35,14 +39,9 @@ defmodule Calendar do
   @typedoc """
   The internal date format that is used when converting between calendars.
 
-  This is the amount of days including the fractional part that has passed of
-  the last day since 0000-01-01+00:00T00:00.00000 in ISO 8601 notation (also
-  known as midnight 1 January BC 1 of the Proleptic Gregorian Calendar).
-
-  The `parts_per_day` represent how many subparts the current day is subdivided in
-  (for different calendars, picking a different `parts_per_day` might make sense).
-  The `parts_in_day` represents how many of these `parts_per_day` have passed in the
-  last day.
+  This is the number of days including the fractional part that has passed of
+  the last day since 0000-01-01+00:00T00:00.000000 in ISO 8601 notation (also
+  known as midnight 1 January BC 1 of the proleptic Gregorian calendar).
   """
   @type iso_days :: {days :: integer, day_fraction}
 
@@ -59,10 +58,10 @@ defmodule Calendar do
   @type calendar :: module
 
   @typedoc "The time zone ID according to the IANA tz database (e.g. Europe/Zurich)"
-  @type time_zone :: String.t
+  @type time_zone :: String.t()
 
   @typedoc "The time zone abbreviation (e.g. CET or CEST or BST etc.)"
-  @type zone_abbr :: String.t
+  @type zone_abbr :: String.t()
 
   @typedoc "The time zone UTC offset in seconds"
   @type utc_offset :: integer
@@ -74,16 +73,65 @@ defmodule Calendar do
   @type date :: %{optional(any) => any, calendar: calendar, year: year, month: month, day: day}
 
   @typedoc "Any map/struct that contains the time fields"
-  @type time :: %{optional(any) => any, hour: hour, minute: minute, second: second, microsecond: microsecond}
+  @type time :: %{
+          optional(any) => any,
+          hour: hour,
+          minute: minute,
+          second: second,
+          microsecond: microsecond
+        }
 
   @typedoc "Any map/struct that contains the naive_datetime fields"
-  @type naive_datetime :: %{optional(any) => any, calendar: calendar, year: year, month: month, day: day,
-                            hour: hour, minute: minute, second: second, microsecond: microsecond}
+  @type naive_datetime :: %{
+          optional(any) => any,
+          calendar: calendar,
+          year: year,
+          month: month,
+          day: day,
+          hour: hour,
+          minute: minute,
+          second: second,
+          microsecond: microsecond
+        }
 
   @typedoc "Any map/struct that contains the datetime fields"
-  @type datetime :: %{optional(any) => any, calendar: calendar, year: year, month: month, day: day,
-                      hour: hour, minute: minute, second: second, microsecond: microsecond,
-                      time_zone: time_zone, zone_abbr: zone_abbr, utc_offset: utc_offset, std_offset: std_offset}
+  @type datetime :: %{
+          optional(any) => any,
+          calendar: calendar,
+          year: year,
+          month: month,
+          day: day,
+          hour: hour,
+          minute: minute,
+          second: second,
+          microsecond: microsecond,
+          time_zone: time_zone,
+          zone_abbr: zone_abbr,
+          utc_offset: utc_offset,
+          std_offset: std_offset
+        }
+
+  @typedoc """
+  Specifies the time zone database for calendar operations.
+
+  Many functions in the `DateTime` module require a time zone database.
+  By default, it uses the default time zone database returned by
+  `Calendar.get_time_zone_database/0`, which defaults to
+  `Calendar.UTCOnlyTimeZoneDatabase` which only handles "Etc/UTC"
+  datetimes and returns `{:error, :utc_only_time_zone_database}`
+  for any other time zone.
+
+  Other time zone databases (including ones provided by packages)
+  can be configure as default either via configuration:
+
+      config :elixir, :time_zone_database, CustomTimeZoneDatabase
+
+  or by calling `Calendar.put_time_zone_database/1`.
+
+  See `Calendar.TimeZoneDatabase` for more information on custom
+  time zone databases.
+  """
+  @type time_zone_database :: module()
 
   @doc """
   Returns how many days there are in the given year-month.
@@ -91,7 +139,12 @@ defmodule Calendar do
   @callback days_in_month(year, month) :: day
 
   @doc """
-  Returns true if the given year is a leap year.
+  Returns how many months there are in the given year.
+  """
+  @callback months_in_year(year) :: month
+
+  @doc """
+  Returns `true` if the given year is a leap year.
 
   A leap year is a year of a longer length than normal. The exact meaning
   is up to the calendar. A calendar must return `false` if it does not support
@@ -102,46 +155,80 @@ defmodule Calendar do
   @doc """
   Calculates the day of the week from the given `year`, `month`, and `day`.
   """
-  @callback day_of_week(year, month, day) :: non_neg_integer()
+  @callback day_of_week(year, month, day) :: day_of_week()
+
+  @doc """
+  Calculates the day of the year from the given `year`, `month`, and `day`.
+  """
+  @callback day_of_year(year, month, day) :: non_neg_integer()
+
+  @doc """
+  Calculates the quarter of the year from the given `year`, `month`, and `day`.
+  """
+  @callback quarter_of_year(year, month, day) :: non_neg_integer()
+
+  @doc """
+  Calculates the year and era from the given `year`.
+  """
+  @callback year_of_era(year) :: {year, era}
+
+  @doc """
+  Calculates the day and era from the given `year`, `month`, and `day`.
+  """
+  @callback day_of_era(year, month, day) :: {non_neg_integer(), era}
 
   @doc """
   Converts the date into a string according to the calendar.
   """
-  @callback date_to_string(year, month, day) :: String.t
+  @callback date_to_string(year, month, day) :: String.t()
 
   @doc """
   Converts the datetime (without time zone) into a string according to the calendar.
   """
-  @callback naive_datetime_to_string(year, month, day, hour, minute, second, microsecond) :: String.t
+  @callback naive_datetime_to_string(year, month, day, hour, minute, second, microsecond) ::
+              String.t()
 
   @doc """
   Converts the datetime (with time zone) into a string according to the calendar.
   """
-  @callback datetime_to_string(year, month, day, hour, minute, second, microsecond,
-                               time_zone, zone_abbr, utc_offset, std_offset) :: String.t
+  @callback datetime_to_string(
+              year,
+              month,
+              day,
+              hour,
+              minute,
+              second,
+              microsecond,
+              time_zone,
+              zone_abbr,
+              utc_offset,
+              std_offset
+            ) :: String.t()
 
   @doc """
   Converts the time into a string according to the calendar.
   """
-  @callback time_to_string(hour, minute, second, microsecond) :: String.t
+  @callback time_to_string(hour, minute, second, microsecond) :: String.t()
 
   @doc """
-  Converts the given datetime (with time zone) into the `t:iso_days` format.
+  Converts the given datetime (without time zone) into the `t:iso_days/0` format.
   """
-  @callback naive_datetime_to_iso_days(year, month, day, hour, minute, second, microsecond) :: iso_days
+  @callback naive_datetime_to_iso_days(year, month, day, hour, minute, second, microsecond) ::
+              iso_days
 
   @doc """
-  Converts `t:iso_days` to the Calendar's datetime format.
+  Converts `t:iso_days/0` to the Calendar's datetime format.
   """
-  @callback naive_datetime_from_iso_days(iso_days) :: {year, month, day, hour, minute, second, microsecond}
+  @callback naive_datetime_from_iso_days(iso_days) ::
+              {year, month, day, hour, minute, second, microsecond}
 
   @doc """
-  Converts the given time to the `t:day_fraction` format.
+  Converts the given time to the `t:day_fraction/0` format.
   """
   @callback time_to_day_fraction(hour, minute, second, microsecond) :: day_fraction
 
   @doc """
-  Converts `t:day_fraction` to the Calendar's time format.
+  Converts `t:day_fraction/0` to the Calendar's time format.
   """
   @callback time_from_day_fraction(day_fraction) :: {hour, minute, second, microsecond}
 
@@ -178,6 +265,50 @@ defmodule Calendar do
   """
   @callback valid_time?(hour, minute, second, microsecond) :: boolean
 
+  @doc """
+  Implements inspect for a date.
+  """
+  @callback inspect_date(year, month, day, Inspect.Opts.t()) :: Inspect.Algebra.t()
+
+  @doc """
+  Implements inspect for a time.
+  """
+  @callback inspect_time(hour, minute, second, microsecond, Inspect.Opts.t()) ::
+              Inspect.Algebra.t()
+
+  @doc """
+  Implements inspect for a naive datetime.
+  """
+  @callback inspect_naive_datetime(
+              year,
+              month,
+              day,
+              hour,
+              minute,
+              second,
+              microsecond,
+              Inspect.Opts.t()
+            ) ::
+              Inspect.Algebra.t()
+
+  @doc """
+  Implements inspect for a datetime.
+  """
+  @callback inspect_datetime(
+              year,
+              month,
+              day,
+              hour,
+              minute,
+              second,
+              microsecond,
+              time_zone,
+              zone_abbr,
+              utc_offset,
+              std_offset,
+              Inspect.Opts.t()
+            ) :: Inspect.Algebra.t()
+
   # General Helpers
 
   @doc """
@@ -188,9 +319,46 @@ defmodule Calendar do
   between them. If they are compatible, this means that we can also convert
   dates as well as naive datetimes between them.
   """
-  @spec compatible_calendars?(Calendar.calendar, Calendar.calendar) :: boolean
+  @doc since: "1.5.0"
+  @spec compatible_calendars?(Calendar.calendar(), Calendar.calendar()) :: boolean
   def compatible_calendars?(calendar, calendar), do: true
+
   def compatible_calendars?(calendar1, calendar2) do
-    calendar1.day_rollover_relative_to_midnight_utc() == calendar2.day_rollover_relative_to_midnight_utc()
+    calendar1.day_rollover_relative_to_midnight_utc() ==
+      calendar2.day_rollover_relative_to_midnight_utc()
+  end
+
+  @doc """
+  Returns a microsecond tuple truncated to a given precision (`:microsecond`,
+  `:millisecond` or `:second`).
+  """
+  @doc since: "1.6.0"
+  @spec truncate(Calendar.microsecond(), :microsecond | :millisecond | :second) ::
+          Calendar.microsecond()
+  def truncate(microsecond_tuple, :microsecond), do: microsecond_tuple
+
+  def truncate({microsecond, precision}, :millisecond) do
+    output_precision = min(precision, 3)
+    {div(microsecond, 1000) * 1000, output_precision}
+  end
+
+  def truncate(_, :second), do: {0, 0}
+
+  @doc """
+  Sets the current time zone database.
+  """
+  @doc since: "1.8.0"
+  @spec put_time_zone_database(time_zone_database()) :: :ok
+  def put_time_zone_database(database) do
+    Application.put_env(:elixir, :time_zone_database, database)
+  end
+
+  @doc """
+  Gets the current time zone database.
+  """
+  @doc since: "1.8.0"
+  @spec get_time_zone_database() :: time_zone_database()
+  def get_time_zone_database() do
+    Application.get_env(:elixir, :time_zone_database, Calendar.UTCOnlyTimeZoneDatabase)
   end
 end

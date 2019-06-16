@@ -17,8 +17,7 @@ defprotocol List.Chars do
   def to_charlist(term)
 
   @doc false
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
+  @deprecated "Use List.Chars.to_charlist/1 instead"
   Kernel.def to_char_list(term) do
     __MODULE__.to_charlist(term)
   end
@@ -38,9 +37,9 @@ defimpl List.Chars, for: BitString do
 
   def to_charlist(term) do
     raise Protocol.UndefinedError,
-             protocol: @protocol,
-                value: term,
-          description: "cannot convert a bitstring to a charlist"
+      protocol: @protocol,
+      value: term,
+      description: "cannot convert a bitstring to a charlist"
   end
 end
 

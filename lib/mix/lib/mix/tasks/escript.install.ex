@@ -51,27 +51,43 @@ defmodule Mix.Tasks.Escript.Install do
     * `--app` - specifies a custom app name to be used for building the escript
       from Git, GitHub, or Hex
 
+    * `--organization` - specifies an organization to use if fetching the package
+      from a private Hex repository
+
+    * `--timeout` - sets a request timeout in milliseconds for fetching
+      archives from URLs. Default is 60 seconds
+
   """
 
   @behaviour Mix.Local.Installer
 
-  @escript_file_mode 0o555 # only read and execute permissions
+  # only read and execute permissions
+  @escript_file_mode 0o555
 
-  @switches [force: :boolean, sha512: :string, submodules: :boolean, app: :string]
-  @spec run(OptionParser.argv) :: boolean
+  @switches [
+    force: :boolean,
+    sha512: :string,
+    submodules: :boolean,
+    app: :string,
+    organization: :string,
+    timeout: :integer
+  ]
+
+  @impl true
   def run(argv) do
     Mix.Local.Installer.install(__MODULE__, argv, @switches)
   end
 
-  # Callbacks
-
+  @impl true
   def check_install_spec(_, _), do: :ok
 
+  @impl true
   def find_previous_versions(basename) do
     dst = destination(basename)
     if File.exists?(dst), do: [dst], else: []
   end
 
+  @impl true
   def install(basename, binary, _previous) do
     dst = destination(basename)
 
@@ -85,19 +101,20 @@ defmodule Mix.Tasks.Escript.Install do
       File.mkdir_p!(Path.dirname(dst))
       File.write!(dst, binary)
       File.chmod!(dst, @escript_file_mode)
-      write_bat!(dst <> ".bat", :os.type)
+      write_bat!(dst <> ".bat", :os.type())
 
-      Mix.shell.info [:green, "* creating ", :reset, Path.relative_to_cwd(dst)]
+      Mix.shell().info([:green, "* creating ", :reset, Path.relative_to_cwd(dst)])
       check_discoverability(dst, executable, previous_executable)
       :ok
     else
-      Mix.raise "The given path does not point to an escript, installation aborted"
+      Mix.raise("The given path does not point to an escript, installation aborted")
     end
   end
 
+  @impl true
   def build(_spec, _opts) do
     Mix.Task.run("escript.build", [])
-    Mix.Local.name_for(:escript, Mix.Project.config)
+    Mix.Local.name_for(:escript, Mix.Project.config())
   end
 
   # Helpers
@@ -111,8 +128,10 @@ defmodule Mix.Tasks.Escript.Install do
     @echo off
     @escript "%~dpn0" %*
     """)
+
     File.chmod!(path, @escript_file_mode)
   end
+
   defp write_bat!(_path, _type) do
     :ok
   end
@@ -124,20 +143,26 @@ defmodule Mix.Tasks.Escript.Install do
       # If existing executable was changed,
       # it was overridden
       previous_executable && previous_executable != current_executable ->
-        Mix.shell.error "\nwarning: escript #{inspect executable} overrides executable " <>
-                        "#{inspect previous_executable} already in your PATH\n"
+        Mix.shell().error(
+          "\nwarning: escript #{inspect(executable)} overrides executable " <>
+            "#{inspect(previous_executable)} already in your PATH\n"
+        )
 
       # If existing executable didn't change but it is not the one we installed,
       # it is a conflict
       previous_executable && previous_executable != dst ->
-        Mix.shell.error "\nwarning: escript #{inspect executable} conflicts with executable " <>
-                        "#{inspect previous_executable} already in your PATH\n"
+        Mix.shell().error(
+          "\nwarning: escript #{inspect(executable)} conflicts with executable " <>
+            "#{inspect(previous_executable)} already in your PATH\n"
+        )
 
       # If current executable is nil or does not match the one we just installed,
       # PATH is misconfigured
       current_executable != dst ->
-        Mix.shell.error "\nwarning: you must append #{inspect Mix.Local.path_for(:escript)} " <>
-                        "to your PATH if you want to invoke escripts by name\n"
+        Mix.shell().error(
+          "\nwarning: you must append #{inspect(Mix.Local.path_for(:escript))} " <>
+            "to your PATH if you want to invoke escripts by name\n"
+        )
 
       true ->
         :ok

@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Local.Hex do
   use Mix.Task
 
-  @hex_list_path    "/installs/hex-1.x.csv"
+  @hex_list_path "/installs/hex-1.x.csv"
   @hex_archive_path "/installs/[ELIXIR_VERSION]/hex-[HEX_VERSION].ez"
 
   @shortdoc "Installs Hex locally"
@@ -29,23 +29,29 @@ defmodule Mix.Tasks.Local.Hex do
   """
   @switches [if_missing: :boolean, force: :boolean]
 
-  @spec run(OptionParser.argv) :: boolean
+  @impl true
   def run(argv) do
     {opts, _} = OptionParser.parse!(argv, switches: @switches)
-    force? = Keyword.get(opts, :force, false)
-    if_missing? = Keyword.get(opts, :if_missing, false)
 
     should_install? =
-      case {force?, if_missing?} do
-        {false, true} -> Code.ensure_loaded?(Hex)
-        _ -> true
+      if Keyword.get(opts, :if_missing, false) do
+        not Code.ensure_loaded?(Hex)
+      else
+        true
+      end
+
+    argv =
+      if Keyword.get(opts, :force, false) do
+        ["--force"]
+      else
+        []
       end
 
     should_install? && run_install(argv)
   end
 
   defp run_install(argv) do
-    hex_mirror = Mix.Hex.mirror
+    hex_mirror = Mix.Hex.mirror()
 
     {elixir_version, hex_version, sha512} =
       Mix.Local.find_matching_versions_from_signed_csv!("Hex", hex_mirror <> @hex_list_path)
@@ -55,6 +61,10 @@ defmodule Mix.Tasks.Local.Hex do
       |> String.replace("[ELIXIR_VERSION]", elixir_version)
       |> String.replace("[HEX_VERSION]", hex_version)
 
-    Mix.Tasks.Archive.Install.run [url, "--sha512", sha512 | argv]
+    # Unload the Hex module we loaded earlier to avoid conflicts when Hex is updated
+    # and then used without restarting the VM
+    :code.purge(Hex)
+
+    Mix.Tasks.Archive.Install.run([url, "--sha512", sha512 | argv])
   end
 end
