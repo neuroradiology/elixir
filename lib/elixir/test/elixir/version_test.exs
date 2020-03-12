@@ -49,16 +49,30 @@ defmodule VersionTest do
 
   test "lexes specifications properly" do
     assert Parser.lexer("== != > >= < <= ~>", []) == [:==, :!=, :>, :>=, :<, :<=, :~>]
-    assert Parser.lexer("2.3.0", []) == [:==, "2.3.0"]
-    assert Parser.lexer("!2.3.0", []) == [:!=, "2.3.0"]
+    assert Parser.lexer("2.3.0", []) == [:==, {2, 3, 0, [], []}]
+    assert Parser.lexer("!2.3.0", []) == [:!=, {2, 3, 0, [], []}]
     assert Parser.lexer(">>=", []) == [:>, :>=]
-    assert Parser.lexer(">2.4.0", []) == [:>, "2.4.0"]
-    assert Parser.lexer("> 2.4.0", []) == [:>, "2.4.0"]
-    assert Parser.lexer("    >     2.4.0", []) == [:>, "2.4.0"]
-    assert Parser.lexer(" or 2.1.0", []) == [:||, :==, "2.1.0"]
-    assert Parser.lexer(" and 2.1.0", []) == [:&&, :==, "2.1.0"]
-    assert Parser.lexer(">= 2.0.0 and < 2.1.0", []) == [:>=, "2.0.0", :&&, :<, "2.1.0"]
-    assert Parser.lexer(">= 2.0.0 or < 2.1.0", []) == [:>=, "2.0.0", :||, :<, "2.1.0"]
+    assert Parser.lexer(">2.4.0", []) == [:>, {2, 4, 0, [], []}]
+    assert Parser.lexer("> 2.4.0", []) == [:>, {2, 4, 0, [], []}]
+    assert Parser.lexer("    >     2.4.0", []) == [:>, {2, 4, 0, [], []}]
+    assert Parser.lexer(" or 2.1.0", []) == [:||, :==, {2, 1, 0, [], []}]
+    assert Parser.lexer(" and 2.1.0", []) == [:&&, :==, {2, 1, 0, [], []}]
+
+    assert Parser.lexer(">= 2.0.0 and < 2.1.0", []) == [
+             :>=,
+             {2, 0, 0, [], []},
+             :&&,
+             :<,
+             {2, 1, 0, [], []}
+           ]
+
+    assert Parser.lexer(">= 2.0.0 or < 2.1.0", []) == [
+             :>=,
+             {2, 0, 0, [], []},
+             :||,
+             :<,
+             {2, 1, 0, [], []}
+           ]
   end
 
   test "parse/1" do
@@ -102,6 +116,7 @@ defmodule VersionTest do
     assert Version.parse!("1.0.0-dev+lol") |> to_string == "1.0.0-dev+lol"
     assert Version.parse!("1.0.0-0") |> to_string == "1.0.0-0"
     assert Version.parse!("1.0.0-rc.0") |> to_string == "1.0.0-rc.0"
+    assert %Version{major: 1, minor: 0, patch: 0} |> to_string() == "1.0.0"
   end
 
   test "match?/2 with invalid versions" do
@@ -212,6 +227,12 @@ defmodule VersionTest do
       refute Version.match?("0.10.0", "~> 0.9.3-dev")
 
       refute Version.match?("0.3.0-dev", "~> 0.2.0")
+
+      assert Version.match?("1.11.0-dev", "~> 1.11-dev")
+      assert Version.match?("1.11.0", "~> 1.11-dev")
+      assert Version.match?("1.12.0", "~> 1.11-dev")
+      refute Version.match?("1.10.0", "~> 1.11-dev")
+      refute Version.match?("2.0.0", "~> 1.11-dev")
 
       assert_raise Version.InvalidRequirementError, fn ->
         Version.match?("3.0.0", "~> 3")

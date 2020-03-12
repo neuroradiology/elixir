@@ -5,8 +5,9 @@ Application.put_env(:mix, :colors, enabled: false)
 Logger.remove_backend(:console)
 Application.put_env(:logger, :backends, [])
 
-exclude = if match?({:win32, _}, :os.type()), do: [unix: true], else: [windows: true]
-ExUnit.start(trace: "--trace" in System.argv(), exclude: exclude)
+os_exclude = if match?({:win32, _}, :os.type()), do: [unix: true], else: [windows: true]
+epmd_exclude = if match?({:win32, _}, :os.type()), do: [epmd: true], else: []
+ExUnit.start(trace: "--trace" in System.argv(), exclude: epmd_exclude ++ os_exclude)
 
 unless {1, 7, 4} <= Mix.SCM.Git.git_version() do
   IO.puts(:stderr, "Skipping tests with git sparse checkouts...")
@@ -27,6 +28,10 @@ defmodule MixTest.Case do
     def project do
       [app: :sample, version: "0.1.0", aliases: [sample: "compile"]]
     end
+
+    def application do
+      Process.get({__MODULE__, :application}) || []
+    end
   end
 
   using do
@@ -44,7 +49,7 @@ defmodule MixTest.Case do
       Mix.target(:host)
       Mix.Task.clear()
       Mix.Shell.Process.flush()
-      Mix.ProjectStack.clear_cache()
+      Mix.State.clear_cache()
       Mix.ProjectStack.clear_stack()
       delete_tmp_paths()
 
@@ -52,6 +57,8 @@ defmodule MixTest.Case do
         Application.stop(app)
         Application.unload(app)
       end
+
+      :ok
     end)
 
     :ok
@@ -217,7 +224,7 @@ unless File.dir?(target) do
     System.cmd("git", ~w[config user.email "mix@example.com"])
     System.cmd("git", ~w[config user.name "mix-repo"])
     System.cmd("git", ~w[add .])
-    System.cmd("git", ~w[commit -m "bad"])
+    System.cmd("git", ~w[commit --no-gpg-sign -m "bad"])
   end)
 
   File.write!(Path.join(target, "mix.exs"), """
@@ -236,8 +243,8 @@ unless File.dir?(target) do
 
   File.cd!(target, fn ->
     System.cmd("git", ~w[add .])
-    System.cmd("git", ~w[commit -m "ok"])
-    System.cmd("git", ~w[tag without_module])
+    System.cmd("git", ~w[commit --no-gpg-sign -m "ok"])
+    System.cmd("git", ~w[tag --no-sign without_module])
   end)
 
   File.write!(Path.join(target, "lib/git_repo.ex"), """
@@ -278,8 +285,8 @@ unless File.dir?(target) do
 
   File.cd!(target, fn ->
     System.cmd("git", ~w[add .])
-    System.cmd("git", ~w[commit -m "lib"])
-    System.cmd("git", ~w[tag with_module])
+    System.cmd("git", ~w[commit --no-gpg-sign -m "lib"])
+    System.cmd("git", ~w[tag --no-sign with_module])
   end)
 end
 
@@ -308,7 +315,7 @@ unless File.dir?(target) do
     System.cmd("git", ~w[config user.email "mix@example.com"])
     System.cmd("git", ~w[config user.name "mix-repo"])
     System.cmd("git", ~w[add .])
-    System.cmd("git", ~w[commit -m without-dep])
+    System.cmd("git", ~w[commit --no-gpg-sign -m without-dep])
   end)
 
   File.write!(Path.join(target, "mix.exs"), """
@@ -335,7 +342,7 @@ unless File.dir?(target) do
 
   File.cd!(target, fn ->
     System.cmd("git", ~w[add .])
-    System.cmd("git", ~w[commit -m with-dep])
+    System.cmd("git", ~w[commit --no-gpg-sign -m with-dep])
   end)
 end
 
@@ -363,7 +370,7 @@ unless File.dir?(target) do
     System.cmd("git", ~w[config user.email "mix@example.com"])
     System.cmd("git", ~w[config user.name "mix-repo"])
     System.cmd("git", ~w[add .])
-    System.cmd("git", ~w[commit -m "ok"])
+    System.cmd("git", ~w[commit --no-gpg-sign -m "ok"])
   end)
 end
 

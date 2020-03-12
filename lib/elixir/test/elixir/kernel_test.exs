@@ -5,11 +5,75 @@ defmodule KernelTest do
 
   doctest Kernel
 
-  defp empty_list(), do: []
+  def id(arg), do: arg
+  def id(arg1, arg2), do: {arg1, arg2}
+  def empty_list(), do: []
+  def empty_map, do: %{}
+
+  defp purge(module) do
+    :code.delete(module)
+    :code.purge(module)
+  end
 
   defp assert_eval_raise(error, msg, string) do
     assert_raise error, msg, fn ->
       Code.eval_string(string)
+    end
+  end
+
+  describe "=/2" do
+    test "can be reassigned" do
+      var = 1
+      id(var)
+      var = 2
+      assert var == 2
+    end
+
+    test "can be reassigned inside a list" do
+      _ = [var = 1, 2, 3]
+      id(var)
+      _ = [var = 2, 3, 4]
+      assert var == 2
+    end
+
+    test "can be reassigned inside a keyword list" do
+      _ = [a: var = 1, b: 2]
+      id(var)
+      _ = [b: var = 2, c: 3]
+      assert var == 2
+    end
+
+    test "can be reassigned inside a call" do
+      id(var = 1)
+      id(var)
+      id(var = 2)
+      assert var == 2
+    end
+
+    test "can be reassigned inside a multi-argument call" do
+      id(:arg, var = 1)
+      id(:arg, var)
+      id(:arg, var = 2)
+      assert var == 2
+
+      id(:arg, a: 1, b: var = 2)
+      id(:arg, var)
+      id(:arg, b: 2, c: var = 3)
+      assert var == 3
+    end
+
+    test "++/2 works in matches" do
+      [1, 2] ++ var = [1, 2]
+      assert var == []
+
+      [1, 2] ++ var = [1, 2, 3]
+      assert var == [3]
+
+      'ab' ++ var = 'abc'
+      assert var == 'c'
+
+      [:a, :b] ++ var = [:a, :b, :c]
+      assert var == [:c]
     end
   end
 
@@ -81,6 +145,7 @@ defmodule KernelTest do
     end
   end
 
+  # Note we use `==` in assertions so `assert` does not rewrite `match?/2`.
   test "match?/2" do
     a = List.first([0])
     assert match?(b when b > a, 1) == true
@@ -88,6 +153,9 @@ defmodule KernelTest do
 
     assert match?(b when b > a, -1) == false
     assert binding() == [a: 0]
+
+    # Does not warn on underscored variables
+    assert match?(_unused, a) == true
   end
 
   def exported?, do: not_exported?()
@@ -243,6 +311,60 @@ defmodule KernelTest do
     assert_raise BadBooleanError, fn -> 0 or 1 end
   end
 
+  defp struct?(arg) when is_struct(arg), do: true
+  defp struct?(_arg), do: false
+
+  defp struct_or_map?(arg) when is_struct(arg) or is_map(arg), do: true
+  defp struct_or_map?(_arg), do: false
+
+  test "is_struct/1" do
+    assert is_struct(%{}) == false
+    assert is_struct([]) == false
+    assert is_struct(%Macro.Env{}) == true
+    assert is_struct(%{__struct__: "foo"}) == false
+    assert struct?(%Macro.Env{}) == true
+    assert struct?(%{__struct__: "foo"}) == false
+    assert struct?([]) == false
+    assert struct?(%{}) == false
+  end
+
+  test "is_struct/1 and other match works" do
+    assert struct_or_map?(%Macro.Env{}) == true
+    assert struct_or_map?(%{}) == true
+    assert struct_or_map?(10) == false
+  end
+
+  defp struct?(arg, name) when is_struct(arg, name), do: true
+  defp struct?(_arg, _name), do: false
+
+  defp struct_or_map?(arg, name) when is_struct(arg, name) or is_map(arg), do: true
+  defp struct_or_map?(_arg, _name), do: false
+
+  defp not_atom(), do: "not atom"
+
+  test "is_struct/2" do
+    assert is_struct(%{}, Macro.Env) == false
+    assert is_struct([], Macro.Env) == false
+    assert is_struct(%Macro.Env{}, Macro.Env) == true
+    assert is_struct(%Macro.Env{}, URI) == false
+    assert struct?(%Macro.Env{}, Macro.Env) == true
+    assert struct?(%Macro.Env{}, URI) == false
+    assert struct?(%{__struct__: "foo"}, "foo") == false
+    assert struct?(%{__struct__: "foo"}, Macro.Env) == false
+    assert struct?([], Macro.Env) == false
+    assert struct?(%{}, Macro.Env) == false
+
+    assert_raise ArgumentError, "argument error", fn ->
+      is_struct(%{}, not_atom())
+    end
+  end
+
+  test "is_struct/2 and other match works" do
+    assert struct_or_map?(%{}, "foo") == false
+    assert struct_or_map?(%{}, Macro.Env) == true
+    assert struct_or_map?(%Macro.Env{}, Macro.Env) == true
+  end
+
   test "if/2 boolean optimization does not leak variables during expansion" do
     if false do
       :ok
@@ -363,6 +485,34 @@ defmodule KernelTest do
       assert case_in(2, 1..3) == true
       assert case_in(3, 1..3) == true
       assert case_in(-3, -1..-3) == true
+    end
+
+    def map_dot(map) when map.field, do: true
+    def map_dot(_other), do: false
+
+    test "map dot guard" do
+      refute map_dot(:foo)
+      refute map_dot(%{})
+      refute map_dot(%{field: false})
+      assert map_dot(%{field: true})
+
+      message =
+        "cannot invoke remote function in guard. " <>
+          "If you want to do a map lookup instead, please remove parens from map.field()"
+
+      assert_raise CompileError, Regex.compile!(message), fn ->
+        defmodule MapDot do
+          def map_dot(map) when map.field(), do: true
+        end
+      end
+
+      message = ~r"cannot invoke remote function Module.fun/0 inside guards"
+
+      assert_raise CompileError, message, fn ->
+        defmodule MapDot do
+          def map_dot(map) when Module.fun(), do: true
+        end
+      end
     end
 
     test "performs all side-effects" do
@@ -835,7 +985,7 @@ defmodule KernelTest do
       assert_raise KeyError, fn -> pop_in(users.bob[:age]) end
     end
 
-    test "pop_in/1/2 with nils" do
+    test "pop_in/1,2 with nils" do
       users = %{"john" => nil, "meg" => %{age: 23}}
       assert pop_in(users["john"][:age]) == {nil, %{"meg" => %{age: 23}}}
       assert pop_in(users, ["john", :age]) == {nil, %{"meg" => %{age: 23}}}
@@ -866,8 +1016,6 @@ defmodule KernelTest do
         Code.eval_quoted(quote(do: put_in(map.foo(1, 2)[:bar], "baz")), [])
       end
     end
-
-    def empty_map, do: %{}
 
     def by_index(index) do
       fn
@@ -1033,6 +1181,21 @@ defmodule KernelTest do
     end
   end
 
+  test "is_map_key/2" do
+    assert is_map_key(Map.new([]), :a) == false
+    assert is_map_key(Map.new(b: 1), :a) == false
+    assert is_map_key(Map.new(a: 1), :a) == true
+
+    assert_raise BadMapError, fn ->
+      is_map_key(empty_list(), :a)
+    end
+
+    case Map.new(a: 1) do
+      map when is_map_key(map, :a) -> true
+      _ -> flunk("invalid guard")
+    end
+  end
+
   test "tl/1" do
     assert tl([:one]) == []
     assert tl([1, 2, 3]) == [2, 3]
@@ -1110,10 +1273,5 @@ defmodule KernelTest do
     assert_raise ArgumentError, ~r"reason: :non_utc_offset", fn ->
       Code.eval_string(~s{~U[2015-01-13 13:00:07+00:30]})
     end
-  end
-
-  defp purge(module) do
-    :code.delete(module)
-    :code.purge(module)
   end
 end

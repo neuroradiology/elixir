@@ -31,16 +31,17 @@ defmodule Tuple do
 
   The functions in this module that add and remove elements from tuples are
   rarely used in practice, as they typically imply tuples are being used as
-  collections. To append to a tuple, it is preferable to use pattern matching:
+  collections. To append to a tuple, it is preferable to extract the elements
+  from the old tuple with pattern matching, and then create a new tuple:
 
       tuple = {:ok, :example}
 
       # Avoid
-      Tuple.insert_at(tuple, 2, %{})
+      result = Tuple.insert_at(tuple, 2, %{})
 
       # Prefer
       {:ok, atom} = tuple
-      {:ok, atom, %{}}
+      result = {:ok, atom, %{}}
 
   """
 
@@ -59,7 +60,7 @@ defmodule Tuple do
 
   """
   @spec duplicate(term, non_neg_integer) :: tuple
-  def duplicate(data, size) do
+  def duplicate(data, size) when is_integer(size) and size >= 0 do
     :erlang.make_tuple(size, data)
   end
 
@@ -82,7 +83,7 @@ defmodule Tuple do
 
   """
   @spec insert_at(tuple, non_neg_integer, term) :: tuple
-  def insert_at(tuple, index, value) do
+  def insert_at(tuple, index, value) when is_integer(index) and index >= 0 do
     :erlang.insert_element(index + 1, tuple, value)
   end
 
@@ -123,7 +124,7 @@ defmodule Tuple do
 
   """
   @spec delete_at(tuple, non_neg_integer) :: tuple
-  def delete_at(tuple, index) do
+  def delete_at(tuple, index) when is_integer(index) and index >= 0 do
     :erlang.delete_element(index + 1, tuple)
   end
 

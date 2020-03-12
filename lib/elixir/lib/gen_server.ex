@@ -142,7 +142,6 @@ defmodule GenServer do
   The generated `child_spec/1` can be customized with the following options:
 
     * `:id` - the child specification identifier, defaults to the current module
-    * `:start` - how to start the child process (defaults to calling `__MODULE__.start_link/1`)
     * `:restart` - when the child should be restarted, defaults to `:permanent`
     * `:shutdown` - how to shut down the child, either immediately or by giving it time to shut down
 
@@ -630,7 +629,7 @@ defmodule GenServer do
   Therefore it is not guaranteed that `c:terminate/2` is called when a `GenServer`
   exits. For such reasons, we usually recommend important clean-up rules to
   happen in separated processes either by use of monitoring or by links
-  themselves. There is no cleanup needed when the `GenServer` controls a `port` (e.g.
+  themselves. There is no cleanup needed when the `GenServer` controls a `port` (for example,
   `:gen_tcp.socket`) or `t:File.io_device/0`, because these will be closed on
   receiving a `GenServer`'s exit signal and do not need to be closed manually
   in `c:terminate/2`.
@@ -641,7 +640,7 @@ defmodule GenServer do
   This callback is optional.
   """
   @callback terminate(reason, state :: term) :: term
-            when reason: :normal | :shutdown | {:shutdown, term}
+            when reason: :normal | :shutdown | {:shutdown, term} | term
 
   @doc """
   Invoked to change the state of the `GenServer` when a different version of a
@@ -738,7 +737,7 @@ defmodule GenServer do
     quote location: :keep, bind_quoted: [opts: opts] do
       @behaviour GenServer
 
-      if Module.get_attribute(__MODULE__, :doc) == nil do
+      unless Module.has_attribute?(__MODULE__, :doc) do
         @doc """
         Returns a specification to start this module under a supervisor.
 
@@ -786,8 +785,22 @@ defmodule GenServer do
             {_, name} -> name
           end
 
-        pattern = '~p ~p received unexpected message in handle_info/2: ~p~n'
-        :error_logger.error_msg(pattern, [__MODULE__, proc, msg])
+        :logger.error(
+          %{
+            label: {GenServer, :no_handle_info},
+            report: %{
+              module: __MODULE__,
+              message: msg,
+              name: proc
+            }
+          },
+          %{
+            domain: [:otp, :elixir],
+            error_logger: %{tag: :error_msg},
+            report_cb: &GenServer.format_report/1
+          }
+        )
+
         {:noreply, state}
       end
 
@@ -1205,5 +1218,13 @@ defmodule GenServer do
 
   def whereis({name, node} = server) when is_atom(name) and is_atom(node) do
     server
+  end
+
+  @doc false
+  def format_report(%{
+        label: {GenServer, :no_handle_info},
+        report: %{module: mod, message: msg, name: proc}
+      }) do
+    {'~p ~p received unexpected message in handle_info/2: ~p~n', [mod, proc, msg]}
   end
 end

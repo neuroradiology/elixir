@@ -6,8 +6,8 @@ defmodule Access do
   keys of any type in a data structure via the `data[key]` syntax.
 
   `Access` supports keyword lists (`Keyword`) and maps (`Map`) out
-  of the box. The key can be of any type and it returns `nil` if
-  the key does not exist:
+  of the box. Keywords supports only atoms keys, keys for maps can
+  be of any type. Both returns `nil` if the key does not exist:
 
       iex> keywords = [a: 1, b: 2]
       iex> keywords[:a]
@@ -237,6 +237,25 @@ defmodule Access do
   end
 
   @doc """
+  Same as `fetch/2` but returns the value directly,
+  or raises a `KeyError` exception if `key` is not found.
+
+  ## Examples
+
+      iex> Access.fetch!(%{name: "meg", age: 26}, :name)
+      "meg"
+
+  """
+  @doc since: "1.10.0"
+  @spec fetch!(container, term) :: term
+  def fetch!(container, key) do
+    case fetch(container, key) do
+      {:ok, value} -> value
+      :error -> raise(KeyError, key: key, term: container)
+    end
+  end
+
+  @doc """
   Gets the value for the given key in a container (a map, keyword
   list, or struct that implements the `Access` behaviour).
 
@@ -310,6 +329,14 @@ defmodule Access do
 
   The returned value is a two-element tuple with the "get" value returned by
   `fun` and a new container with the updated value under `key`.
+
+  ## Examples
+
+      iex> Access.get_and_update([a: 1], :a, fn current_value ->
+      ...>   {current_value, current_value + 1}
+      ...> end)
+      {1, [a: 2]}
+
   """
   @spec get_and_update(data, key, (value -> {get_value, value} | :pop)) :: {get_value, data}
         when get_value: var, data: container
@@ -670,7 +697,7 @@ defmodule Access do
     end
   end
 
-  defp get_and_update_at(list, index, next, updates) when index < 0 do
+  defp get_and_update_at([_ | _] = list, index, next, updates) when index < 0 do
     list_length = length(list)
 
     if list_length + index >= 0 do

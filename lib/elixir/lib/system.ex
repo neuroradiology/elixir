@@ -186,7 +186,7 @@ defmodule System do
     * `:build` - the Elixir version, short Git revision hash and
       Erlang/OTP release it was compiled with
     * `:date` - a string representation of the ISO8601 date and time it was built
-    * `:opt_release` - OTP release it was compiled with
+    * `:otp_release` - OTP release it was compiled with
     * `:revision` - short Git revision hash. If Git was not available at building
       time, it is set to `""`
     * `:version` - the Elixir version
@@ -312,7 +312,9 @@ defmodule System do
   """
   @spec user_home() :: String.t() | nil
   def user_home do
-    :elixir_config.get(:home)
+    {:ok, [[home] | _]} = :init.get_argument(:home)
+    encoding = :file.native_name_encoding()
+    :unicode.characters_to_binary(home, encoding, encoding)
   end
 
   @doc """
@@ -335,7 +337,7 @@ defmodule System do
     1. the directory named by the TMPDIR environment variable
     2. the directory named by the TEMP environment variable
     3. the directory named by the TMP environment variable
-    4. `C:\TMP` on Windows or `/tmp` on Unix
+    4. `C:\TMP` on Windows or `/tmp` on Unix-like operating systems
     5. as a last resort, the current working directory
 
   Returns `nil` if none of the above are writable.
@@ -396,7 +398,7 @@ defmodule System do
 
   The handler always executes in a different process from the one it was
   registered in. As a consequence, any resources managed by the calling process
-  (ETS tables, open files, etc.) won't be available by the time the handler
+  (ETS tables, open files, and others) won't be available by the time the handler
   function is invoked.
 
   The function must receive the exit status code as an argument.
@@ -411,8 +413,8 @@ defmodule System do
   Locates an executable on the system.
 
   This function looks up an executable program given
-  its name using the environment variable PATH on Unix
-  and Windows. It also considers the proper executable
+  its name using the environment variable PATH on Windows and Unix-like
+  operating systems. It also considers the proper executable
   extension for each operating system, so for Windows it will try to
   lookup files with `.com`, `.cmd` or similar extensions.
   """
@@ -527,6 +529,8 @@ defmodule System do
 
   For more information, see `:os.getpid/0`.
   """
+  # TODO: deprecate permanently on v1.13
+  @doc deprecated: "Use System.pid/0 instead"
   @spec get_pid() :: binary
   def get_pid, do: IO.iodata_to_binary(:os.getpid())
 
@@ -583,8 +587,8 @@ defmodule System do
   latest exception. To retrieve the stacktrace of the current process,
   use `Process.info(self(), :current_stacktrace)` instead.
   """
-  # TODO: Fully deprecate it on Elixir v1.11 via @deprecated
-  # It is currently partially deprecated in elixir_dispatch.erl
+  # The warning is emitted by the compiler - so a @doc annotation is enough
+  @doc deprecated: "Use __STACKTRACE__ instead"
   def stacktrace do
     apply(:erlang, :get_stacktrace, [])
   end
@@ -634,7 +638,7 @@ defmodule System do
   Returns the operating system PID for the current Erlang runtime system instance.
 
   Returns a string containing the (usually) numerical identifier for a process.
-  On UNIX, this is typically the return value of the `getpid()` system call.
+  On Unix-like operating systems, this is typically the return value of the `getpid()` system call.
   On Windows, the process ID as returned by the `GetCurrentProcessId()` system
   call is used.
 
@@ -734,7 +738,12 @@ defmodule System do
 
     * `:into` - injects the result into the given collectable, defaults to `""`
     * `:cd` - the directory to run the command in
-    * `:env` - an enumerable of tuples containing environment key-value as binary
+    * `:env` - an enumerable of tuples containing environment key-value as
+      binary. The child process inherits all environment variables from its
+      parent process, the Elixir application, except those overwritten or
+      cleared using this option. Specify a value of `nil` to clear (unset) an
+      environment variable, which is useful for preventing credentials passed
+      to the application from leaking into child processes.
     * `:arg0` - sets the command arg0
     * `:stderr_to_stdout` - redirects stderr to stdout when `true`
     * `:parallelism` - when `true`, the VM will schedule port tasks to improve
@@ -910,10 +919,14 @@ defmodule System do
   `convert_time_unit/3` accepts an additional time unit (other than the
   ones in the `t:time_unit/0` type) called `:native`. `:native` is the time
   unit used by the Erlang runtime system. It's determined when the runtime
-  starts and stays the same until the runtime is stopped. To determine what
-  the `:native` unit amounts to in a system, you can call this function to
-  convert 1 second to the `:native` time unit (i.e.,
-  `System.convert_time_unit(1, :second, :native)`).
+  starts and stays the same until the runtime is stopped, but could differ
+  the next time the runtime is started on the same machine. For this reason,
+  you should use this function to convert `:native` time units to a predictable
+  unit before you display them to humans.
+
+  To determine how many seconds the `:native` unit represents in your current
+  runtime, you can can call this function to convert 1 second to the `:native`
+  time unit: `System.convert_time_unit(1, :second, :native)`.
   """
   @spec convert_time_unit(integer, time_unit | :native, time_unit | :native) :: integer
   def convert_time_unit(time, from_unit, to_unit) do
@@ -940,7 +953,7 @@ defmodule System do
   time and the Erlang VM system time.
 
   The result is returned in the given time unit `unit`. The returned
-  offset, added to an Erlang monotonic time (e.g., obtained with
+  offset, added to an Erlang monotonic time (for instance, one obtained with
   `monotonic_time/1`), gives the Erlang system time that corresponds
   to that monotonic time.
   """
@@ -1063,15 +1076,12 @@ defmodule System do
   end
 
   defp warn(unit, replacement_unit) do
-    {:current_stacktrace, stacktrace} = Process.info(self(), :current_stacktrace)
-    stacktrace = Enum.drop(stacktrace, 3)
-
-    :elixir_config.warn({System, unit}, stacktrace) &&
-      IO.warn(
-        "deprecated time unit: #{inspect(unit)}. A time unit should be " <>
-          ":second, :millisecond, :microsecond, :nanosecond, or a positive integer",
-        stacktrace
-      )
+    IO.warn_once(
+      {__MODULE__, unit},
+      "deprecated time unit: #{inspect(unit)}. A time unit should be " <>
+        ":second, :millisecond, :microsecond, :nanosecond, or a positive integer",
+      _stacktrace_drop_levels = 4
+    )
 
     replacement_unit
   end

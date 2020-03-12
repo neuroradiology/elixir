@@ -264,11 +264,11 @@ defmodule Mix.Project do
     if apps_path = config[:apps_path] do
       key = {:apps_paths, Mix.Project.get!()}
 
-      if cache = Mix.ProjectStack.read_cache(key) do
+      if cache = Mix.State.read_cache(key) do
         cache
       else
         cache = config[:apps] |> umbrella_apps(apps_path) |> to_apps_paths(apps_path)
-        Mix.ProjectStack.write_cache(key, cache)
+        Mix.State.write_cache(key, cache)
       end
     end
   end
@@ -376,7 +376,45 @@ defmodule Mix.Project do
   """
   @spec deps_path(keyword) :: Path.t()
   def deps_path(config \\ config()) do
-    Path.expand(config[:deps_path])
+    dir = System.get_env("MIX_DEPS_PATH") || config[:deps_path]
+    Path.expand(dir)
+  end
+
+  @doc """
+  Returns all dependencies app names.
+
+  The order they are returned is guaranteed to be sorted
+  for proper dependency resolution. For example, if A
+  depends on B, then B will listed before A.
+  """
+  @doc since: "1.11.0"
+  @spec deps_apps() :: atom()
+  def deps_apps() do
+    Mix.Dep.cached() |> Enum.map(& &1.app)
+  end
+
+  @doc """
+  Returns the SCMs of all dependencies as a map.
+
+  See `Mix.SCM` module documentation to learn more about SCMs.
+
+  ## Options
+
+    * `:depth` - only returns dependencies to the depth level,
+      a depth of 1 will only return top-level dependencies
+    * `:parents` - starts the dependency traversal from the
+      given parents instead of the application root
+
+  ## Examples
+
+      Mix.Project.deps_scms()
+      #=> %{foo: Mix.SCM.Path, bar: Mix.SCM.Git}
+
+  """
+  @doc since: "1.10.0"
+  @spec deps_scms(keyword) :: %{optional(atom) => Mix.SCM.t()}
+  def deps_scms(opts \\ []) do
+    traverse_deps(opts, fn %{scm: scm} -> scm end)
   end
 
   @doc """
@@ -397,6 +435,10 @@ defmodule Mix.Project do
   """
   @spec deps_paths(keyword) :: %{optional(atom) => Path.t()}
   def deps_paths(opts \\ []) do
+    traverse_deps(opts, fn %{opts: opts} -> opts[:dest] end)
+  end
+
+  defp traverse_deps(opts, fun) do
     all_deps = Mix.Dep.cached()
     parents = opts[:parents]
     depth = opts[:depth]
@@ -406,24 +448,22 @@ defmodule Mix.Project do
 
       all_deps
       |> Enum.filter(parent_filter)
-      |> deps_to_paths_map()
-      |> deps_paths_depth(all_deps, 1, depth || :infinity)
+      |> traverse_deps_map(fun)
+      |> traverse_deps_depth(all_deps, 1, depth || :infinity)
     else
-      deps_to_paths_map(all_deps)
+      traverse_deps_map(all_deps, fun)
     end
   end
 
-  defp deps_to_paths_map(deps) do
-    for %{app: app, opts: opts} <- deps,
-        do: {app, opts[:dest]},
-        into: %{}
+  defp traverse_deps_map(deps, fun) do
+    for %{app: app} = dep <- deps, do: {app, fun.(dep)}, into: %{}
   end
 
-  defp deps_paths_depth(deps, _all_deps, depth, depth) do
+  defp traverse_deps_depth(deps, _all_deps, depth, depth) do
     deps
   end
 
-  defp deps_paths_depth(parents, all_deps, depth, target_depth) do
+  defp traverse_deps_depth(parents, all_deps, depth, target_depth) do
     children =
       for parent_dep <- all_deps,
           Map.has_key?(parents, parent_dep.app),
@@ -433,7 +473,7 @@ defmodule Mix.Project do
 
     case Map.merge(parents, children) do
       ^parents -> parents
-      new_parents -> deps_paths_depth(new_parents, all_deps, depth + 1, target_depth)
+      new_parents -> traverse_deps_depth(new_parents, all_deps, depth + 1, target_depth)
     end
   end
 
@@ -441,6 +481,16 @@ defmodule Mix.Project do
   Clears the dependency for the current environment.
 
   Useful when dependencies need to be reloaded due to change of global state.
+
+  For example, Nerves uses this function to force all dependencies to be
+  reloaded after it updates the system environment. It goes roughly like
+  this:
+
+    1. Nerves fetches all dependencies and looks for the system specific deps
+    2. Once the system specific dep is found, it loads it alongside env vars
+    3. Nerves then clears the cache, forcing dependencies to be loaded again
+    4. Dependencies are loaded again, now with an updated env environment
+
   """
   @doc since: "1.7.0"
   @spec clear_deps_cache() :: :ok
@@ -603,10 +653,8 @@ defmodule Mix.Project do
     end
   end
 
-  @doc """
-  Compiles the given project.
-  """
-  @spec compile([term], keyword) :: term
+  @doc false
+  @deprecated "Use Mix.Task.run(\"compile\", args) instead"
   def compile(args, _config \\ []) do
     Mix.Task.run("compile", args)
   end
@@ -684,7 +732,7 @@ defmodule Mix.Project do
   defp load_project(app, post_config) do
     Mix.ProjectStack.post_config(post_config)
 
-    if cached = Mix.ProjectStack.read_cache({:app, app}) do
+    if cached = Mix.State.read_cache({:app, app}) do
       {project, file} = cached
       push(project, file, app)
       project
@@ -694,22 +742,24 @@ defmodule Mix.Project do
 
       {new_proj, file} =
         if File.regular?(file) do
+          old_undefined = Code.get_compiler_option(:no_warn_undefined)
+
           try do
-            Code.compiler_options(relative_paths: false)
+            Code.compiler_options(relative_paths: false, no_warn_undefined: :all)
             _ = Code.compile_file(file)
             get()
           else
             ^old_proj -> Mix.raise("Could not find a Mix project at #{file}")
             new_proj -> {new_proj, file}
           after
-            Code.compiler_options(relative_paths: true)
+            Code.compiler_options(relative_paths: true, no_warn_undefined: old_undefined)
           end
         else
           push(nil, file, app)
           {nil, "nofile"}
         end
 
-      Mix.ProjectStack.write_cache({:app, app}, {new_proj, file})
+      Mix.State.write_cache({:app, app}, {new_proj, file})
       new_proj
     end
   end
@@ -728,7 +778,7 @@ defmodule Mix.Project do
       elixirc_paths: ["lib"],
       erlc_paths: ["src"],
       erlc_include_path: "include",
-      erlc_options: [:debug_info],
+      erlc_options: [],
       lockfile: "mix.lock",
       preferred_cli_env: [],
       start_permanent: false

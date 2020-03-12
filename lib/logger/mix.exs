@@ -14,7 +14,6 @@ defmodule Logger.MixProject do
       registered: [Logger, Logger.BackendSupervisor, Logger.Supervisor, Logger.Watcher],
       mod: {Logger.App, []},
       env: [
-        level: :debug,
         utc_log: false,
         truncate: 8096,
         backends: [:console],
@@ -28,7 +27,8 @@ defmodule Logger.MixProject do
         compile_time_purge_matching: [],
         compile_time_application: nil,
         translator_inspect_opts: [],
-        console: []
+        console: [],
+        start_options: []
       ]
     ]
   end

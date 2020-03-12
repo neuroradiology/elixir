@@ -78,12 +78,14 @@ defmodule Logger.TranslatorTest do
     Application.put_env(:logger, :backends, [Logger.TestBackend | backends])
     Application.put_env(:logger, :handle_sasl_reports, true)
 
-    # Restart the app but change the level before to avoid warnings
-    level = Logger.level()
-    Logger.configure(level: :error)
+    # Shutdown the application
     Logger.App.stop()
+
+    # And start it without warnings
+    Application.put_env(:logger, :level, :error)
     Application.start(:logger)
-    Logger.configure(level: level)
+    Application.delete_env(:logger, :level)
+    Logger.configure(level: :debug)
 
     on_exit(fn ->
       Application.put_env(:logger, :backends, backends)
@@ -244,9 +246,9 @@ defmodule Logger.TranslatorTest do
            end) =~ "Client"
 
     assert_receive {:error, _pid,
-                    {Logger, [["GenServer " <> _ | _] | _], _ts, gen_server_metadata}}
+                    {Logger, [["GenServer " <> _ | _] | _], _ts, _gen_server_metadata}}
 
-    assert_receive {:error, _pid, {Logger, ["Process " | _], _ts, process_metadata}}
+    assert_receive {:error, _pid, {Logger, ["Process " | _], _ts, _process_metadata}}
   end
 
   test "translates :gen_event crashes" do
@@ -877,7 +879,7 @@ defmodule Logger.TranslatorTest do
            """
 
     assert_receive {:error, _pid, {Logger, ["Process " | _], _ts, process_metadata}}
-    assert_receive {:error, _pid, {Logger, ["Child " | _], _ts, child_metadata}}
+    assert_receive {:error, _pid, {Logger, ["Child " | _], _ts, _child_metadata}}
     assert {:stop, [_ | _]} = process_metadata[:crash_reason]
   end
 
@@ -961,7 +963,7 @@ defmodule Logger.TranslatorTest do
   end
 
   test "translates process crash with erts" do
-    assert {:ok, msg, meta} =
+    assert {:ok, _msg, meta} =
              Logger.Translator.translate(
                :error,
                :error,
@@ -996,7 +998,7 @@ defmodule Logger.TranslatorTest do
     assert log =~ ~s(Start Call: Logger.TranslatorTest.WeirdFunctionNamesGenServer."start link"/?)
     assert_receive {:error, _pid, {Logger, ["GenServer " <> _ | _], _ts, server_metadata}}
     assert_receive {:error, _pid, {Logger, ["Process " | _], _ts, process_metadata}}
-    assert_receive {:error, _pid, {Logger, ["Child " | _], _ts, child_metadata}}
+    assert_receive {:error, _pid, {Logger, ["Child " | _], _ts, _child_metadata}}
 
     assert {%RuntimeError{message: "oops"}, [_ | _]} = server_metadata[:crash_reason]
     assert {%RuntimeError{message: "oops"}, [_ | _]} = process_metadata[:crash_reason]

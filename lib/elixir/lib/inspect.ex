@@ -31,16 +31,17 @@ defprotocol Inspect do
         end
       end
 
-  The [`concat/1`](`Inspect.Algebra.concat/1`) function comes from `Inspect.Algebra` and it
-  concatenates algebra documents together. In the example above,
-  it is concatenating the string `"MapSet<"` (all strings are
-  valid algebra documents that keep their formatting when pretty
-  printed), the document returned by `Inspect.Algebra.to_doc/2` and the
-  other string `">"`.
+  The [`concat/1`](`Inspect.Algebra.concat/1`) function comes from
+  `Inspect.Algebra` and it concatenates algebra documents together.
+  In the example above it is concatenating the string `"#MapSet<"`,
+  the document returned by `Inspect.Algebra.to_doc/2`, and the final
+  string `">"`. We prefix the module name `#` to denote the inspect
+  presentation is not actually valid Elixir syntax.
 
-  Since regular strings are valid entities in an algebra document,
-  an implementation of the `Inspect` protocol may simply return a
-  string, although that will devoid it of any pretty-printing.
+  Finally, note strings themselves are valid algebra documents that
+  keep their formatting when pretty printed. This means your `Inspect`
+  implementation may simply return a string, although that will devoid
+  it of any pretty-printing.
 
   ## Error handling
 
@@ -253,7 +254,7 @@ defimpl Inspect, for: Map do
   end
 
   def inspect(map, name, opts) do
-    map = :maps.to_list(map)
+    map = Map.to_list(map)
     open = color("%" <> name <> "{", :map, opts)
     sep = color(",", :map, opts)
     close = color("}", :map, opts)
@@ -409,11 +410,7 @@ end
 
 defimpl Inspect, for: Any do
   defmacro __deriving__(module, struct, options) do
-    fields =
-      struct
-      |> Map.drop([:__exception__, :__struct__])
-      |> Map.keys()
-
+    fields = Map.keys(struct) -- [:__exception__, :__struct__]
     only = Keyword.get(options, :only, fields)
     except = Keyword.get(options, :except, [])
 
@@ -424,17 +421,17 @@ defimpl Inspect, for: Any do
 
     inspect_module =
       if fields == only and except == [] do
-        quote(do: Inspect.Map)
+        Inspect.Map
       else
-        quote(do: Inspect.Any)
+        Inspect.Any
       end
 
     quote do
       defimpl Inspect, for: unquote(module) do
-        def inspect(struct, opts) do
-          map = Map.take(struct, unquote(filtered_fields))
-          name = Identifier.inspect_as_atom(unquote(module))
-          unquote(inspect_module).inspect(map, name, opts)
+        def inspect(var!(struct), var!(opts)) do
+          var!(map) = Map.take(var!(struct), unquote(filtered_fields))
+          var!(name) = Identifier.inspect_as_atom(unquote(module))
+          unquote(inspect_module).inspect(var!(map), var!(name), var!(opts))
         end
       end
     end
@@ -447,8 +444,8 @@ defimpl Inspect, for: Any do
       _ -> Inspect.Map.inspect(struct, opts)
     else
       dunder ->
-        if :maps.keys(dunder) == :maps.keys(struct) do
-          pruned = :maps.remove(:__exception__, :maps.remove(:__struct__, struct))
+        if Map.keys(dunder) == Map.keys(struct) do
+          pruned = Map.drop(struct, [:__struct__, :__exception__])
           Inspect.Map.inspect(pruned, Identifier.inspect_as_atom(module), opts)
         else
           Inspect.Map.inspect(struct, opts)
@@ -460,7 +457,7 @@ defimpl Inspect, for: Any do
     # Use the :limit option and an extra element to force
     # `container_doc/6` to append "...".
     opts = %{opts | limit: min(opts.limit, map_size(map))}
-    map = :maps.to_list(map) ++ ["..."]
+    map = Map.to_list(map) ++ ["..."]
 
     open = color("#" <> name <> "<", :map, opts)
     sep = color(",", :map, opts)
@@ -469,3 +466,24 @@ defimpl Inspect, for: Any do
     container_doc(open, map, close, opts, &Inspect.List.keyword/2, separator: sep, break: :strict)
   end
 end
+
+require Protocol
+
+Protocol.derive(
+  Inspect,
+  Macro.Env,
+  only: [
+    :module,
+    :file,
+    :line,
+    :function,
+    :context,
+    :aliases,
+    :requires,
+    :functions,
+    :macros,
+    :macro_aliases,
+    :context_modules,
+    :lexical_tracker
+  ]
+)

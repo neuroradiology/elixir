@@ -64,9 +64,39 @@ defmodule EExTest do
       assert_eval("  • • •\n  Jößé Vâlìm Jößé Vâlìm\n", template)
     end
 
+    test "no spaces" do
+      string = """
+      <%=cond do%>
+      <%false ->%>
+        this
+      <%true ->%>
+        that
+      <%end%>
+      """
+
+      expected = "\n  that\n\n"
+      assert_eval(expected, string, [])
+    end
+
     test "trim mode" do
+      string = "<%= 123 %> \n  \n  <%= 789 %>"
+      expected = "123\n789"
+      assert_eval(expected, string, [], trim: true)
+
       string = "<%= 123 %> \n456\n  <%= 789 %>"
-      expected = "123456\n789"
+      expected = "123\n456\n789"
+      assert_eval(expected, string, [], trim: true)
+
+      string = "<%= 123 %> \n  <%= 456 %>  \n  <%= 789 %>"
+      expected = "123\n456\n789"
+      assert_eval(expected, string, [], trim: true)
+
+      string = "\n  <%= 123 %> \n  <%= 456 %>  \n  <%= 789 %>  \n"
+      expected = "123\n456\n789"
+      assert_eval(expected, string, [], trim: true)
+
+      string = "\r\n  <%= 123 %> \r\n  <%= 456 %>  \r\n  <%= 789 %>  \r\n"
+      expected = "123\n456\n789"
       assert_eval(expected, string, [], trim: true)
     end
 
@@ -80,7 +110,7 @@ defmodule EExTest do
       <% end %>
       """
 
-      expected = "  that\n"
+      expected = "\n  that\n"
       assert_eval(expected, string, [], trim: true)
     end
 
@@ -92,7 +122,21 @@ defmodule EExTest do
       <%= "Fourth line" %>
       """
 
-      expected = "First lineSecond lineThird lineFourth line"
+      expected = "First line\nSecond line\nThird line\nFourth line"
+      assert_eval(expected, string, [], trim: true)
+    end
+
+    test "trim mode with no spaces" do
+      string = """
+      <%=cond do%>
+      <%false ->%>
+        this
+      <%true ->%>
+        that
+      <%end%>
+      """
+
+      expected = "\n  that\n"
       assert_eval(expected, string, [], trim: true)
     end
 
@@ -112,7 +156,7 @@ defmodule EExTest do
       assert_eval("foo ", "foo <%= if false do %>bar<% end %>")
     end
 
-    test "embedded code with do preceeded by bracket" do
+    test "embedded code with do preceded by bracket" do
       assert_eval("foo bar", "foo <%= if {true}do %>bar<% end %>")
       assert_eval("foo bar", "foo <%= if (true)do %>bar<% end %>")
       assert_eval("foo bar", "foo <%= if [true]do %>bar<% end %>")
@@ -192,25 +236,27 @@ defmodule EExTest do
 
   describe "raises syntax errors" do
     test "when the token is invalid" do
-      assert_raise EEx.SyntaxError, "nofile:1: missing token '%>'", fn ->
+      assert_raise EEx.SyntaxError, "nofile:1:12: missing token '%>'", fn ->
         EEx.compile_string("foo <%= bar")
       end
     end
 
     test "when middle expression is found without a start expression" do
-      assert_raise EEx.SyntaxError, "nofile:1: unexpected middle of expression <% else %>", fn ->
-        EEx.compile_string("<% if true %> foo<% else %>bar<% end %>")
-      end
+      assert_raise EEx.SyntaxError,
+                   "nofile:1:18: unexpected middle of expression <% else %>",
+                   fn ->
+                     EEx.compile_string("<% if true %> foo<% else %>bar<% end %>")
+                   end
     end
 
     test "when end expression is found without a start expression" do
-      assert_raise EEx.SyntaxError, "nofile:1: unexpected end of expression <% end %>", fn ->
+      assert_raise EEx.SyntaxError, "nofile:1:5: unexpected end of expression <% end %>", fn ->
         EEx.compile_string("foo <% end %>")
       end
     end
 
     test "when start expression is found without an end expression" do
-      msg = "nofile:2: unexpected end of string, expected a closing '<% end %>'"
+      msg = "nofile:2:17: unexpected end of string, expected a closing '<% end %>'"
 
       assert_raise EEx.SyntaxError, msg, fn ->
         EEx.compile_string("foo\n<% if true do %>")
@@ -218,7 +264,7 @@ defmodule EExTest do
     end
 
     test "when nested end expression is found without a start expression" do
-      assert_raise EEx.SyntaxError, "nofile:1: unexpected end of expression <% end %>", fn ->
+      assert_raise EEx.SyntaxError, "nofile:1:30: unexpected end of expression <% end %>", fn ->
         EEx.compile_string("foo <% if true do %><% end %><% end %>")
       end
     end
@@ -257,13 +303,13 @@ defmodule EExTest do
 
   describe "error messages" do
     test "honor line numbers" do
-      assert_raise EEx.SyntaxError, "nofile:99: missing token '%>'", fn ->
+      assert_raise EEx.SyntaxError, "nofile:99:12: missing token '%>'", fn ->
         EEx.compile_string("foo <%= bar", line: 99)
       end
     end
 
     test "honor file names" do
-      assert_raise EEx.SyntaxError, "my_file.eex:1: missing token '%>'", fn ->
+      assert_raise EEx.SyntaxError, "my_file.eex:1:12: missing token '%>'", fn ->
         EEx.compile_string("foo <%= bar", file: "my_file.eex")
       end
     end
@@ -473,6 +519,41 @@ defmodule EExTest do
       """
 
       assert_eval("\n\n  Good\n \n", string)
+    end
+
+    test "line and column meta" do
+      parser_options = Code.get_compiler_option(:parser_options)
+      Code.put_compiler_option(:parser_options, columns: true)
+
+      try do
+        indentation = 12
+
+        ast =
+          EEx.compile_string(
+            """
+            <%= f() %> <% f() %>
+              <%= f fn -> %>
+                <%= f() %>
+              <% end %>
+            """,
+            indentation: indentation
+          )
+
+        {_, calls} =
+          Macro.prewalk(ast, [], fn
+            {:f, meta, _args} = expr, acc -> {expr, [meta | acc]}
+            other, acc -> {other, acc}
+          end)
+
+        assert Enum.reverse(calls) == [
+                 [line: 1, column: indentation + 5],
+                 [line: 1, column: indentation + 15],
+                 [line: 2, column: indentation + 7],
+                 [line: 3, column: indentation + 9]
+               ]
+      after
+        Code.put_compiler_option(:parser_options, parser_options)
+      end
     end
   end
 

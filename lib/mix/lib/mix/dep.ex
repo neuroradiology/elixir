@@ -63,10 +63,10 @@ defmodule Mix.Dep do
             system_env: []
 
   @type t :: %__MODULE__{
-          scm: module,
+          scm: Mix.SCM.t(),
           app: atom,
           requirement: String.t() | Regex.t() | nil,
-          status: atom,
+          status: {:ok, String.t() | nil} | atom | tuple,
           opts: keyword,
           top_level: boolean,
           manager: :rebar | :rebar3 | :mix | :make | nil,
@@ -74,6 +74,31 @@ defmodule Mix.Dep do
           extra: term,
           system_env: keyword
         }
+
+  @doc """
+  Receives the project configuration and returns
+  a map saying if dependencies are runtime or compile time.
+  """
+  def compile_or_runtime_deps_mapping(config) do
+    for config_dep <- Keyword.get(config, :deps, []),
+        do: {elem(config_dep, 0), if(runtime_dep?(config_dep), do: :runtime, else: :compile)},
+        into: %{}
+  end
+
+  defp runtime_dep?({_app, opts}) when is_list(opts), do: runtime_opts?(opts)
+  defp runtime_dep?({_app, _req, opts}) when is_list(opts), do: runtime_opts?(opts)
+  defp runtime_dep?(_), do: true
+
+  defp runtime_opts?(opts) do
+    Keyword.get(opts, :runtime, true) and Keyword.get(opts, :app, true) and matching_only?(opts)
+  end
+
+  defp matching_only?(opts) do
+    case Keyword.fetch(opts, :only) do
+      {:ok, value} -> Mix.env() in List.wrap(value)
+      :error -> true
+    end
+  end
 
   @doc """
   Returns loaded dependencies from the cache for the current environment.
@@ -124,7 +149,7 @@ defmodule Mix.Dep do
 
   defp load_and_cache(config, _top, bottom, _env, _target) do
     {_, deps} =
-      Mix.ProjectStack.read_cache({:cached_deps, bottom}) ||
+      Mix.State.read_cache({:cached_deps, bottom}) ||
         raise "cannot retrieve dependencies information because dependencies were not loaded. " <>
                 "Please invoke one of \"deps.loadpaths\", \"loadpaths\", or \"compile\" Mix task"
 
@@ -153,14 +178,14 @@ defmodule Mix.Dep do
   end
 
   defp read_cached_deps(project, env_target) do
-    case Mix.ProjectStack.read_cache({:cached_deps, project}) do
+    case Mix.State.read_cache({:cached_deps, project}) do
       {^env_target, deps} -> deps
       _ -> nil
     end
   end
 
   defp write_cached_deps(project, env_target, deps) do
-    Mix.ProjectStack.write_cache({:cached_deps, project}, {env_target, deps})
+    Mix.State.write_cache({:cached_deps, project}, {env_target, deps})
     deps
   end
 
@@ -170,7 +195,7 @@ defmodule Mix.Dep do
   def clear_cached() do
     if project = Mix.Project.get() do
       key = {:cached_deps, project}
-      Mix.ProjectStack.delete_cache(key)
+      Mix.State.delete_cache(key)
     end
   end
 
@@ -254,9 +279,12 @@ defmodule Mix.Dep do
     # mix.exs file can be different than the actual name and we
     # choose to respect the one in the mix.exs
     config =
-      Keyword.merge(Mix.Project.deps_config(), config)
+      Mix.Project.deps_config()
+      |> Keyword.merge(config)
       |> Keyword.put(:app_path, opts[:build])
       |> Keyword.put(:build_scm, scm)
+
+    config = Keyword.take(opts, [:inherit_parent_config_files]) ++ config
 
     env = opts[:env] || :prod
     old_env = Mix.env()
@@ -473,7 +501,7 @@ defmodule Mix.Dep do
   """
   def diverged?(%Mix.Dep{status: {:overridden, _}}), do: true
   def diverged?(%Mix.Dep{status: {:diverged, _}}), do: true
-  def diverged?(%Mix.Dep{status: {:divergedreq, _}}), do: true
+  def diverged?(%Mix.Dep{status: {:divergedreq, _, _}}), do: true
   def diverged?(%Mix.Dep{status: {:divergedonly, _}}), do: true
   def diverged?(%Mix.Dep{status: {:divergedtargets, _}}), do: true
   def diverged?(%Mix.Dep{}), do: false

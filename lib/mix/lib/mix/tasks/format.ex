@@ -64,8 +64,8 @@ defmodule Mix.Tasks.Format do
     * `--dry-run` - does not save files after formatting.
 
     * `--dot-formatter` - path to the file with formatter configuration.
-      Defaults to `.formatter.exs` if one is available. See the "`.formatter.exs`"
-      section for more information.
+      Defaults to `.formatter.exs` if one is available. See the "Formatting options"
+      section above for more information.
 
   If any of the `--check-*` options are given and a check fails, the formatted
   contents won't be written to disk nor printed to standard output.
@@ -498,7 +498,7 @@ defmodule Mix.Tasks.Format do
   end
 
   defp to_bullet_list(files) do
-    Enum.map_join(files, "\n", &"  * #{&1}")
+    Enum.map_join(files, "\n", &"  * #{&1 |> to_string() |> Path.relative_to_cwd()}")
   end
 
   defp equivalent?(input, output) do

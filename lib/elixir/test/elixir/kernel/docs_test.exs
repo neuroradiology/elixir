@@ -5,6 +5,15 @@ defmodule Kernel.DocsTest do
 
   import PathHelpers
 
+  defmacro wrong_doc_baz do
+    quote do
+      @doc "Wrong doc"
+      @doc since: "1.2"
+      def baz(_arg)
+      def baz(arg), do: arg + 1
+    end
+  end
+
   test "attributes format" do
     defmodule DocAttributes do
       @moduledoc "Module doc"
@@ -52,6 +61,10 @@ defmodule Kernel.DocsTest do
     end
 
     assert Code.fetch_docs(InMemoryDocs) == {:error, :module_not_found}
+  end
+
+  test "non-existent beam file" do
+    assert {:error, :module_not_found} = Code.fetch_docs("bad.beam")
   end
 
   test "raises on invalid @doc since: ..." do
@@ -192,13 +205,11 @@ defmodule Kernel.DocsTest do
           @doc "Multiple function head doc"
           @deprecated "something else"
           def bar(_arg)
-          def bar(_arg)
           def bar(arg), do: arg + 1
 
-          @doc "Wrong doc"
-          @doc since: "1.2"
-          def baz(_arg)
-          def baz(arg), do: arg + 1
+          require Kernel.DocsTest
+          Kernel.DocsTest.wrong_doc_baz()
+
           @doc "Multiple function head and docs"
           @doc since: "1.2.3"
           def baz(_arg)
@@ -291,6 +302,29 @@ defmodule Kernel.DocsTest do
       assert {{:type, :foo, 1}, _, [], %{"en" => "Type doc"}, %{since: "1.2.3", color: :red}} =
                type_foo
     end
+  end
+
+  test "fetch docs chunk from doc/chunks" do
+    Code.compiler_options(docs: false)
+
+    doc_chunks_path = Path.join([tmp_path(), "doc", "chunks"])
+    File.rm_rf!(doc_chunks_path)
+    File.mkdir_p!(doc_chunks_path)
+
+    write_beam(
+      defmodule ExternalDocs do
+      end
+    )
+
+    assert Code.fetch_docs(ExternalDocs) == {:error, :chunk_not_found}
+
+    path = Path.join([doc_chunks_path, "#{ExternalDocs}.chunk"])
+    chunk = {:docs_v1, 1, :elixir, "text/markdown", %{"en" => "Some docs"}, %{}}
+    File.write!(path, :erlang.term_to_binary(chunk))
+
+    assert Code.fetch_docs(ExternalDocs) == chunk
+  after
+    Code.compiler_options(docs: true)
   end
 
   test "@impl true doesn't set @doc false if previous implementation has docs" do

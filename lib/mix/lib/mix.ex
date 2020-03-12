@@ -234,7 +234,10 @@ defmodule Mix do
   Mix responds to the following variables:
 
     * `MIX_ARCHIVES` - specifies the directory into which the archives should be installed
-    * `MIX_BUILD_PATH` - sets the project build_path config
+    * `MIX_BUILD_PATH` - sets the project `Mix.Project.build_path/0` config. This option
+      must always point to a subdirectory inside a temporary directory. For instance,
+      never "/tmp" or "_build" but "_build/PROD" or "/tmp/PROD", as required by Mix
+    * `MIX_DEPS_PATH` - sets the project `Mix.Project.deps_path/0` config
     * `MIX_DEBUG` - outputs debug information about each task before running it
     * `MIX_ENV` - specifies which environment should be used. See [Environments](#module-environments)
     * `MIX_TARGET` - specifies which target should be used. See [Targets](#module-targets)
@@ -335,19 +338,28 @@ defmodule Mix do
   """
   @spec compilers() :: [atom()]
   def compilers do
-    [:yecc, :leex, :erlang, :elixir, :xref, :app]
+    [:yecc, :leex, :erlang, :elixir, :app]
   end
 
   @doc """
   Returns the current shell.
 
   `shell/0` can be used as a wrapper for the current shell. It contains
-  conveniences for requesting information from the user, printing to the shell and so
-  forth. The Mix shell is swappable (see `shell/1`), allowing developers to use
-  a test shell that simply sends messages to the current process instead of
-  performing IO (see `Mix.Shell.Process`).
+  conveniences for requesting information from the user, printing to the
+  shell and so forth. The Mix shell is swappable (see `shell/1`), allowing
+  developers to use a test shell that simply sends messages to the current
+  process instead of performing IO (see `Mix.Shell.Process`).
 
   By default, this returns `Mix.Shell.IO`.
+
+  ## Examples
+
+      Mix.shell().info("Preparing to do something dangerous...")
+
+      if Mix.shell().yes?("Are you sure?") do
+        # do something dangerous
+      end
+
   """
   @spec shell() :: module
   def shell do
@@ -357,8 +369,31 @@ defmodule Mix do
   @doc """
   Sets the current shell.
 
-  After calling this function, `shell` becomes the shell that is returned by
-  `shell/0`.
+  As an argument you may pass `Mix.Shell.IO`, `Mix.Shell.Process`,
+  `Mix.Shell.Quiet`, or any module that implements the `Mix.Shell`
+  behaviour.
+
+  After calling this function, `shell` becomes the shell that is
+  returned by `shell/0`.
+
+  ## Examples
+
+      iex> Mix.shell(Mix.Shell.IO)
+      :ok
+
+  You can use `shell/0` and `shell/1` to temporarily switch shells,
+  for example, if you want to run a Mix Task that normally produces
+  a lot of output:
+
+      shell = Mix.shell()
+      Mix.shell(Mix.Shell.Quiet)
+
+      try do
+        Mix.Task.run("noisy.task")
+      after
+        Mix.shell(shell)
+      end
+
   """
   @spec shell(module) :: :ok
   def shell(shell) do
@@ -387,5 +422,18 @@ defmodule Mix do
   @spec raise(binary) :: no_return
   def raise(message) when is_binary(message) do
     Kernel.raise(Mix.Error, mix: true, message: message)
+  end
+
+  @doc """
+  The path for local archives or escripts.
+  """
+  @doc since: "1.10.0"
+  @spec path_for(:archives | :escripts) :: String.t()
+  def path_for(:archives) do
+    System.get_env("MIX_ARCHIVES") || Path.join(Mix.Utils.mix_home(), "archives")
+  end
+
+  def path_for(:escripts) do
+    Path.join(Mix.Utils.mix_home(), "escripts")
   end
 end

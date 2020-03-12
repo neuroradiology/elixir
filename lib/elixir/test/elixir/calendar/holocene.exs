@@ -24,13 +24,13 @@ defmodule Calendar.Holocene do
 
   @impl true
   def date_to_string(year, month, day) do
-    "#{year}-#{month}-#{day} (HE)"
+    "#{year}-#{zero_pad(month, 2)}-#{zero_pad(day, 2)}"
   end
 
   @impl true
   def naive_datetime_to_string(year, month, day, hour, minute, second, microsecond) do
-    "#{year}-#{month}-#{day}" <>
-      Calendar.ISO.time_to_string(hour, minute, second, microsecond) <> " (HE)"
+    "#{year}-#{zero_pad(month, 2)}-#{zero_pad(day, 2)}" <>
+      Calendar.ISO.time_to_string(hour, minute, second, microsecond)
   end
 
   @impl true
@@ -47,8 +47,9 @@ defmodule Calendar.Holocene do
         _utc_offset,
         _std_offset
       ) do
-    "#{year}-#{month}-#{day} " <>
-      Calendar.ISO.time_to_string(hour, minute, second, microsecond) <> " #{zone_abbr} (HE)"
+    "#{year}-#{zero_pad(month, 2)}-#{zero_pad(day, 2)}" <>
+      Calendar.ISO.time_to_string(hour, minute, second, microsecond) <>
+      " #{zone_abbr}"
   end
 
   @impl true
@@ -78,56 +79,42 @@ defmodule Calendar.Holocene do
     )
   end
 
-  @impl true
-  def inspect_date(year, month, day, _) do
-    date_to_string(year, month, day)
+  defp zero_pad(val, count) when val >= 0 do
+    String.pad_leading("#{val}", count, ["0"])
+  end
+
+  defp zero_pad(val, count) do
+    "-" <> zero_pad(-val, count)
   end
 
   @impl true
-  def inspect_datetime(
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        microsecond,
-        time_zone,
-        zone_abbr,
-        utc_offset,
-        std_offset,
-        _opts
-      ) do
-    datetime_to_string(
-      year,
-      month,
-      day,
-      hour,
-      minute,
-      second,
-      microsecond,
-      time_zone,
-      zone_abbr,
-      utc_offset,
-      std_offset
-    )
+  def parse_date(string) do
+    {year, month, day} =
+      string
+      |> String.split("-")
+      |> Enum.map(&String.to_integer/1)
+      |> List.to_tuple()
+
+    if valid_date?(year, month, day) do
+      {:ok, {year, month, day}}
+    else
+      {:error, :invalid_date}
+    end
   end
 
   @impl true
-  def inspect_naive_datetime(year, month, day, hour, minute, second, microsecond, _opts) do
-    naive_datetime_to_string(year, month, day, hour, minute, second, microsecond)
+  def valid_date?(year, month, day) do
+    :calendar.valid_date(year, month, day)
   end
 
   @impl true
-  def inspect_time(
-        hour,
-        minute,
-        second,
-        microsecond,
-        _opts
-      ) do
-    Calendar.ISO.time_to_string(hour, minute, second, microsecond)
-  end
+  defdelegate parse_time(string), to: Calendar.ISO
+
+  @impl true
+  defdelegate parse_naive_datetime(string), to: Calendar.ISO
+
+  @impl true
+  defdelegate parse_utc_datetime(string), to: Calendar.ISO
 
   @impl true
   defdelegate time_from_day_fraction(day_fraction), to: Calendar.ISO
@@ -158,11 +145,6 @@ defmodule Calendar.Holocene do
 
   @impl true
   defdelegate day_of_era(year, month, day), to: Calendar.ISO
-
-  @impl true
-  def valid_date?(year, month, day) do
-    :calendar.valid_date(year, month, day)
-  end
 
   @impl true
   defdelegate valid_time?(hour, minute, second, microsecond), to: Calendar.ISO

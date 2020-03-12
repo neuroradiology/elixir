@@ -114,7 +114,15 @@ defmodule Mix.Tasks.Release do
   distribution. For example, if you need to do some prep work before
   running the actual system, like migrating your database, `eval` can
   be a good fit. Just keep in mind any application you may use during
-  eval has to be explicitly started.
+  eval has to be explicitly loaded and/or started.
+
+  You can start an application by calling `Application.ensure_all_started/1`.
+  However, if for some reason you cannot start an application, maybe
+  because it will run other services you do not want, you must at least
+  load the application by calling `Application.load/1`. If you don't
+  load the application, any attempt at reading its environment or
+  configuration may fail. Note that if you start an application,
+  it is automatically loaded before started.
 
   Another way to run commands is with `rpc`, which will connect to the
   system currently running and instruct it to execute the given
@@ -133,7 +141,9 @@ defmodule Mix.Tasks.Release do
       defmodule MyApp.ReleaseTasks do
         def eval_purge_stale_data() do
           # Eval commands needs to start the app before
+          # Or Application.load(:my_app) if you can't start it
           Application.ensure_all_started(:my_app)
+
           # Code that purges stale data
           ...
         end
@@ -165,7 +175,9 @@ defmodule Mix.Tasks.Release do
   of crashes. See the generated `releases/RELEASE_VSN/env.sh` file.
 
   The daemon will write all of its standard output to the "tmp/log/"
-  directory in the release root. A developer can also attach
+  directory in the release root. You can watch the log file by doing
+  `tail -f tmp/log/erlang.log.1` or similar. Once files get too large,
+  the index suffix will be incremented. A developer can also attach
   to the standard input of the daemon by invoking "to_erl tmp/pipe/"
   from the release root. However, note that attaching to the system
   should be done with extreme care, since the usual commands for
@@ -217,7 +229,7 @@ defmodule Mix.Tasks.Release do
       remote       Connects to the running system via a remote shell
       restart      Restarts the running system via a remote command
       stop         Stops the running system via a remote command
-      pid          Prints the OS PID of the running system via a remote command
+      pid          Prints the operating system PID of the running system via a remote command
       version      Prints the release name and version to be booted
 
   ## Deployments
@@ -233,11 +245,11 @@ defmodule Mix.Tasks.Release do
   To deploy straight from a host to a separate target without cross-compilation,
   the following must be the same between the host and the target:
 
-    * Target architecture (e.g. x86_64 vs ARM)
-    * Target Vendor+OS (e.g. Windows, Linux, Darwin/macOS)
-    * Target ABI (e.g. musl, gnu)
+    * Target architecture (for example, x86_64 or ARM)
+    * Target vendor + operating system  (for example, Windows, Linux, or Darwin/macOS)
+    * Target ABI (for example, musl or gnu)
 
-  This is often represented in the form of target triples, e.g.
+  This is often represented in the form of target triples, for example,
   `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `x86_64-apple-darwin`.
 
   So to be more precise, to deploy straight from a host to a separate target,
@@ -257,10 +269,28 @@ defmodule Mix.Tasks.Release do
   containing NIFs (natively-implemented functions) which may expect to
   dynamically link to libraries they use.
 
-  These system packages are typically managed using the system package manager,
-  but if necessary, you can also bundle the compiled object files in the release,
+  Of course, some operating systems and package managers can differ between
+  versions, so if your goal is to have full compatibility between host and
+  target, it is best to ensure the operating system and system package manager
+  have the same versions on host and target. This may even be a requirement in
+  some systems, especially so with package managers that try to create fully
+  reproducible environments (Nix, Guix).
+
+  Similarly, when creating a stand-alone package and release for Windows, note
+  the Erlang Runtime System has a dependency to some Microsoft libraries
+  (Visual C++ Redistributable Packages for Visual Studio 2013). These libraries
+  are installed (if not present before) when Erlang is installed but it is not
+  part of the standard Windows environment. Deploying a stand-alone release on
+  a computer without these libraries will result in a failure when trying to
+  run the release. One way to solve this is to download and install these
+  Microsoft libraries the first time a release is deployed (the Erlang installer
+  version 10.6 ships with “Microsoft Visual C++ 2013 Redistributable - 12.0.30501”).
+
+  Alternatively, you can also bundle the compiled object files in the release,
   as long as they were compiled for the same target. If doing so, you need to
-  update `LD_LIBRARY_PATH` with the paths containing the bundled objects.
+  update `LD_LIBRARY_PATH` environment variable with the paths containing the
+  bundled objects on Unix-like systems or the `PATH` environment variable on
+  Windows systems.
 
   Currently, there is no official way to cross-compile a release from one
   target triple to another, due to the complexities involved in the process.
@@ -330,7 +360,7 @@ defmodule Mix.Tasks.Release do
 
   ### Options
 
-  The following options can be set inside your mix.exs on each release definition:
+  The following options can be set inside your `mix.exs` on each release definition:
 
     * `:applications` - a keyword list that configures and adds new applications
       to the release. The key is the application name and the value is one of:
@@ -342,28 +372,28 @@ defmodule Mix.Tasks.Release do
         * `:temporary` - the application is started and the node does not
           shut down if the application terminates
         * `:load` - the application is only loaded
-        * `:none` - the application is part of the release but it is neither loaded nor
-          started
+        * `:none` - the application is part of the release but it is neither
+          loaded nor started
 
       All applications default to `:permanent`.
 
-      By default `:applications` include the current application and then we
-      proceed to include all applications the current application depends on
-      recursively. You can include new applications or change the mode of
+      By default `:applications` includes the current application and all
+      applications the current application depends on, recursively.
+      You can include new applications or change the mode of
       existing ones by listing them here. The order of the applications given
       in `:applications` will be preserved as much as possible, with only
-      `:kernel`, `:stdlib`, `:sasl` and `:elixir` listed before the given
+      `:kernel`, `:stdlib`, `:sasl`, and `:elixir` listed before the given
       application list.
 
       Releases assembled from an umbrella project require this configuration
       to be explicitly given.
 
     * `:strip_beams` - a boolean that controls if BEAM files should have their debug
-      information, documentation chunks and other non-essential metadata removed.
+      information, documentation chunks, and other non-essential metadata removed.
       Defaults to `true`.
 
     * `:cookie` - a string representing the Erlang Distribution cookie. If this
-      option is not set, a random cookie is  written to `releases/COOKIE` file
+      option is not set, a random cookie is  written to the `releases/COOKIE` file
       when the first release is assembled. At runtime, we will first attempt
       to fetch the cookie from the `RELEASE_COOKIE` environment variable and
       then we'll read the `releases/COOKIE` file.
@@ -373,24 +403,34 @@ defmodule Mix.Tasks.Release do
       `Base.url_encode64(:crypto.strong_rand_bytes(40))`. We also recommend to restrict
       the characters in the cookie to the subset returned by `Base.url_encode64/1`.
 
+    * `:validate_compile_env` - by default a release will match all runtime
+      configuration against any configuration that was marked as compile time
+      in your application of its dependencies via the `Application.compile_env/3`
+      function. If there is a mismatch between those, it means your system is
+      misconfigured and unable to boot. You can disable this check by setting
+      this option to false.
+
     * `:path` - the path the release should be installed to.
       Defaults to `"_build/MIX_ENV/rel/RELEASE_NAME"`.
 
-    * `:version` - the release version as a string. Defaults to the current
-      application version.
+    * `:version` - the release version as a string or `{:from_app, app_name}`.
+      Defaults to the current application version. The `{:from_app, app_name}` format
+      can be used to easily reference the application version from another application.
+      This is particularly useful in umbrella applications.
 
-    * `:quiet` - a boolean that controls if releases should write to the standard
-      output its steps. Defaults to `false`.
+    * `:quiet` - a boolean that controls if releases should write steps to
+      the standard output. Defaults to `false`.
 
-    * `:include_erts` - a boolean indicating if the Erlang Runtime System (ERTS),
-      which includes the Erlang VM, should be included in the release. The default
-      is `true`, which is also the recommended value. It may also be a string as a
-      path to an existing ERTS installation or an anonymous function of zero arity
-      which should return any of the above.
+    * `:include_erts` - a boolean, string, or anonymous function of arity zero.
+      If a boolean, it indicates whether the Erlang Runtime System (ERTS), which
+      includes the Erlang VM, should be included in the release. The default is
+      `true`, which is also the recommended value. If a string, it represents
+      the path to an existing ERTS installation. If an anonymous function of
+      arity zero, it's a function that returns any of the above (boolean or string).
 
-      You may also set it to `false` if you desire to use the ERTS version installed
-      on the target. Note, however, the ERTS version on the target must have THE EXACT
-      VERSION as the ERTS version used when the release is assembled. Setting it to
+      You may also set this option to `false` if you desire to use the ERTS version installed
+      on the target. Note, however, that the ERTS version on the target must have **the
+      exact version** as the ERTS version used when the release is assembled. Setting it to
       `false` also disables hot code upgrades. Therefore, `:include_erts` should be
       set to `false` with caution and only if you are assembling the release on the
       same server that runs it.
@@ -405,49 +445,35 @@ defmodule Mix.Tasks.Release do
             ]
           ]
 
+    * `:overlays` - a directory with extra files to be copied as is to the
+      release. See the "Overlays" section for more information. Defaults to
+      "rel/overlays" if said directory exists.
+
     * `:steps` - a list of steps to execute when assembling the release. See
       the "Steps" section for more information.
 
+  Note each release definition can be given as an anonymous function. This
+  is useful if some release attributes are expensive to compute:
+
+      releases: [
+        demo: fn ->
+          [version: @version <> "+" <> git_ref()]
+        end
+      ]
+
   Besides the options above, it is possible to customize the generated
-  release with custom template files or by tweaking the release steps.
-  We will detail both approaches next.
+  release with custom files, by tweaking the release steps or by running
+  custom options and commands on boot. We will detail both approaches next.
 
-  ### vm.args and env.sh (env.bat)
+  ### Overlays
 
-  Developers may want to customize the VM flags and environment variables
-  given when the release starts. This is typically done by customizing
-  two files inside your release: `releases/RELEASE_VSN/vm.args` and
-  `releases/RELEASE_VSN/env.sh` (or `env.bat` on Windows).
-
-  However, instead of modifying those files after the release is built,
-  the simplest way to customize those files is by running `mix release.init`.
-  The Mix task will copy custom `rel/vm.args.eex`, `rel/env.sh.eex`, and
-  `rel/env.bat.eex` files to your project root. You can modify those
-  files and they will be evaluated every time you perform a new release.
-  Those files are regular EEx templates and they have a single assign,
-  called `@release`, with the `Mix.Release` struct.
-
-  The `vm.args` may contain any of the VM flags accepted by the [`erl`
-  command](http://erlang.org/doc/man/erl.html).
-
-  The `env.sh` and `env.bat` is used to set environment variables.
-  In there, you can set vars such as `RELEASE_NODE`, `RELEASE_COOKIE`,
-  and `RELEASE_TMP` to customize your node name, cookie and tmp
-  directory respectively. Whenever `env.sh` or `env.bat` is invoked,
-  the variables `RELEASE_ROOT`, `RELEASE_NAME`, `RELEASE_VSN`, and
-  `RELEASE_COMMAND` have already been set, so you can rely on them.
-  See the section on environment variables for more information.
-
-  Furthermore, while `vm.args` is static, you can use `env.sh` and
-  `env.bat` to dynamically set VM options. For example, if you want
-  to make sure the Erlang Distribution listens only on a given port
-  known at runtime, you can set the following:
-
-      export ELIXIR_ERL_OPTIONS="-kernel inet_dist_listen_min $BEAM_PORT inet_dist_listen_max $BEAM_PORT"
-
-  Or for Windows, in your `env.bat`:
-
-      set ELIXIR_ERL_OPTIONS="-kernel inet_dist_listen_min %BEAM_PORT% inet_dist_listen_max %BEAM_PORT%"
+  Often it is necessary to copy extra files to the release root after
+  the release is assembled. This can be easily done by placing such
+  files in the `rel/overlays` directory. Any file in there is copied
+  as is to the release root. For example, if you have place a
+  "rel/overlays/Dockerfile" file, the "Dockerfile" will be copied as
+  is to the release root. If you need to copy files dynamically, see
+  the "Steps" section.
 
   ### Steps
 
@@ -465,7 +491,9 @@ defmodule Mix.Tasks.Release do
   can pass anonymous functions before and after the `:assemble` to
   customize your release assembling pipeline. Those anonymous functions
   will receive a `Mix.Release` struct and must return the same or
-  an updated `Mix.Release` struct.
+  an updated `Mix.Release` struct. It is also possible to build a tarball
+  of the release by passing the `:tar` step anywhere after `:assemble`.
+  The tarball is created in `_build/MIX_ENV/RELEASE_NAME-RELEASE_VSN.tar.gz`
 
   See `Mix.Release` for more documentation on the struct and which
   fields can be modified. Note that `:steps` field itself can be
@@ -476,6 +504,57 @@ defmodule Mix.Tasks.Release do
   field can also be used to verify if the step was set before or
   after assembling the release.
 
+  ### vm.args and env.sh (env.bat)
+
+  Developers may want to customize the VM flags and environment variables
+  given when the release starts. This is typically done by customizing
+  two files inside your release: `releases/RELEASE_VSN/vm.args` and
+  `releases/RELEASE_VSN/env.sh` (or `env.bat` on Windows).
+
+  However, instead of modifying those files after the release is built,
+  the simplest way to customize those files is by running `mix release.init`.
+  The Mix task will copy custom `rel/vm.args.eex`, `rel/env.sh.eex`, and
+  `rel/env.bat.eex` files to your project root. You can modify those
+  files and they will be evaluated every time you perform a new release.
+  Those files are regular EEx templates and they have a single assign,
+  called `@release`, with the `Mix.Release` struct.
+
+  The `vm.args` file may contain any of the VM flags accepted by the [`erl`
+  command](http://erlang.org/doc/man/erl.html).
+
+  The `env.sh` and `env.bat` is used to set environment variables.
+  In there, you can set vars such as `RELEASE_NODE`, `RELEASE_COOKIE`,
+  and `RELEASE_TMP` to customize your node name, cookie and tmp
+  directory respectively. Whenever `env.sh` or `env.bat` is invoked,
+  the variables `RELEASE_ROOT`, `RELEASE_NAME`, `RELEASE_VSN`, and
+  `RELEASE_COMMAND` have already been set, so you can rely on them.
+  See the section on environment variables for more information.
+
+  Furthermore, while `vm.args` is static, you can use `env.sh` and
+  `env.bat` to dynamically set VM options. For example, if you want
+  to make sure the Erlang Distribution listens only on a given port
+  known at runtime, you can set the following:
+
+      case $RELEASE_COMMAND in
+        start*|daemon*)
+          ELIXIR_ERL_OPTIONS="-kernel inet_dist_listen_min $BEAM_PORT inet_dist_listen_max $BEAM_PORT"
+          export ELIXIR_ERL_OPTIONS
+          ;;
+        *)
+          ;;
+      esac
+
+  Note we only set the port on start/daemon commands. If you also limit
+  the port on other commands, such as `rpc`, then you will be unable
+  to establish a remote connection as the port will already be in use
+  by the node.
+
+  On Windows, your `env.bat` would look like this:
+
+      IF NOT %RELEASE_COMMAND:start=%==%RELEASE_COMMAND% (
+        set ELIXIR_ERL_OPTIONS="-kernel inet_dist_listen_min %BEAM_PORT% inet_dist_listen_max %BEAM_PORT%"
+      )
+
   ## Application configuration
 
   Releases provides two mechanisms for configuring OTP applications:
@@ -485,7 +564,7 @@ defmodule Mix.Tasks.Release do
 
   Whenever you invoke a `mix` command, Mix loads the configuration
   in `config/config.exs`, if said file exists. It is common for the
-  `config/config.exs` file itself import other configuration based
+  `config/config.exs` file itself to import other configuration based
   on the current `MIX_ENV`, such as `config/dev.exs`, `config/test.exs`,
   and `config/prod.exs`. We say that this configuration is a build-time
   configuration as it is evaluated whenever you compile your code or
@@ -514,40 +593,51 @@ defmodule Mix.Tasks.Release do
   Your `config/releases.exs` file needs to follow three important rules:
 
     * It MUST `import Config` at the top instead of the deprecated `use Mix.Config`
-    * It MUST NOT import any other configuration file via `import_file`
+    * It MUST NOT import any other configuration file via `import_config`
     * It MUST NOT access `Mix` in any way, as `Mix` is a build tool and it not
       available inside releases
 
   If a `config/releases.exs` exists, it will be copied to your release
-  and executed as soon the system starts. Once the configuration is loaded,
+  and executed early in the boot process, when only Elixir and Erlang's
+  main applications have been started. Once the configuration is loaded,
   the Erlang system will be restarted (within the same Operating System
   process) and the new configuration will take place.
 
-  Therefore, for runtime configuration to work properly, it needs to be
-  able to persist the newly computed configuration to disk. The computed
-  config file will be written to "tmp" directory inside the release every
-  time the system boots. You can configure the "tmp" directory by setting
-  the `RELEASE_TMP` environment variable, either explicitly or inside your
+  You can change the path to the runtime configuration file by setting
+  `:runtime_config_path`. This path is resolved at build time as the
+  given configuration file is always copied to inside the release.
+
+  Finally, in order for runtime configuration to work properly (as well
+  as any other "Config provider" as defined next), it needs to be able
+  to persist the newly computed configuration to disk. The computed config
+  file will be written to "tmp" directory inside the release every time
+  the system boots. You can configure the "tmp" directory by setting the
+  `RELEASE_TMP` environment variable, either explicitly or inside your
   `releases/RELEASE_VSN/env.sh` (or `env.bat` on Windows).
 
   ### Config providers
 
   Releases also supports custom mechanisms, called config providers, to load
-  any sort of runtime configuration to the system while it boots. For example,
+  any sort of runtime configuration to the system while it boots. For instance,
   if you need to access a vault or load configuration from a JSON file, it
-  can be achieved with config providers. See the `Config.Provider` for more
-  information and a simple example.
+  can be achieved with config providers. The runtime configuration outlined
+  in the previous section, which is handled by the `Config.Reader` provider.
+  See the `Config.Provider` module for more information and more examples.
 
-  The following options can be set inside your releases key in your mix.exs
-  to control how runtime configuration and config providers work:
-
-    * `:runtime_config_path` - the path to your runtime configuration file.
-      Defaults to `config/releases.exs`.
+  The following options can be set inside your releases key in your `mix.exs`
+  to control how config providers work:
 
     * `:start_distribution_during_config` - on Erlang/OTP 22+, releases
       only start the Erlang VM distribution features after the config files
       are evaluated. You can set it to `true` if you need distribution during
       configuration. Defaults to `false`.
+
+    * `:reboot_system_after_config` - every time your release is configured,
+      the system is rebooted to allow the new configuration to take place.
+      You can set this option to `false` to disable the rebooting for applications
+      that are sensitive to boot time but, in doing so, note you won't be able
+      to configure system applications, such as `:kernel`, `:stdlib` and `:elixir`
+      itself. Defaults to `true`.
 
     * `:prune_runtime_sys_config_after_boot` - every time your system boots,
       the release will write a config file to your tmp directory. These
@@ -555,7 +645,7 @@ defmodule Mix.Tasks.Release do
       disk space or if you have other restrictions, you can ask the system to
       remove said config files after boot. The downside is that you will no
       longer be able to restart the system internally (neither via
-      `System.restart/0` nor `bin/RELEASE_NAME start`). If you need a restart,
+      `System.restart/0` nor `bin/RELEASE_NAME restart`). If you need a restart,
       you will have to terminate the Operating System process and start a new
       one. Defaults to `false`.
 
@@ -625,7 +715,7 @@ defmodule Mix.Tasks.Release do
       variable is always computed and it cannot be set to a custom value
 
     * `RELEASE_COMMAND` - the command given to the release, such as `"start"`,
-      `"remote"`, `"eval"`, etc. This is typically accessed inside `env.sh`
+      `"remote"`, `"eval"`, and so on. This is typically accessed inside `env.sh`
       and `env.bat` to set different environment variables under different
       conditions. Note, however, that `RELEASE_COMMAND` has not been
       validated by the time `env.sh` and `env.bat` are called, so it may
@@ -647,7 +737,8 @@ defmodule Mix.Tasks.Release do
       in `releases/COOKIE`. It can be set to a custom value
 
     * `RELEASE_NODE` - the release node name, in the format `name@host`.
-      It can be set to a custom value
+      It can be set to a custom value. The name part must be made only
+      of letters, digits, underscores, and hyphens
 
     * `RELEASE_VM_ARGS` - the location of the vm.args file. It can be set
       to a custom path
@@ -661,7 +752,8 @@ defmodule Mix.Tasks.Release do
       start/daemon/install commands
 
     * `RELEASE_DISTRIBUTION` - how do we want to run the distribution.
-      Using `name` (long names) or `sname` (short names). Defaults to
+      May be `name` (long names), `sname` (short names) or `none`
+      (distribution is not started automatically). Defaults to
       `sname` which allows access only within the current system.
       `name` allows external connections. If `name` is used and you are
       not running on Erlang/OTP 22 or later, you must set `RELEASE_NODE`
@@ -838,7 +930,7 @@ defmodule Mix.Tasks.Release do
       end
 
   Now you can proceed to list this process in the `.appup` file and
-  hot code upgrade it. This is one of the many steps one necessary
+  hot code upgrade it. This is one of the many steps necessary
   to perform hot code upgrades and it must be taken into account by
   every process and application being upgraded in the system.
   The [`.appup` cookbook](http://erlang.org/doc/design_principles/appup_cookbook.html)
@@ -865,7 +957,7 @@ defmodule Mix.Tasks.Release do
     * `--no-compile` - does not compile before assembling the release
     * `--overwrite` - if there is an existing release version, overwrite it
     * `--path` - the path of the release
-    * `--quiet` - do not write progress to the standard output
+    * `--quiet` - does not write progress to the standard output
     * `--version` - the version of the release
 
   """
@@ -891,12 +983,9 @@ defmodule Mix.Tasks.Release do
   @impl true
   def run(args) do
     Mix.Project.get!()
-    config = Mix.Project.config()
-    Mix.Task.run("loadpaths", args)
+    Mix.Task.run("compile", args)
 
-    unless "--no-compile" in args do
-      Mix.Project.compile(args, config)
-    end
+    config = Mix.Project.config()
 
     release =
       case OptionParser.parse!(args, strict: @switches, aliases: @aliases) do
@@ -925,6 +1014,10 @@ defmodule Mix.Tasks.Release do
           "Expected step #{inspect(step)} to return a Mix.Release, got: #{inspect(other)}"
         )
     end
+  end
+
+  defp run_steps(%{steps: [:tar | steps]} = release) do
+    %{release | steps: steps} |> make_tar() |> run_steps()
   end
 
   defp run_steps(%{steps: [:assemble | steps]} = release) do
@@ -977,6 +1070,43 @@ defmodule Mix.Tasks.Release do
     |> Task.async_stream(&copy(&1, release), ordered: false, timeout: :infinity)
     |> Stream.run()
 
+    copy_overlays(release)
+  end
+
+  defp make_tar(release) do
+    tar_filename = "#{release.name}-#{release.version}.tar.gz"
+    out_path = Path.join([release.path, "..", "..", tar_filename]) |> Path.expand()
+    info(release, [:green, "* building ", :reset, out_path])
+
+    lib_dirs =
+      Enum.reduce(release.applications, [], fn {name, app_config}, acc ->
+        vsn = Keyword.fetch!(app_config, :vsn)
+        [Path.join("lib", "#{name}-#{vsn}") | acc]
+      end)
+
+    erts_dir =
+      case release.erts_source do
+        nil -> []
+        _ -> ["erts-#{release.erts_version}"]
+      end
+
+    release_files =
+      for basename <- File.ls!(Path.join(release.path, "releases")),
+          not File.dir?(Path.join([release.path, "releases", basename])),
+          do: Path.join("releases", basename)
+
+    dirs =
+      ["bin", Path.join("releases", release.version)] ++
+        erts_dir ++ lib_dirs ++ release_files
+
+    files =
+      dirs
+      |> Enum.filter(&File.exists?(Path.join(release.path, &1)))
+      |> Kernel.++(release.overlays)
+      |> Enum.map(&{String.to_charlist(&1), String.to_charlist(Path.join(release.path, &1))})
+
+    File.rm(out_path)
+    :ok = :erl_tar.create(String.to_charlist(out_path), files, [:dereference, :compressed])
     release
   end
 
@@ -999,7 +1129,7 @@ defmodule Mix.Tasks.Release do
         []
       end
 
-    release = maybe_add_config_reader_provider(release, version_path)
+    release = maybe_add_config_reader_provider(config, release, version_path)
     vm_args_path = Path.join(version_path, "vm.args")
     cookie_path = Path.join(release.path, "releases/COOKIE")
     start_erl_path = Path.join(release.path, "releases/start_erl.data")
@@ -1018,14 +1148,17 @@ defmodule Mix.Tasks.Release do
     end
   end
 
-  defp maybe_add_config_reader_provider(%{options: opts} = release, version_path) do
+  defp maybe_add_config_reader_provider(config, %{options: opts} = release, version_path) do
+    default_path = config[:config_path] |> Path.dirname() |> Path.join("releases.exs")
+
     path =
       cond do
+        # TODO: rename this to releases_config_path when we introduce runtime_config_path
         path = opts[:runtime_config_path] ->
           path
 
-        File.exists?("config/releases.exs") ->
-          "config/releases.exs"
+        File.exists?(default_path) ->
+          default_path
 
         true ->
           nil
@@ -1040,7 +1173,7 @@ defmodule Mix.Tasks.Release do
         update_in(release.config_providers, &[{Config.Reader, init} | &1])
 
       release.config_providers == [] ->
-        skipping("runtime configuration (config/releases.exs not found)")
+        skipping("runtime configuration (#{default_path} not found)")
         release
 
       true ->
@@ -1118,6 +1251,38 @@ defmodule Mix.Tasks.Release do
 
   defp skipping(message) do
     Mix.shell().info([:yellow, "* skipping ", :reset, message])
+  end
+
+  ## Overlays
+
+  defp copy_overlays(release) do
+    target = release.path
+    overlays = release.options[:overlays]
+
+    copied =
+      cond do
+        is_nil(overlays) and File.dir?("rel/overlays") ->
+          File.cp_r!("rel/overlays", target)
+
+        is_nil(overlays) ->
+          []
+
+        is_binary(overlays) and File.dir?(overlays) ->
+          File.cp_r!(overlays, target)
+
+        true ->
+          Mix.raise(
+            ":overlays release configuration must be a string pointing to an existing directory, " <>
+              "got: #{inspect(overlays)}"
+          )
+      end
+
+    relative =
+      copied
+      |> List.delete(target)
+      |> Enum.map(&Path.relative_to(&1, target))
+
+    update_in(release.overlays, &(relative ++ &1))
   end
 
   ## Copy operations

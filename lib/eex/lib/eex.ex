@@ -1,9 +1,9 @@
 defmodule EEx.SyntaxError do
-  defexception [:message, :file, :line]
+  defexception [:message, :file, :line, :column]
 
   @impl true
   def message(exception) do
-    "#{exception.file}:#{exception.line}: #{exception.message}"
+    "#{exception.file}:#{exception.line}:#{exception.column}: #{exception.message}"
   end
 end
 
@@ -39,12 +39,14 @@ defmodule EEx do
   All functions in this module accept EEx-related options.
   They are:
 
-    * `:line` - the line to be used as the template start. Defaults to 1.
     * `:file` - the file to be used in the template. Defaults to the given
       file the template is read from or to "nofile" when compiling from a string.
+    * `:line` - the line to be used as the template start. Defaults to 1.
+    * `:indentation` - (since v1.11.0) an integer added to the column after every
+      new line. Defaults to 0.
     * `:engine` - the EEx engine to be used for compilation.
-    * `:trim` - trims whitespace left/right of quotation tags. If a quotation
-      tag appears on its own in a given line, line endings are also removed.
+    * `:trim` - if true, trims whitespace left/right of quotation tags up until
+      newlines. At least one newline is retained. Defaults to false.
 
   ## Engine
 
@@ -75,6 +77,12 @@ defmodule EEx do
       <% else %>
         This will never appear
       <% end %>
+
+  To escape an EEx expression in EEx use `<%% content %>`. For example:
+
+      <%%= x + 3 %>
+
+  will be rendered as `<%= x + 3 %>`.
 
   Notice that different engines may have different rules
   for each tag. Other tags may be added in future versions.

@@ -39,19 +39,20 @@ defmodule Kernel.ParallelCompilerTest do
           """,
           foo: """
           defmodule FooParallel do
-            # We use this ensure_compiled? clause so both Foo and
+            # We use this ensure_compiled clause so both Foo and
             # Bar block. Foo depends on Unknown and Bar depends on
             # Foo. The compiler will see this dependency and first
             # release Foo and then Bar, compiling with success.
-            false = Code.ensure_compiled?(Unknown)
+            {:error, _} = Code.ensure_compiled(Unknown)
             def message, do: "message_from_foo"
           end
           """
         )
 
       assert capture_io(fn ->
-               assert {:ok, [BarParallel, FooParallel], []} =
-                        Kernel.ParallelCompiler.compile(fixtures)
+               assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures)
+               assert BarParallel in modules
+               assert FooParallel in modules
              end) =~ "message_from_foo"
     after
       purge([FooParallel, BarParallel])
@@ -219,20 +220,51 @@ defmodule Kernel.ParallelCompilerTest do
           "parallel_ensure_nodeadlock",
           foo: """
           defmodule FooCircular do
-            {:error, _} = Code.ensure_compiled(BarCircular)
+            {:error, :unavailable} = Code.ensure_compiled(BarCircular)
           end
           """,
           bar: """
           defmodule BarCircular do
-            {:error, _} = Code.ensure_compiled(FooCircular)
+            {:error, :unavailable} = Code.ensure_compiled(FooCircular)
           end
           """
         )
 
-      assert {:ok, modules, []} = Kernel.ParallelCompiler.compile([foo, bar])
+      assert {:ok, _modules, []} = Kernel.ParallelCompiler.compile([foo, bar])
       assert Enum.sort([FooCircular, BarCircular]) == [BarCircular, FooCircular]
     after
       purge([FooCircular, BarCircular])
+    end
+
+    test "handles async compilation" do
+      [foo, bar] =
+        write_tmp(
+          "async_compile",
+          foo: """
+          defmodule FooAsync do
+            true = Code.can_await_module_compilation?()
+
+            Kernel.ParallelCompiler.async(fn ->
+              true = Code.can_await_module_compilation?()
+              BarAsync.__info__(:module)
+            end)
+          end
+          """,
+          bar: """
+          defmodule BarAsync do
+            true = Code.can_await_module_compilation?()
+          end
+          """
+        )
+
+      capture_io(fn ->
+        fixtures = [foo, bar]
+        assert assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures)
+        assert FooAsync in modules
+        assert BarAsync in modules
+      end)
+    after
+      purge([FooAsync, BarAsync])
     end
 
     test "handles async deadlocks" do
@@ -264,7 +296,7 @@ defmodule Kernel.ParallelCompilerTest do
     end
 
     test "supports warnings as errors" do
-      warnings_as_errors = Code.compiler_options()[:warnings_as_errors]
+      warnings_as_errors = Code.get_compiler_option(:warnings_as_errors)
 
       [fixture] =
         write_tmp(
@@ -277,14 +309,17 @@ defmodule Kernel.ParallelCompilerTest do
           """
         )
 
+      output = tmp_path("not_to_be_used")
+
       try do
         Code.compiler_options(warnings_as_errors: true)
 
         msg =
           capture_io(:stderr, fn ->
-            assert {:error, [error], []} = Kernel.ParallelCompiler.compile([fixture])
-            msg = "this clause cannot match because a previous clause at line 2 always matches"
-            assert error == {fixture, 3, msg}
+            assert {:error, [error], []} =
+                     Kernel.ParallelCompiler.compile_to_path([fixture], output)
+
+            assert {^fixture, 3, "this clause " <> _} = error
           end)
 
         assert msg =~
@@ -293,6 +328,8 @@ defmodule Kernel.ParallelCompilerTest do
         Code.compiler_options(warnings_as_errors: warnings_as_errors)
         purge([WarningsSample])
       end
+
+      refute File.exists?(output)
     end
 
     test "does not use incorrect line number when error originates in another file" do
@@ -407,7 +444,7 @@ defmodule Kernel.ParallelCompilerTest do
     end
 
     test "supports warnings as errors" do
-      warnings_as_errors = Code.compiler_options()[:warnings_as_errors]
+      warnings_as_errors = Code.get_compiler_option(:warnings_as_errors)
 
       [fixture] =
         write_tmp(
@@ -427,10 +464,7 @@ defmodule Kernel.ParallelCompilerTest do
           capture_io(:stderr, fn ->
             assert {:error, [error], []} = Kernel.ParallelCompiler.require([fixture])
 
-            message =
-              "this clause cannot match because a previous clause at line 2 always matches"
-
-            assert error == {fixture, 3, message}
+            assert {^fixture, 3, "this clause " <> _} = error
           end)
 
         assert msg =~

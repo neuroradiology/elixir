@@ -5,7 +5,6 @@
   control_test,
   function_test,
   match_test,
-  module_test,
   operators_test,
   string_test,
   tokenizer_test
@@ -29,7 +28,7 @@ run_and_remove(Fun, Modules) ->
 
 % Throws an error with the Erlang Abstract Form from the Elixir string
 throw_elixir(String) ->
-  Forms = elixir:'string_to_quoted!'(String, 1, <<"nofile">>, []),
+  Forms = elixir:'string_to_quoted!'(String, 1, 1, <<"nofile">>, []),
   {Expr, _, _} = elixir:quoted_to_erl(Forms, elixir:env_for_eval([])),
   erlang:error(io:format("~p~n", [Expr])).
 

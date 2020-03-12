@@ -3,7 +3,7 @@ defprotocol List.Chars do
   The `List.Chars` protocol is responsible for
   converting a structure to a charlist (only if applicable).
 
-  The only function required to be implemented is
+  The only function that must be implemented is
   `to_charlist/1` which does the conversion.
 
   The `to_charlist/1` function automatically imported
@@ -24,6 +24,8 @@ defprotocol List.Chars do
 end
 
 defimpl List.Chars, for: Atom do
+  def to_charlist(nil), do: ''
+
   def to_charlist(atom), do: Atom.to_charlist(atom)
 end
 

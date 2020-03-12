@@ -137,35 +137,28 @@ defmodule Mix.Tasks.Compile.App do
     validate_version(version)
 
     path = Keyword.get_lazy(opts, :compile_path, &Mix.Project.compile_path/0)
-    mods = modules_from(Path.wildcard("#{path}/*.beam")) |> Enum.sort()
+    modules = modules_from(Path.wildcard("#{path}/*.beam")) |> Enum.sort()
 
     target = Path.join(path, "#{app}.app")
     source = Mix.Project.config_mtime()
 
-    if opts[:force] || Mix.Utils.stale?([source], [target]) || modules_changed?(mods, target) do
-      best_guess = [
-        description: to_charlist(config[:description] || app),
-        modules: mods,
-        registered: [],
-        vsn: to_charlist(version)
-      ]
+    current_properties = current_app_properties(target)
+    compile_env = load_compile_env(current_properties)
 
+    if opts[:force] || Mix.Utils.stale?([source], [target]) ||
+         app_changed?(current_properties, modules, compile_env) do
       properties =
-        if function_exported?(project, :application, 0) do
-          project_application = project.application
+        [
+          description: to_charlist(config[:description] || app),
+          modules: modules,
+          registered: [],
+          vsn: to_charlist(version)
+        ]
+        |> merge_project_application(project)
+        |> validate_properties!()
+        |> handle_extra_applications(config)
+        |> add_compile_env(compile_env)
 
-          unless Keyword.keyword?(project_application) do
-            Mix.raise(
-              "Application configuration returned from application/0 should be a keyword list"
-            )
-          end
-
-          Keyword.merge(best_guess, project_application)
-        else
-          best_guess
-        end
-
-      properties = ensure_correct_properties(properties, config)
       contents = :io_lib.format("~p.~n", [{:application, app, properties}])
 
       Mix.Project.ensure_structure()
@@ -177,14 +170,23 @@ defmodule Mix.Tasks.Compile.App do
     end
   end
 
-  defp modules_changed?(mods, target) do
+  defp current_app_properties(target) do
     case :file.consult(target) do
-      {:ok, [{:application, _app, properties}]} ->
-        properties[:modules] != mods
-
-      _ ->
-        false
+      {:ok, [{:application, _app, properties}]} -> properties
+      _ -> []
     end
+  end
+
+  defp load_compile_env(current_properties) do
+    case Mix.ProjectStack.compile_env(:unset) do
+      :unset -> Keyword.get(current_properties, :compile_env, [])
+      list -> list
+    end
+  end
+
+  defp app_changed?(properties, mods, compile_env) do
+    Keyword.get(properties, :modules, []) != mods or
+      Keyword.get(properties, :compile_env, []) != compile_env
   end
 
   defp validate_app(app) when is_atom(app), do: :ok
@@ -198,7 +200,9 @@ defmodule Mix.Tasks.Compile.App do
     ensure_present(:version, version)
 
     unless is_binary(version) and match?({:ok, _}, Version.parse(version)) do
-      Mix.raise("Expected :version to be a SemVer version, got: #{inspect(version)}")
+      Mix.raise(
+        "Expected :version to be a valid Version, got: #{inspect(version)} (see the Version module for more information)"
+      )
     end
   end
 
@@ -212,17 +216,20 @@ defmodule Mix.Tasks.Compile.App do
     Enum.map(beams, &(&1 |> Path.basename() |> Path.rootname(".beam") |> String.to_atom()))
   end
 
-  defp ensure_correct_properties(properties, config) do
-    validate_properties!(properties)
-    {extra, properties} = Keyword.pop(properties, :extra_applications, [])
+  defp merge_project_application(best_guess, project) do
+    if function_exported?(project, :application, 0) do
+      project_application = project.application()
 
-    apps =
-      properties
-      |> Keyword.get(:applications)
-      |> Kernel.||(apps_from_prod_non_optional_deps(properties, config))
-      |> normalize_apps(extra, config)
+      unless Keyword.keyword?(project_application) do
+        Mix.raise(
+          "Application configuration returned from application/0 should be a keyword list"
+        )
+      end
 
-    Keyword.put(properties, :applications, apps)
+      Keyword.merge(best_guess, project_application)
+    else
+      best_guess
+    end
   end
 
   defp validate_properties!(properties) do
@@ -322,39 +329,34 @@ defmodule Mix.Tasks.Compile.App do
       _ ->
         :ok
     end)
+
+    properties
+  end
+
+  defp add_compile_env(properties, []), do: properties
+  defp add_compile_env(properties, compile_env), do: [compile_env: compile_env] ++ properties
+
+  defp handle_extra_applications(properties, config) do
+    {extra, properties} = Keyword.pop(properties, :extra_applications, [])
+
+    apps =
+      properties
+      |> Keyword.get(:applications)
+      |> Kernel.||(apps_from_prod_non_optional_deps(properties, config))
+      |> normalize_apps(extra, config)
+
+    Keyword.put(properties, :applications, apps)
   end
 
   defp apps_from_prod_non_optional_deps(properties, config) do
     included_applications = Keyword.get(properties, :included_applications, [])
-    non_runtime_deps = non_runtime_deps(config)
+    deps_mapping = Mix.Dep.compile_or_runtime_deps_mapping(config)
 
     for %{app: app, opts: opts, top_level: true} <- Mix.Dep.cached(),
         not Keyword.get(opts, :optional, false),
-        not Map.has_key?(non_runtime_deps, app),
+        Map.fetch!(deps_mapping, app) == :runtime,
         app not in included_applications,
         do: app
-  end
-
-  defp non_runtime_deps(config) do
-    for config_dep <- Keyword.get(config, :deps, []),
-        not runtime_dep?(config_dep),
-        do: {elem(config_dep, 0), true},
-        into: %{}
-  end
-
-  defp runtime_dep?({_app, opts}) when is_list(opts), do: runtime_opts?(opts)
-  defp runtime_dep?({_app, _req, opts}) when is_list(opts), do: runtime_opts?(opts)
-  defp runtime_dep?(_), do: true
-
-  defp runtime_opts?(opts) do
-    Keyword.get(opts, :runtime, true) and Keyword.get(opts, :app, true) and matching_only?(opts)
-  end
-
-  defp matching_only?(opts) do
-    case Keyword.fetch(opts, :only) do
-      {:ok, value} -> Mix.env() in List.wrap(value)
-      :error -> true
-    end
   end
 
   defp normalize_apps(apps, extra, config) do
@@ -362,10 +364,9 @@ defmodule Mix.Tasks.Compile.App do
   end
 
   defp language_app(config) do
-    case Keyword.fetch(config, :language) do
-      {:ok, :elixir} -> [:elixir]
-      {:ok, :erlang} -> []
-      :error -> [:elixir]
+    case Keyword.get(config, :language, :elixir) do
+      :elixir -> [:elixir]
+      :erlang -> []
     end
   end
 end

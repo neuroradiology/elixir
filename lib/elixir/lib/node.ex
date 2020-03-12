@@ -13,8 +13,23 @@ defmodule Node do
   @doc """
   Turns a non-distributed node into a distributed node.
 
-  This functionality starts the `:net_kernel` and other
-  related processes.
+  This functionality starts the `:net_kernel` and other related
+  processes.
+
+  This function is rarely invoked in practice. Instead, nodes are
+  named and started via the command line by using the `--sname` and
+  `--name` flags. If you need to use this function to dynamically
+  name a node, please make sure the `epmd` operating system process
+  is running by calling `epmd -daemon`.
+
+  Invoking this function when the distribution has already been started,
+  either via the command line interface or dynamically, will return an
+  error.
+
+  ## Examples
+
+      {:ok, pid} = Node.start(:example, :shortnames, 15000)
+
   """
   @spec start(node, :longnames | :shortnames, non_neg_integer) :: {:ok, pid} | {:error, term}
   def start(name, type \\ :longnames, tick_time \\ 15000) do
@@ -91,7 +106,7 @@ defmodule Node do
 
   For more information, see `:erlang.monitor_node/2`.
 
-  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/3`.
+  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/2`.
   """
   @spec monitor(t, boolean) :: true
   def monitor(node, flag) do
@@ -104,7 +119,7 @@ defmodule Node do
 
   For more information, see `:erlang.monitor_node/3`.
 
-  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/3`.
+  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/2`.
   """
   @spec monitor(t, boolean, [:allow_passive_connect]) :: true
   def monitor(node, flag, options) do
@@ -204,7 +219,7 @@ defmodule Node do
 
   If `node` does not exist, a useless PID is returned.
 
-  For the list of available options, see `:erlang.spawn/5`.
+  For the list of available options, see `:erlang.spawn/4`.
 
   Inlined by the compiler.
   """

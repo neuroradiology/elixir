@@ -108,8 +108,8 @@ defmodule Supervisor do
   The child specification describes how the supervisor starts, shuts down,
   and restarts child processes.
 
-  The child specification contains 6 keys. The first two are required,
-  and the remaining ones are optional:
+  The child specification is a map which contains 6 elements. The first two keys
+  in the following list are required, and the remaining ones are optional:
 
     * `:id` - any term used to identify the child specification
       internally by the supervisor; defaults to the given module.
@@ -123,16 +123,16 @@ defmodule Supervisor do
        should be restarted (see the "Restart values" section below).
        This key is optional and defaults to `:permanent`.
 
-    * `:shutdown` - an atom that defines how a child process should be
-      terminated (see the "Shutdown values" section below). This key
-      is optional and defaults to `5000` if the type is `:worker` or
+    * `:shutdown` - an integer or atom that defines how a child process should
+      be terminated (see the "Shutdown values" section below). This key
+      is optional and defaults to `5_000` if the type is `:worker` or
       `:infinity` if the type is `:supervisor`.
 
     * `:type` - specifies that the child process is a `:worker` or a
       `:supervisor`. This key is optional and defaults to `:worker`.
 
-  There is a sixth key, `:modules`, that is rarely changed. It is set
-  automatically based on the value in `:start`.
+  There is a sixth key, `:modules`, which is optional and is rarely changed.
+  It is set automatically based on the `:start` value.
 
   Let's understand what the `:shutdown` and `:restart` options control.
 
@@ -306,7 +306,6 @@ defmodule Supervisor do
   following options:
 
     * `:id` - the child specification identifier, defaults to the current module
-    * `:start` - how to start the child process (defaults to calling `__MODULE__.start_link/1`)
     * `:restart` - when the supervisor should be restarted, defaults to `:permanent`
 
   The `@doc` annotation immediately preceding `use Supervisor` will be
@@ -369,12 +368,7 @@ defmodule Supervisor do
   In the above, process termination refers to unsuccessful termination, which
   is determined by the `:restart` option.
 
-  There is also a deprecated strategy called `:simple_one_for_one` which
-  has been replaced by the `DynamicSupervisor`. The `:simple_one_for_one`
-  supervisor was similar to `:one_for_one` but suits better when dynamically
-  attaching children. Many functions in this module behaved slightly
-  differently when this strategy was used. See the `DynamicSupervisor` module
-  for more information and migration strategies.
+  To dynamically supervise children, see `DynamicSupervisor`.
 
   ### Name registration
 
@@ -451,7 +445,7 @@ defmodule Supervisor do
       import Supervisor.Spec
       @behaviour Supervisor
 
-      if Module.get_attribute(__MODULE__, :doc) == nil do
+      unless Module.has_attribute?(__MODULE__, :doc) do
         @doc """
         Returns a specification to start this module under a supervisor.
 
@@ -501,10 +495,7 @@ defmodule Supervisor do
   @type name :: atom | {:global, term} | {:via, module, term}
 
   @typedoc "Option values used by the `start*` functions"
-  @type option :: {:name, name} | init_option()
-
-  @typedoc "Options used by the `start*` functions"
-  @type options :: [option, ...]
+  @type option :: {:name, name}
 
   @typedoc "The supervisor reference"
   @type supervisor :: pid | name | {atom, node}
@@ -558,7 +549,7 @@ defmodule Supervisor do
   process and exits not only on crashes but also if the parent process exits
   with `:normal` reason.
   """
-  @spec start_link([:supervisor.child_spec() | {module, term} | module], options) ::
+  @spec start_link([:supervisor.child_spec() | {module, term} | module], [option | init_option]) ::
           {:ok, pid} | {:error, {:already_started, pid} | {:shutdown, term} | term}
   def start_link(children, options) when is_list(children) do
     {sup_opts, start_opts} = Keyword.split(options, [:strategy, :max_seconds, :max_restarts])
@@ -772,7 +763,7 @@ defmodule Supervisor do
   # It is important to keep the 2-arity spec because it is a catch
   # all to start_link(children, options).
   @spec start_link(module, term) :: on_start
-  @spec start_link(module, term, GenServer.options()) :: on_start
+  @spec start_link(module, term, [option]) :: on_start
   def start_link(module, init_arg, options \\ []) when is_list(options) do
     case Keyword.get(options, :name) do
       nil ->
@@ -832,10 +823,11 @@ defmodule Supervisor do
   end
 
   def start_child(supervisor, args) when is_list(args) do
-    # TODO: Deprecate in v1.11
-    # IO.warn(
-    #   "Supervisor.start_child/2 with a list of args is deprecated, please use DynamicSupervisor instead"
-    # )
+    IO.warn_once(
+      {__MODULE__, :start_child},
+      "Supervisor.start_child/2 with a list of args is deprecated, please use DynamicSupervisor instead",
+      _stacktrace_drop_levels = 2
+    )
 
     call(supervisor, {:start_child, args})
   end
@@ -862,10 +854,9 @@ defmodule Supervisor do
   def terminate_child(supervisor, child_id)
 
   def terminate_child(supervisor, pid) when is_pid(pid) do
-    # TODO: Deprecate in v1.11
-    # IO.warn(
-    #   "Supervisor.terminate_child/2 with a PID is deprecated, please use DynamicSupervisor instead"
-    # )
+    IO.warn(
+      "Supervisor.terminate_child/2 with a PID is deprecated, please use DynamicSupervisor instead"
+    )
 
     call(supervisor, {:terminate_child, pid})
   end
@@ -968,7 +959,7 @@ defmodule Supervisor do
           workers: non_neg_integer
         }
   def count_children(supervisor) do
-    call(supervisor, :count_children) |> :maps.from_list()
+    call(supervisor, :count_children) |> Map.new()
   end
 
   @doc """

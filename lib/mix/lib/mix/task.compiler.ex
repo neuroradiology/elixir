@@ -78,12 +78,14 @@ defmodule Mix.Task.Compiler do
     defstruct [:file, :severity, :message, :position, :compiler_name, :details]
   end
 
+  @type status :: :ok | :noop | :error
+
   @doc """
   Receives command-line arguments and performs compilation. If it
   produces errors, warnings, or any other diagnostic information,
   it should return a tuple with the status and a list of diagnostics.
   """
-  @callback run([binary]) :: {:ok | :noop | :error, [Diagnostic.t()]}
+  @callback run([binary]) :: {status, [Diagnostic.t()]}
 
   @doc """
   Lists manifest files for the compiler.
@@ -96,6 +98,20 @@ defmodule Mix.Task.Compiler do
   @callback clean() :: any
 
   @optional_callbacks clean: 0, manifests: 0
+
+  @doc """
+  Adds a callback that runs after a given compiler.
+
+  The callback is invoked after the compiler runs and
+  it receives a tuple with current status and the list
+  of diagnostic. It must return the updated status and
+  diagnostics.
+  """
+  @doc since: "1.10.0"
+  @spec after_compiler(atom, ({status, [Diagnostic.t()]} -> {status, [Diagnostic.t()]})) :: :ok
+  def after_compiler(name, fun) when is_atom(name) and is_function(fun, 1) do
+    Mix.ProjectStack.prepend_after_compiler(name, fun)
+  end
 
   @doc false
   defmacro __using__(_opts) do
@@ -116,9 +132,9 @@ defmodule Mix.Task.Compiler do
       {status, diagnostics} when status in [:ok, :noop, :error] and is_list(diagnostics) ->
         {status, diagnostics}
 
-      # Noop can come from tasks that have already run
-      :noop ->
-        {:noop, []}
+      # ok/noop can come from tasks that have already run
+      _ when result in [:ok, :noop] ->
+        {result, []}
 
       _ ->
         # TODO: Convert this to an error on v2.0
@@ -127,7 +143,7 @@ defmodule Mix.Task.Compiler do
             "{:ok | :noop | :error, [diagnostic]} but it returned #{inspect(result)}"
         )
 
-        {if(result == :ok, do: :ok, else: :noop), []}
+        {:noop, []}
     end
   end
 end

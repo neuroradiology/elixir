@@ -383,7 +383,9 @@ defmodule RegistryTest do
         assert is_pid(pid)
         assert sum_pid_entries(registry, partitions) == 2
 
-        assert {:error, {:already_registered, pid}} = Registry.register(registry, "hello", :value)
+        assert {:error, {:already_registered, _pid}} =
+                 Registry.register(registry, "hello", :value)
+
         assert sum_pid_entries(registry, partitions) == 2
       end
 
@@ -543,7 +545,7 @@ defmodule RegistryTest do
         assert Registry.keys(registry, self()) == []
       end
 
-      test "unregistes with no entries", %{registry: registry} do
+      test "unregisters with no entries", %{registry: registry} do
         assert Registry.unregister(registry, "hello") == :ok
       end
 
